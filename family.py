@@ -31,8 +31,10 @@ PROJECTS = [
     {
         # General Election 2024 roll (owner 2026-11-22): only through the portal's captcha form; offline captcha model in captcha/
         "name": f"{FAMILY}-up-ger", "title": "UP General Election roll 2024 PDFs (captcha form)", "task": "fetch-ger",
-        "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None,
-        "unit_label": "AC", "record_label": "PDF", "threads": 8, "max_workers": 16,
+        # the file server gateway-vpd.eci.gov.in answers only from India (checked 2026-11-22: timeouts from US/SG, no DNS from DE):
+        # the hub's Mumbai proxies, one per worker
+        "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None, "proxy": "IN",
+        "unit_label": "AC", "record_label": "PDF", "threads": 8, "max_workers": 8,
         "items": [{"key": f"2024-ge-final/{ac}", "partition_id": ac, "payload": {"roll": "2024-ge-final", "ac": ac, "expected": 420}}
                   for ac in (ONLY or UP_ACS)],
     },
