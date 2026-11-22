@@ -37,6 +37,9 @@ LINE_OF = {'name': 'line0', 'relation_label': 'line1', 'relation_name': 'line1',
 CONFW = None  # set by --confvote
 # 2026-11-22: an EPIC read by only one engine (CRNNs do not know prefixes such as UWY, DQH outside the training ACs) is
 # confirmed when it is in the 2027 roll and that record's name or relative's name is read by an engine. ECI_EPIC_CONFIRM=0 = off.
+# years between the roll read and the 2027 roll it is confirmed with (2026 rolls: 1 -> age gap 0 or 1, as benchmarked;
+# 2024 roll: 3 -> gap 2 or 3, measured on AC 174 part 1: 735 of 772 voters 3, 22 voters 2). Set by eci_ocr --roll-year.
+AGE_GAP = 1
 EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
@@ -75,7 +78,7 @@ def decide(cands, hint, pix, names=None, confs=None):
                     if j is not None and vals[j]: out[f] = vals[j]; break
             flags.append(f); continue  # no engine matches 2027: flag
         if hint and f == 'age' and hint.get('age', '').isdigit():
-            ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (0, 1)]
+            ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue

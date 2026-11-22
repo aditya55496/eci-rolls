@@ -521,6 +521,7 @@ def main():
                     help='CRNN batches exactly as the bench (32 boxes, unsorted): raw text equal to bench 99.95%% but ~30%% slower. '
                          'Default: crops sorted by width, 64 per batch (engines.py SORTW=1)')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--roll-year', type=int, default=2026, help='year of the roll read (the 2027 hints confirm ages with a gap of 2027 - year)')
     ap.add_argument('--cache-in', help='pickle of readings by (engine, crop hash) from an earlier run (e.g. the SIR draft of the same part)')
     ap.add_argument('--cache-out', help='write the readings of this run as a pickle (for --cache-in of a later run)')
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
@@ -539,6 +540,7 @@ def main():
         meta[pdf] = dict(pages=n, kind=kind, **pdf_meta(pdf))
         tasks += [(pdf, p, kind) for p in parse_pages(a.pages, n)]
     global _HINTS, _CACHE_IN, _COLLECT
+    ensemble2.AGE_GAP = 2027 - a.roll_year
     if a.cache_in:
         _CACHE_IN = pickle.load(open(a.cache_in, 'rb'))
     _COLLECT = bool(a.cache_out)
