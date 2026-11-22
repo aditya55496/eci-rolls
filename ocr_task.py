@@ -10,7 +10,6 @@ One hub record per part: counts, flag rate and serial checks. No LLM, no network
 import gzip
 import json
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,6 +25,8 @@ _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 min; keep 10 min spare
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
 CPUS = len(os.sched_getaffinity(0))
+WORKERS = max(1, CPUS // 2)       # the pool runs 2 worker processes per 4-CPU runner job: 2 OCR processes each
+HINT_SPAN = 2
 
 
 def do_item(hub, item):
@@ -38,16 +39,22 @@ def do_item(hub, item):
         hint = download(hub, TEXT_PROJECT, [hk], tmp)[hk]
         if not hint:
             raise RuntimeError(f"no 2027 hints for AC {ac} yet")
-        hpath = os.path.join(tmp, "hints.jsonl")
-        with gzip.open(hint) as f, open(hpath, "wb") as o:
-            shutil.copyfileobj(f, o)
+        # Only the 2027 records of this part number and its neighbours (a voter rarely moves further): about 4,000 records,
+        # not the whole AC (268,000 for AC 174 = 2.2 GB per OCR process, which ran the runner VMs out of memory). The benchmark's
+        # hints were also limited (parts 1-3 of each AC).
+        hpath, near, nh = os.path.join(tmp, "hints.jsonl"), set(range(part - HINT_SPAN, part + HINT_SPAN + 1)), 0
+        with gzip.open(hint, "rt", encoding="utf-8") as f, open(hpath, "w", encoding="utf-8") as o:
+            for line in f:
+                if int(json.loads(line).get("part") or 0) in near:
+                    o.write(line)
+                    nh += 1
         pdfs = [got[keys[r]] for r in OCR_ROLLS if keys.get(r) and got.get(keys[r])]
         missing = [r for r in OCR_ROLLS if keys.get(r) and not got.get(keys[r])]
         if not pdfs:
             raise RuntimeError("none of the 4 PDFs is in the bucket")
         out = os.path.join(tmp, "out.jsonl")
         cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), *pdfs, "--out", out, "--hint-2027", hpath,
-               "--stage1", "1", "--workers", str(CPUS), "--ort-threads", "1", "--quiet"]
+               "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet"]
         for m in MODELS:
             cmd += ["--crnn", m]
         t = time.time()
@@ -62,7 +69,7 @@ def do_item(hub, item):
                          (f"ocr/{ac}/{part}{tag}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
     hub.metric("voter_pages", summ.get("voter_pages", 0))
     hub.metric("ocr_s", round(secs, 1))
-    rec = {"ac": ac, "part": part, "tag": tag, "records": summ.get("records"), "voter_pages": summ.get("voter_pages"), "flag_rate": summ.get("flag_rate"),
+    rec = {"ac": ac, "part": part, "tag": tag, "hints_loaded": nh, "records": summ.get("records"), "voter_pages": summ.get("voter_pages"), "flag_rate": summ.get("flag_rate"),
            "s_per_voter_page": summ.get("s_per_voter_page_wall"), "missing_rolls": missing,
            "pdfs": [{k: d.get(k) for k in ("pdf", "kind", "records", "flag_rate", "hint_matched", "serial_check")} for d in summ.get("pdfs", [])]}
     hub.record(f"{ac}-{part}{tag}", rec)
