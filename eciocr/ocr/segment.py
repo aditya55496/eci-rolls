@@ -41,6 +41,17 @@ def trim(im, margin=4):
     ink = cv2.subtract(bw, lines)
     cols = np.where(ink.sum(0) > 0)[0]; rows = np.where(ink.sum(1) > 0)[0]
     if not len(cols): return im
+    # 2026-11-23: a thin sliver of ink (<= 6 px wide) at either end, >= 20 px away from the rest, is a frame edge or noise
+    # (the photo frame's edge in the 2024 print kept name crops at the full line width): leave it out
+    for _ in range(3):
+        gaps = np.diff(cols)
+        if len(cols) > 1 and gaps[-1] >= 20 and cols[-1] - cols[np.where(gaps >= 20)[0][-1] + 1] <= 5:
+            cols = cols[: np.where(gaps >= 20)[0][-1] + 1]
+        elif len(cols) > 1 and gaps[0] >= 20 and np.where(gaps >= 20)[0][0] <= 5 and cols[np.where(gaps >= 20)[0][0]] - cols[0] <= 5:
+            cols = cols[np.where(gaps >= 20)[0][0] + 1:]
+        else:
+            break
+    ink = ink[:, cols[0]: cols[-1] + 1]; rows = np.where(ink.sum(1) > 0)[0]
     x0, x1 = max(0, cols[0] - margin), min(im.shape[1], cols[-1] + 1 + margin)
     y0, y1 = max(0, rows[0] - margin), min(im.shape[0], rows[-1] + 1 + margin)
     return im[y0:y1, x0:x1]
