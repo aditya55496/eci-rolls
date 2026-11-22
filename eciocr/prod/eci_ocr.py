@@ -339,6 +339,7 @@ _OPT = {}
 
 
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
+_EPIC_IDX = None
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -580,11 +581,19 @@ def main():
                 if not ensemble2.valid('epic', r['epic'] or '') and len(r['flags']) >= 6:
                     r['not_voter_box'] = True
             allrecs, recs = recs, [r for r in recs if not r.get('not_voter_box')]
+            if _HINTS:   # EPIC prefixes the CRNNs never saw: repaired from the 2027 roll (epicfix.py; hand check 2026-11-22)
+                import epicfix
+                global _EPIC_IDX
+                if _EPIC_IDX is None:
+                    _EPIC_IDX = epicfix.index(_HINTS.values())
+                epic_fixed = epicfix.fix(recs, _EPIC_IDX)
+            else:
+                epic_fixed = 0
             m = meta[pdf]
             kind = m['kind'] or (collections.Counter(p['kind'] for p in pages if p.get('kind')).most_common(1) or [(None,)])[0][0]
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
-                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs))
+                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
