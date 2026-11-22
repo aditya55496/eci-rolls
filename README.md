@@ -1,49 +1,38 @@
-# family-template
+# eci-rolls
 
-Start a new scraping family for the s1d-labs pool. A family is one kind of site (or one platform many sites share); the pool runs
-its code on members' GitHub Actions minutes. This template is a complete, working family for
-[books.toscrape.com](https://books.toscrape.com) (a public site made for scraping practice): copy it, then change it.
+Electoral rolls of Uttar Pradesh (ECI, voters.eci.gov.in), Hindi, all 403 assembly constituencies (ACs). Public records.
 
-## Make your family
+Rolls in scope: SIR draft roll 2026, SIR final roll 2026, SSR draft roll 2027. Supplement-2 and -3 (2026) come later. The portal
+serves them only through its captcha form.
 
-1. Ask the hub owner to **add the family** on [scrape.s1d.me/runners](https://scrape.s1d.me/runners) (name, what it scrapes, owner).
-   The hub creates `s1d-labs/<family>` from this template, names the family in `scrape.json`, and makes the owner admin
-   (with the GitHub account they added on home.s1d.me).
-2. Clone it: `gh repo clone s1d-labs/<family>`.
-3. In your repo:
-   - `scrape.json`: set `"family"` to the family name; list your tasks (one command each) and setup steps.
-   - `family.py`: your projects (one queue of work per site), their target hosts, the env your command needs, the queue items,
-     and the health checks.
-   - `crawl.py` (or whatever your tasks run): the scraper.
-   - `README.md`: replace this text with your family's own: what it scrapes, its projects and tasks, and how to run the check.
-     Delete `crawl.py`, `tests/pages/catalogue-page-1.html` and the example test when your own task replaces them.
-4. **Check it**: `scrape-check` in the repo (needs `pip install "scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk"`).
-   It runs your setup and task against a local stand-in hub on 3 real items and says what works. The **check** workflow runs it
-   (and `tests/`) on every push.
-5. Run the **setup** workflow (Actions → setup → Run workflow). It registers the projects, puts them in the pool and registers
-   the health checks.
-6. The hub starts runs in members' accounts when the pool is on and there is work. Watch it on scrape.s1d.me.
+## Projects and tasks
 
-## What your code gets
+| Project | Task | Queue item | Output (bucket `eci-rolls`) |
+|---|---|---|---|
+| `eci-rolls-up` | `fetch` | `<roll>/<ac>` (3 x 403) | `pdf/<roll>/<ac>/<file name>`, `parts/<roll>/<ac>.json`; one hub record per PDF (bytes, sha256, Last-Modified, polling station name) |
+| `eci-rolls-up-2027` | `textlayer` | `<ac>` (seeded by `plan.py`) | `text/<ac>.jsonl.gz` (every voter record of the 2027 draft, from the PDF text layer), `hints/<ac>.jsonl.gz`, `text/<ac>.summary.json` |
+| `eci-rolls-up-ocr` | `ocr` | `<ac>-<part>` (seeded by `plan.py`) | `ocr/<ac>/<part>.jsonl.gz` (one record per voter box of the SIR draft and final 2026), `ocr/<ac>/<part>.summary.json` |
 
-The pool worker ([s1d-labs/runner](https://github.com/s1d-labs/runner)) checks out this repo at `main`, runs the `setup` steps from
-`scrape.json`, and for each assignment runs the task's command here with:
+- **fetch:** one call to the portal's part-list API (`eci_api.py`; the page encrypts the request body, the same is done here).
+  Then each part PDF comes from its fixed public path `https://voters.eci.gov.in/eroll/<year>/s24/<roll type>/<ac>/<file>`, the
+  same GET that the portal's page makes after its form. Each PDF is fetched once.
+- **textlayer:** `eciocr/textlayer/parse_textlayer.py`. There is no OCR. The script repairs the text-layer artefacts of the
+  2027 PDFs and checks the record counts against each PDF's cover totals.
+- **ocr:** `eciocr/prod/eci_ocr.py` with the int8 CRNN models in `models/` and Tesseract 5 (hin, eng), on the runner's 4 CPUs. There is
+  no LLM and no network use apart from the hub. The 2027 records of the same AC are used only to confirm readings, never as values.
+  - Measured on a 4,266-box gold set (180 pages from 3 ACs): 97.84 % of voter records have every field right (95 % CI
+    97.13–98.43). 4.5 % of records are flagged, and 99.63 % of unflagged records are right.
+  - Speed: about 1.2–1.4 s per page.
+  - Every record keeps its `flags` (fields where the engines disagree).
+- **plan.py** (workflow `plan`, hourly) seeds `textlayer` once an AC's 2027 roll is fetched. It seeds `ocr` once the AC's SIR
+  draft, SIR final and 2027 text are done.
 
-| Variable | What |
-|---|---|
-| `SCRAPE_POOL_PROJECT` | the project to work on |
-| `SCRAPE_JOB_INDEX`, `SCRAPE_TOTAL_JOBS` | this worker's slice |
-| `SCRAPE_MAX_HOURS` | how long the command may run |
-| `SCRAPE_HUB_URL` | the hub |
-| your project's `env` | e.g. `SITE` |
+## Running
 
-Use `scrape_hub_client` (`HubClient`) to claim queue items, store records, upload files and report counters. Exit when there is
-nothing left; the worker then asks the hub for the next assignment.
+- `setup` workflow: registers the projects and seeds `eci-rolls-up`. The input `fetch_acs` (for example `174,86`) seeds only
+  those ACs. Run it again with an empty input for all 403.
+- `check` workflow (every push): tests, then `scrape-check` of `fetch` on 2 items with 2 PDFs each (`ECI_MAX_PARTS=2`).
+- Locally: `python -m pytest tests`; `scrape-check --project eci-rolls-up --task fetch --env ECI_MAX_PARTS=2 --items 2`.
 
-## Rules (the full contract is in CLAUDE.md, written for people and for Claude Code)
-
-- **Be polite.** Use `hub.settings["threads"]` and `delay_ms`, idle while `hub.settings["paused"]`, and report `n_http` and
-  `t_http_s` for every request and `http_<code>` / `http_error` for failures: the hub throttles you from these.
-- **Files go through the hub** (`hub.upload_many`): it signs each upload into the family's bucket (500 GB per member) and stops at
-  the cap. Never put storage keys in this repo.
-- **Public data only**; read the site's terms first. See the team docs on home.s1d.me (Scraping rules).
+The code in `eciocr/` is copied unchanged from the benchmark (methods and measurements: paper "Reading Hindi electoral rolls
+without an LLM", 2026-11-22).

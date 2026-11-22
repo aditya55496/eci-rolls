@@ -1,7 +1,7 @@
 name: check
 
 # Verifies this family on every push: parsing tests on saved pages (pytest), then scrape-check, which runs setup_family.py and the
-# crawl task against a local stand-in for scrape-hub, the same way the pool runner does, on 2 real queue items (and a rerun).
+# fetch task against a local stand-in for scrape-hub, the same way the pool runner does, on 2 real queue items (2 PDFs each) and a rerun.
 # Nothing reaches the real hub. Run it by hand too: Actions -> check -> Run workflow.
 on:
   push:
@@ -26,7 +26,7 @@ jobs:
       - name: Parsing tests
         run: python -m pytest tests -q
       - name: scrape-check (local stand-in hub, 2 real items)
-        run: scrape-check --items 2
+        run: scrape-check --project eci-rolls-up --task fetch --env ECI_MAX_PARTS=2 --items 2
       - uses: actions/upload-artifact@v6
         if: ${{ always() }}
         with:

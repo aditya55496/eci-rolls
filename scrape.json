@@ -1,13 +1,13 @@
 {
   "family": "eci-rolls",
-  "about": "ECI electoral roll PDFs (Uttar Pradesh)",
+  "about": "Uttar Pradesh electoral rolls (ECI): roll PDFs into the bucket once, 2027 roll from its text layer, OCR of the 2026 SIR rolls on the runners (no LLM).",
   "setup": [
+    "sudo apt-get install -y -qq tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng",
     "pip install -r requirements.txt"
   ],
   "tasks": {
-    "crawl": [
-      "python",
-      "crawl.py"
-    ]
+    "fetch": ["python", "fetch_task.py"],
+    "textlayer": ["python", "textlayer_task.py"],
+    "ocr": ["python", "ocr_task.py"]
   }
 }

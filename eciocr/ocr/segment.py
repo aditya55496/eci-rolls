@@ -1,0 +1,150 @@
+"""Cut one voter box into field regions.
+
+Box layout (SIR roll and supplement):
+  top band : [serial cell] ([part cell] on supplements)          EPIC
+  body     : 4 text lines (name / relative / house / age+gender) | photo cell
+We find the inner ruled cells from the line mask, then text lines by a
+horizontal ink profile. Works at any resolution.
+"""
+import cv2
+import numpy as np
+
+
+def _mask(gray):
+    return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10)
+
+
+def cells(gray):
+    h, w = gray.shape
+    bw = _mask(gray)
+    hl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 12), 1)))
+    vl = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(8, h // 10))))
+    cnts, _ = cv2.findContours(cv2.bitwise_or(hl, vl), cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+    out = []
+    for c in cnts:
+        x, y, cw, ch = cv2.boundingRect(c)
+        if cw > 0.9 * w: continue  # the outer box
+        if cw > 0.08 * w and ch > 0.08 * h:
+            if not any(abs(x - o[0]) < 5 and abs(y - o[1]) < 5 for o in out):
+                out.append((x, y, cw, ch))
+    photo = [c for c in out if c[3] > 0.4 * h and c[0] > 0.5 * w]
+    small = sorted([c for c in out if c[3] < 0.3 * h and c[1] < 0.3 * h and c[0] < 0.6 * w], key=lambda c: c[0])
+    return bw, (photo[0] if photo else None), small
+
+
+def trim(im, margin=4):
+    """Cut a field crop to its ink (plus a margin); ruled lines removed first."""
+    if im.size == 0: return im
+    bw = _mask(im)
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, im.shape[1] // 3), 1)))
+    lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(6, int(im.shape[0] * 0.8)))))
+    ink = cv2.subtract(bw, lines)
+    cols = np.where(ink.sum(0) > 0)[0]; rows = np.where(ink.sum(1) > 0)[0]
+    if not len(cols): return im
+    x0, x1 = max(0, cols[0] - margin), min(im.shape[1], cols[-1] + 1 + margin)
+    y0, y1 = max(0, rows[0] - margin), min(im.shape[0], rows[-1] + 1 + margin)
+    return im[y0:y1, x0:x1]
+
+
+# line centres as a fraction of box height (median of normally split gold boxes)
+TEMPLATE_SIR = [0.2937, 0.4097, 0.5226, 0.6484]
+TEMPLATE_SUP = [0.2835, 0.4085, 0.5247, 0.6524]
+LAST_CENTRES = None
+
+
+def clean_edges(band):
+    """Whiten thin blobs that touch the band's top or bottom edge (the neighbour line's
+    headline or descenders). Marks of this line (dots, reph) do not touch the edges."""
+    if band.size == 0: return band
+    bw = _mask(band); H = bw.shape[0]
+    n, lab, st, _ = cv2.connectedComponentsWithStats(bw, 8)
+    out = band.copy()
+    for j in range(1, n):
+        x, y, w, h, a = st[j]
+        touches = y == 0 or y + h >= H
+        if touches and h <= max(2, int(0.3 * H)) and w >= 3 * h and w >= 0.08 * bw.shape[1]:  # headline-like only, never dots
+            out[lab == j] = 255
+    return out
+
+
+def segment(gray):
+    """Return dict of field-name -> crop (grayscale). Keys: serial, part, epic, line0..line3."""
+    h, w = gray.shape
+    bw, photo, small = cells(gray)
+    out = {}
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    for i, (x, y, cw, ch) in enumerate(small[:2]):
+        cell = gray[y + 3: y + ch - 3, x + 3: x + cw - 3]
+        if i == 0:
+            # serial cell: optional status code at the left (#, S, R2 ...), number right-aligned
+            ink = (_mask(cell) > 0).sum(0) > 0
+            left = ink[: int(0.4 * len(ink))]
+            if left.sum() > 2:
+                cols = np.where(ink)[0]
+                gaps = [(cols[j + 1] - cols[j], cols[j]) for j in range(len(cols) - 1)]
+                g, at = max(gaps) if gaps else (0, 0)
+                if g > 0.12 * len(ink):
+                    out['code'] = trim(cell[:, : at + 2]); out['serial'] = trim(cell[:, at + 2:])
+                    continue
+            out['serial'] = trim(cell)
+        else:
+            out['part'] = trim(cell)
+    ex0 = (small[-1][0] + small[-1][2] + 4) if small else int(0.55 * w)
+    ex0 = max(ex0, int(0.45 * w))
+    out['epic'] = trim(gray[3: top_bottom + 1, ex0: w - 4])
+    px = photo[0] - 3 if photo else int(0.72 * w)
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    xl = max(6, int(0.018 * w))  # skip the box's left border
+    body = cv2.subtract(bw, lines)[top_bottom + 2: h - 3, xl: px]
+    # remove ruled-line remnants
+    body = cv2.morphologyEx(body, cv2.MORPH_OPEN, np.ones((1, 1), np.uint8))
+    prof = (body > 0).sum(1).astype(float)
+    k = max(1, int(0.01 * h)); sm = np.convolve(prof, np.ones(k) / k, mode='same')
+    ink = np.where(sm > max(1.0, 0.01 * body.shape[1]))[0]
+    merged = []
+    if len(ink):
+        top, bot = ink[0], ink[-1] + 1
+        nl = 4
+        pitch = (bot - top) / nl
+        cuts = [top]
+        for i in range(1, nl):
+            c0 = int(top + (i - 0.35) * pitch); c1 = int(top + (i + 0.35) * pitch)
+            if c1 > c0:  # middle of the longest run of minimal ink (raw profile) inside the window
+                win = prof[c0:c1]; m = win.min(); runs, cur = [], None
+                for j, v in enumerate(win):
+                    if v <= m + 1: cur = (cur[0], j) if cur else (j, j)
+                    elif cur: runs.append(cur); cur = None
+                if cur: runs.append(cur)
+                r0, r1 = max(runs, key=lambda r: r[1] - r[0])
+                cuts.append(c0 + (r0 + r1 + 1) // 2)
+            else:
+                cuts.append(int(top + i * pitch))
+        cuts.append(bot)
+        # outer bands reach past the first/last ink rows: anusvara, reph and ऊ-matras are small marks
+        # that can fall below the ink threshold, so they must not define the band edge
+        cuts[0] = max(0, top - int(0.07 * h)); cuts[-1] = min(len(sm), bot + int(0.06 * h))
+        for i in range(nl):
+            seg = np.where(sm[cuts[i]:cuts[i + 1]] > 0.5)[0]
+            if len(seg) and (seg[-1] - seg[0]) > 0.03 * h:
+                merged.append((cuts[i] + seg[0], cuts[i] + seg[-1] + 1, cuts[i], cuts[i + 1]))
+    pad = max(2, int(0.012 * h))
+    body_h = h - 3 - (top_bottom + 2)
+    hs = [b - a for a, b, lo, hi in merged]
+    global LAST_CENTRES
+    LAST_CENTRES = None
+    if len(merged) == 4 and not (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]):
+        LAST_CENTRES = [((a + b) / 2 + top_bottom + 2) / h for a, b, lo, hi in merged]
+    if len(merged) < 4 or (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]):
+        # stamp (DELETED) or other ink broke the profile split: cut at template line positions
+        T = TEMPLATE_SUP if len(small) >= 2 else TEMPLATE_SIR
+        cs = [c * h - (top_bottom + 2) for c in T]  # line centres in body coords
+        p = (cs[3] - cs[0]) / 3
+        edges = [max(0, int(cs[0] - p / 2))] + [int((cs[j] + cs[j + 1]) / 2) for j in range(3)] + [min(body_h, int(cs[3] + p / 2))]
+        merged = [(edges[j], edges[j + 1], edges[j], edges[j + 1]) for j in range(4)]
+    for i, (a, b, lo, hi) in enumerate(merged):
+        # stay inside this line's band so the next line's matras do not leak in
+        # whole band between the cut points (the cuts sit in the gaps between lines), then trim to ink
+        y0 = top_bottom + 2 + lo; y1 = top_bottom + 2 + hi
+        out[f'line{i}'] = trim(clean_edges(gray[y0:y1, xl:px]))
+    return out

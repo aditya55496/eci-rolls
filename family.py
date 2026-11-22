@@ -1,27 +1,39 @@
-"""What this family scrapes. Change this file first.
+"""Projects of the eci-rolls family: the 5 UP electoral rolls in scope (owner 2026-11-22), Hindi, all 403 assembly constituencies.
 
-FAMILY must equal the repo name (s1d-labs/<FAMILY>) and the family the hub owner added on scrape.s1d.me/runners.
-Each project is one queue of work on one site; `target` is the host it hits (the hub caps workers per target).
+eci-rolls-up       task fetch      one item per roll and AC (3 rolls x 403 ACs): every part PDF once into the bucket
+eci-rolls-up-2027  task textlayer  one item per AC, seeded by plan.py: 2027 SSR draft records from the PDF text layer (no OCR)
+eci-rolls-up-ocr   task ocr        one item per AC and part, seeded by plan.py: OCR of the SIR draft and final 2026 rolls
+Supplement-2 and -3 (2026) are served only through the portal's captcha form: a later project, not here yet.
 """
 import json
+import os
 from pathlib import Path
 
 FAMILY = json.loads((Path(__file__).parent / "scrape.json").read_text())["family"]
+UP_ACS = range(1, 404)
+FETCH_ROLLS = ["2027-ssr-draft", "2026-sir-final", "2026-sir-draft"]     # 2027 first: its text confirms the OCR
+# FETCH_ACS="174,86" (Setup workflow input) seeds only these ACs: the first pool run is small, then everything
+ONLY = [int(a) for a in os.environ.get("FETCH_ACS", "").split(",") if a.strip()]
 
 PROJECTS = [
     {
-        "name": f"{FAMILY}-books",              # project names: 2-64 chars of a-z 0-9 - _, start them with the family name
-        "title": "Books to Scrape catalogue",
-        "task": "crawl",                         # a task from scrape.json
-        "target": "books.toscrape.com",
-        "env": {"SITE": "https://books.toscrape.com"},
-        "probe": f"{FAMILY}:books.toscrape.com",
-        "unit_label": "page", "record_label": "book",
-        # the queue: one item per catalogue page; `expected` (records per item) gives progress and ETAs on the dashboard
-        "items": [{"key": f"page-{n}", "payload": {"url": f"https://books.toscrape.com/catalogue/page-{n}.html", "expected": 20}}
-                  for n in range(1, 51)],
+        "name": f"{FAMILY}-up", "title": "UP electoral roll PDFs (SIR draft + final 2026, SSR draft 2027)", "task": "fetch",
+        "target": "voters.eci.gov.in", "env": {}, "probe": f"{FAMILY}:voters.eci.gov.in",
+        "unit_label": "roll x AC", "record_label": "PDF", "threads": 4, "max_workers": 8,
+        "items": [{"key": f"{roll}/{ac}", "payload": {"roll": roll, "ac": ac, "expected": 350}}
+                  for roll in FETCH_ROLLS for ac in (ONLY or UP_ACS)],
+    },
+    {
+        "name": f"{FAMILY}-up-2027", "title": "UP SSR draft roll 2027 from the PDF text layer", "task": "textlayer",
+        "target": "eci-rolls-bucket", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 4, "items": [],
+    },
+    {
+        "name": f"{FAMILY}-up-ocr", "title": "UP SIR rolls 2026: OCR (no LLM, 4 CPUs per runner)", "task": "ocr",
+        "target": "eci-rolls-ocr", "env": {}, "probe": None,
+        "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 40, "items": [],
     },
 ]
 
-# health checks the hub runs every minute; work for a project holds while its probe fails
-PROBES = [{"name": f"{FAMILY}:books.toscrape.com", "url": "https://books.toscrape.com/", "expect": "All products"}]
+PROBES = [{"name": f"{FAMILY}:voters.eci.gov.in", "url": "https://voters.eci.gov.in/eroll/2027/s24/ssr-draftroll/174/"
+           "2027-EROLLGEN-S24-174-SSR-DraftRoll-Revision1-HIN-1-WI.pdf", "expect": "%PDF-"}]

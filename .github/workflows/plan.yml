@@ -1,0 +1,25 @@
+name: plan
+
+# Seeds the textlayer and ocr queues from what the fetch task has finished (plan.py). Hourly, and by hand.
+on:
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography "scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk"
+      - run: python plan.py
+        env:
+          SCRAPE_HUB_URL: https://scrape.s1d.me

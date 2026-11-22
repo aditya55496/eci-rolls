@@ -1,1 +1,8 @@
 requests>=2.31
+cryptography>=42
+pymupdf>=1.24
+fonttools>=4.50
+onnxruntime==1.32.0
+opencv-python-headless==4.10.0.84
+numpy==2.3.5
+rapidfuzz==3.14.6
