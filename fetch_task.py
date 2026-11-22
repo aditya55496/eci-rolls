@@ -23,7 +23,17 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", "eci-rolls-up")
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(900, _BUDGET / 4)   # an AC takes ~5-15 min
 MAX_PARTS = int(os.environ.get("ECI_MAX_PARTS", "0"))
+# Some GitHub runner locations get ECI's CDN at 10-100x lower speed than others from their first request (measured 2026-11-22:
+# 4 s per 8 MB PDF on most runners, 10-370 s on 128.85.x). A worker that is slow hands its AC back and stops fetching in
+# this runner job (the marker file), so the dispatcher gives the AC to another runner; this runner can still do OCR.
+SLOW_BPS = float(os.environ.get("ECI_SLOW_BPS", "300000"))
+SLOW_AFTER = 8
+SLOW_MARK = "/tmp/eci-rolls-slow-runner"
 _local = threading.local()
+
+
+class SlowRunner(Exception):
+    pass
 
 
 def session():
@@ -45,9 +55,10 @@ def part_list(hub, roll, ac):
     raise RuntimeError(f"part list failed for {roll} AC {ac}")
 
 
-def get_pdf(hub, roll, ac, part):
+def get_pdf(hub, roll, ac, part, speeds):
     url = E.pdf_url(roll, ac, part)
     for attempt in range(4):
+        t = time.time()
         r = timed_get(hub, session(), url, timeout=180)
         if r is None:
             time.sleep(5 * (attempt + 1))
@@ -63,6 +74,7 @@ def get_pdf(hub, roll, ac, part):
             hub.metric("bad_pdf")
             time.sleep(5)
             continue
+        speeds.append(len(b) / max(0.01, time.time() - t))
         return b, r.headers.get("Last-Modified", "")
     return None, "gave up"
 
@@ -96,14 +108,20 @@ def do_item(hub, item):
     have = stored_already(hub, roll, ac, ids) if (item.get("attempts") or 0) > 1 else set()
     todo = [(rid, p) for rid, p in ids.items() if rid not in have]
     hub.metric("pdfs_skipped_known", len(ids) - len(todo))
-    stored = 0
+    stored, speeds, gave_up, slow = 0, [], [], threading.Event()
 
     def one(rid_p):
+        if slow.is_set():
+            return 0
         rid, p = rid_p
         part = int(p["partNumber"])
-        b, info = get_pdf(hub, roll, ac, part)
+        b, info = get_pdf(hub, roll, ac, part, speeds)
+        if len(speeds) >= SLOW_AFTER and sorted(speeds[-SLOW_AFTER:])[SLOW_AFTER // 2] < SLOW_BPS:
+            slow.set()
         if b is None:
             hub.failure("pdf", rid, f"no PDF ({info})", url=E.pdf_url(roll, ac, part))
+            if info != "404":
+                gave_up.append(rid)
             return 0
         name = E.pdf_name(roll, ac, part)
         up = hub.upload_many([(f"pdf/{roll}/{ac}/{name}", b, "application/pdf")])[0]
@@ -120,6 +138,12 @@ def do_item(hub, item):
             delay = hub.settings.get("delay_ms", 0)
             if delay:
                 time.sleep(delay / 1000)
+    if slow.is_set():
+        med = sorted(speeds[-SLOW_AFTER:])[SLOW_AFTER // 2]
+        hub.metric("slow_runner")
+        raise SlowRunner(f"slow runner: median {med / 1e3:.0f} kB/s over the last {SLOW_AFTER} PDFs; {stored} stored, AC handed back")
+    if gave_up:
+        raise RuntimeError(f"{len(gave_up)} PDFs not fetched (retry later), {stored} stored")
     hub.record(f"{roll}/{ac}", {"roll": roll, "ac": ac, "parts": len(parts), "stored_now": stored, "known_before": len(ids) - len(todo),
                                 "part_numbers": [int(p["partNumber"]) for p in parts]})
     return stored
@@ -127,6 +151,9 @@ def do_item(hub, item):
 
 def main():
     stop = stop_flag()
+    if os.path.exists(SLOW_MARK):          # this runner was too slow for the CDN earlier in this job: leave fetch work to others
+        time.sleep(60)
+        return
     hub = HubClient(PROJECT, job_index=int(os.environ.get("SCRAPE_JOB_INDEX", 0)), total_jobs=int(os.environ.get("SCRAPE_TOTAL_JOBS", 1)))
     try:
         while time.time() < DEADLINE and not stop.is_set():
@@ -140,6 +167,10 @@ def main():
             try:
                 n = do_item(hub, it)
                 hub.complete([it["key"]], "done", fetched=n)
+            except SlowRunner as e:
+                hub.complete([it["key"]], "failed", error=str(e)[:200])
+                open(SLOW_MARK, "w").write(str(e))
+                break
             except Exception as e:  # one bad AC must not stop the worker
                 hub.error()
                 hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:200])

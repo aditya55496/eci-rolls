@@ -24,7 +24,7 @@ serves them only through its captcha form.
     97.13–98.43). 4.5 % of records are flagged, and 99.63 % of unflagged records are right.
   - Speed: about 1.2–1.4 s per page.
   - Every record keeps its `flags` (fields where the engines disagree).
-- **plan.py** (workflow `plan`, hourly) seeds `textlayer` once an AC's 2027 roll is fetched. It seeds `ocr` once the AC's SIR
+- **plan.py** (workflow `plan`, every 20 minutes) seeds `textlayer` once an AC's 2027 roll is fetched. It seeds `ocr` once the AC's SIR
   draft, SIR final and 2027 text are done.
 
 ## Running
