@@ -26,7 +26,6 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
 CPUS = len(os.sched_getaffinity(0))
 WORKERS = max(1, CPUS // 2)       # the pool runs 2 worker processes per 4-CPU runner job: 2 OCR processes each
-HINT_SPAN = 2
 
 
 def do_item(hub, item):
@@ -39,15 +38,13 @@ def do_item(hub, item):
         hint = download(hub, TEXT_PROJECT, [hk], tmp)[hk]
         if not hint:
             raise RuntimeError(f"no 2027 hints for AC {ac} yet")
-        # Only the 2027 records of this part number and its neighbours (a voter rarely moves further): about 4,000 records,
-        # not the whole AC (268,000 for AC 174 = 2.2 GB per OCR process, which ran the runner VMs out of memory). The benchmark's
-        # hints were also limited (parts 1-3 of each AC).
-        hpath, near, nh = os.path.join(tmp, "hints.jsonl"), set(range(part - HINT_SPAN, part + HINT_SPAN + 1)), 0
+        # All 2027 records of the AC (parts are numbered differently in 2027, so a part-number filter loses a third of the
+        # matches). eci_ocr loads them once before it forks, so its processes share them.
+        hpath, nh = os.path.join(tmp, "hints.jsonl"), 0
         with gzip.open(hint, "rt", encoding="utf-8") as f, open(hpath, "w", encoding="utf-8") as o:
             for line in f:
-                if int(json.loads(line).get("part") or 0) in near:
-                    o.write(line)
-                    nh += 1
+                o.write(line)
+                nh += 1
         pdfs = [got[keys[r]] for r in OCR_ROLLS if keys.get(r) and got.get(keys[r])]
         missing = [r for r in OCR_ROLLS if keys.get(r) and not got.get(keys[r])]
         if not pdfs:

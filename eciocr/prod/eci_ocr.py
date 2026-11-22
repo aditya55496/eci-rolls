@@ -322,11 +322,14 @@ _E = None
 _OPT = {}
 
 
+_HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
+
+
 def _init(crnn_dirs, tessdata, crnn_sort, hints_path, tmp, ort_threads=1, stage1=0, confvote=0.6):
     global _E, _OPT
     cv2.setNumThreads(1)
     _E = Engines(crnn_dirs, tessdata, ort_threads, crnn_sort)
-    _OPT = dict(tmp=tmp, hints=load_hints(hints_path) if hints_path else {}, stage1=stage1)
+    _OPT = dict(tmp=tmp, hints=_HINTS if _HINTS is not None else (load_hints(hints_path) if hints_path else {}), stage1=stage1)
     ensemble2.CONFW = confvote if confvote >= 0 else None
 
 
@@ -512,6 +515,9 @@ def main():
         n = page_count(pdf); kind = pdf_kind(pdf)
         meta[pdf] = dict(pages=n, kind=kind, **pdf_meta(pdf))
         tasks += [(pdf, p, kind) for p in parse_pages(a.pages, n)]
+    global _HINTS
+    if a.hint_2027:
+        _HINTS = load_hints(a.hint_2027)
     import multiprocessing as mp
     ctx = mp.get_context('fork')
     by_pdf = collections.defaultdict(list)
