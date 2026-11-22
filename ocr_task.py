@@ -53,8 +53,9 @@ def do_item(hub, item):
         t = time.time()
         r = subprocess.run(cmd, timeout=3600, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         if r.returncode:
-            tail = " | ".join(l.strip() for l in r.stdout.strip().splitlines()[-4:])
-            raise RuntimeError(f"eci_ocr exit {r.returncode}: {tail}"[-300:])
+            lines = [l.strip() for l in r.stdout.splitlines() if l.strip() and "_discovery.cc" not in l and "onnxruntime" not in l.lower()]
+            tb = [l for l in lines if "Error" in l or "error" in l or "Killed" in l or "Traceback" in l]
+            raise RuntimeError(f"eci_ocr exit {r.returncode}: " + " | ".join((tb[-3:] or lines[-4:]))[-350:])
         secs = time.time() - t
         summ = json.load(open(out + ".summary.json"))
         hub.upload_many([(f"ocr/{ac}/{part}{tag}.jsonl.gz", gzip.compress(open(out, "rb").read(), mtime=0), "application/gzip"),
