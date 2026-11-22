@@ -35,6 +35,9 @@ def load_hints():
 
 LINE_OF = {'name': 'line0', 'relation_label': 'line1', 'relation_name': 'line1', 'house_no': 'line2', 'age': 'line3', 'gender': 'line3'}
 CONFW = None  # set by --confvote
+# 2026-11-22: an EPIC read by only one engine (CRNNs do not know prefixes such as UWY, DQH outside the training ACs) is
+# confirmed when it is in the 2027 roll and that record's name or relative's name is read by an engine. ECI_EPIC_CONFIRM=0 = off.
+EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
@@ -56,6 +59,9 @@ def decide(cands, hint, pix, names=None, confs=None):
                 for p in PREF.get(f, []):
                     j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                     if j is not None and vals[j]: out[f] = vals[j]; break
+            if f == 'epic' and EPIC_CONFIRM and hint and visual(hint.get('epic', '')) == visual(out[f]) and any(
+                    hint.get(g) and visual(hint[g]) in {visual(c[g]) for c in cands} for g in ('name', 'relation_name')):
+                continue  # the EPIC is in the 2027 roll and that voter's name is read by an engine: confirmed
             if f in CORE and (n < 2 or not valid(f, out[f])): flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):

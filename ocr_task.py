@@ -24,6 +24,10 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", OCR_PROJECT)
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 min; keep 10 min spare
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
+try:
+    CODE = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
+except OSError:
+    CODE = ""
 CPUS = len(os.sched_getaffinity(0))
 WORKERS = max(1, CPUS // 2)       # the pool runs 2 worker processes per 4-CPU runner job: 2 OCR processes each
 
@@ -66,7 +70,7 @@ def do_item(hub, item):
                          (f"ocr/{ac}/{part}{tag}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
     hub.metric("voter_pages", summ.get("voter_pages", 0))
     hub.metric("ocr_s", round(secs, 1))
-    rec = {"ac": ac, "part": part, "tag": tag, "hints_loaded": nh, "records": summ.get("records"), "voter_pages": summ.get("voter_pages"), "flag_rate": summ.get("flag_rate"),
+    rec = {"ac": ac, "part": part, "tag": tag, "code": CODE, "hints_loaded": nh, "records": summ.get("records"), "voter_pages": summ.get("voter_pages"), "flag_rate": summ.get("flag_rate"),
            "s_per_voter_page": summ.get("s_per_voter_page_wall"), "missing_rolls": missing,
            "pdfs": [{k: d.get(k) for k in ("pdf", "kind", "records", "flag_rate", "hint_matched", "serial_check")} for d in summ.get("pdfs", [])]}
     hub.record(f"{ac}-{part}{tag}", rec)
