@@ -586,7 +586,7 @@ def main():
                 global _EPIC_IDX
                 if _EPIC_IDX is None:
                     _EPIC_IDX = epicfix.index(_HINTS.values())
-                epic_fixed = epicfix.fix(recs, _EPIC_IDX)
+                epic_fixed = epicfix.fix(recs, _EPIC_IDX) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
             else:
                 epic_fixed = 0
             m = meta[pdf]

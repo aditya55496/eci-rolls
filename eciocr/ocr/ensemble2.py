@@ -62,9 +62,12 @@ def decide(cands, hint, pix, names=None, confs=None):
                 for p in PREF.get(f, []):
                     j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                     if j is not None and vals[j]: out[f] = vals[j]; break
-            if f == 'epic' and EPIC_CONFIRM and hint and visual(hint.get('epic', '')) == visual(out[f]) and any(
-                    hint.get(g) and visual(hint[g]) in {visual(c[g]) for c in cands} for g in ('name', 'relation_name')):
-                continue  # the EPIC is in the 2027 roll and that voter's name is read by an engine: confirmed
+            if f == 'epic' and EPIC_CONFIRM and hint and hint.get('epic') and visual(hint['epic']) in vis:
+                # an engine read exactly this voter's EPIC from the 2027 roll (that is how the record was found): take it, even
+                # when more engines agree on another prefix (CRNNs turn prefixes they never saw into training prefixes;
+                # flag check 2026-11-23: 14 of 28 unflagged EPIC errors in 500 flagged records were of this kind)
+                out[f] = hint['epic']
+                continue
             if f in CORE and (n < 2 or not valid(f, out[f])): flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):
