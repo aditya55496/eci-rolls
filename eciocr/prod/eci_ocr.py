@@ -14,7 +14,7 @@ Pipeline per page (one page = one task in a process pool; ORT and Tesseract use 
   6. per PDF: SIR serial numbers must run 1..N without gaps; breaks are flagged
 No network calls. Uncertain fields keep the engine value chosen by decide() and are listed in 'flags'.
 """
-import argparse, collections, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, collections, hashlib, json, os, pickle, re, shutil, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BENCH = os.path.dirname(HERE)
@@ -148,6 +148,9 @@ class Engines:
         except OSError:
             self.tapi = None
         self.names = [c[0] for c in self.crnn] + ['tess']
+        # reading cache (2026-11-22): the SIR final roll repeats ~94 % of the SIR draft's crops pixel for pixel; readings
+        # of a crop are reused by (engine, crop hash). cache_in: read-only (loaded before the fork); cache_out: new readings.
+        self.cache_in, self.cache_out, self.collect = {}, {}, False
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
@@ -225,12 +228,16 @@ class Engines:
         for b, segs in enumerate(segs_list):
             for k in sorted(segs):  # same order as the bench (lines.jsonl 'fields' = sorted keys)
                 keys.append((b, k)); ims.append(segs[k])
+        use_cache = bool(self.cache_in) or self.collect
+        hs = [hashlib.md5(im.tobytes() + str(im.shape).encode()).hexdigest() for im in ims] if use_cache else None
         for ci, eng in enumerate(self.crnn):
             if crnn_idx is not None and ci not in crnn_idx: continue
-            outs = []
+            outs = [self.cache_in.get((eng[0], hs[i])) for i in range(len(ims))] if use_cache else [None] * len(ims)
             for j in range(0, n, 32):  # bench: 32 boxes per batch (BOXB)
-                sel = [i for i, (b, _) in enumerate(keys) if j <= b < j + 32]
-                outs += self.crnn_read(eng, [ims[i] for i in sel])
+                sel = [i for i, (b, _) in enumerate(keys) if j <= b < j + 32 and outs[i] is None]
+                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel])):
+                    outs[i] = r
+                    if self.collect: self.cache_out[(eng[0], hs[i])] = r
             for (b, k), (txt, c) in zip(keys, outs):
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
@@ -245,7 +252,16 @@ class Engines:
         for b in range(n): res[b]['tess'] = ({}, {})
         for g, (lang, psm, wl) in groups.items():
             if not gk[g] or (tess_groups is not None and g not in tess_groups): continue
-            txts = self.tess_many([self.tess_prep(segs_list[b][k]) for b, k in gk[g]], lang, psm, wl, tmp)
+            if use_cache:
+                kidx = {bk: i for i, bk in enumerate(keys)}
+                ck = [('tess_' + g, hs[kidx[bk]]) for bk in gk[g]]
+                txts = [self.cache_in.get(c) for c in ck]
+                todo = [i for i, t_ in enumerate(txts) if t_ is None]
+                for i, t_ in zip(todo, self.tess_many([self.tess_prep(segs_list[gk[g][i][0]][gk[g][i][1]]) for i in todo], lang, psm, wl, tmp)):
+                    txts[i] = t_
+                    if self.collect: self.cache_out[ck[i]] = t_
+            else:
+                txts = self.tess_many([self.tess_prep(segs_list[b][k]) for b, k in gk[g]], lang, psm, wl, tmp)
             for (b, k), txt in zip(gk[g], txts): res[b]['tess'][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
         return res
@@ -322,6 +338,7 @@ _E = None
 _OPT = {}
 
 
+_CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -329,6 +346,7 @@ def _init(crnn_dirs, tessdata, crnn_sort, hints_path, tmp, ort_threads=1, stage1
     global _E, _OPT
     cv2.setNumThreads(1)
     _E = Engines(crnn_dirs, tessdata, ort_threads, crnn_sort)
+    _E.cache_in, _E.collect = _CACHE_IN, _COLLECT
     _OPT = dict(tmp=tmp, hints=_HINTS if _HINTS is not None else (load_hints(hints_path) if hints_path else {}), stage1=stage1)
     ensemble2.CONFW = confvote if confvote >= 0 else None
 
@@ -415,7 +433,10 @@ def process_page(task):
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
     for rec in recs: rec['t_box_s'] = round(tm['total'] / len(recs), 3)
-    return dict(pdf=pdf, page=pno, boxes=len(boxes), kind=kind, records=recs, timing=tm, size=gray.shape[::-1])
+    out = dict(pdf=pdf, page=pno, boxes=len(boxes), kind=kind, records=recs, timing=tm, size=gray.shape[::-1])
+    if _E.collect:
+        out['cache'] = _E.cache_out; _E.cache_out = {}
+    return out
 
 
 # ---------------------------------------------------------------- per-PDF checks
@@ -500,6 +521,8 @@ def main():
                     help='CRNN batches exactly as the bench (32 boxes, unsorted): raw text equal to bench 99.95%% but ~30%% slower. '
                          'Default: crops sorted by width, 64 per batch (engines.py SORTW=1)')
     ap.add_argument('--quiet', action='store_true')
+    ap.add_argument('--cache-in', help='pickle of readings by (engine, crop hash) from an earlier run (e.g. the SIR draft of the same part)')
+    ap.add_argument('--cache-out', help='write the readings of this run as a pickle (for --cache-in of a later run)')
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
@@ -515,7 +538,11 @@ def main():
         n = page_count(pdf); kind = pdf_kind(pdf)
         meta[pdf] = dict(pages=n, kind=kind, **pdf_meta(pdf))
         tasks += [(pdf, p, kind) for p in parse_pages(a.pages, n)]
-    global _HINTS
+    global _HINTS, _CACHE_IN, _COLLECT
+    if a.cache_in:
+        _CACHE_IN = pickle.load(open(a.cache_in, 'rb'))
+    _COLLECT = bool(a.cache_out)
+    cache_new = {}
     if a.hint_2027:
         _HINTS = load_hints(a.hint_2027)
     import multiprocessing as mp
@@ -523,15 +550,18 @@ def main():
     by_pdf = collections.defaultdict(list)
     with ctx.Pool(a.workers, _init, (crnn, a.tessdata, not a.crnn_bench_batching, a.hint_2027, tmp, a.ort_threads, a.stage1, a.confvote)) as pool:
         for i, r in enumerate(pool.imap(process_page, tasks, chunksize=1)):
+            cache_new.update(r.pop('cache', {}))
             by_pdf[r['pdf']].append(r)
             if not a.quiet:
                 print(f"[{time.time() - T0:7.1f}s] {os.path.basename(r['pdf'])} p{r['page'] + 1}: "
                       f"{r['boxes']} boxes {r.get('skip', '')} {r['timing'].get('total', r['timing'].get('extract'))}s", file=sys.stderr, flush=True)
+    if a.cache_out:
+        pickle.dump(cache_new, open(a.cache_out, 'wb'), protocol=pickle.HIGHEST_PROTOCOL)
     wall = time.time() - T0
     import resource
     peak_mb = round(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / 1024)
     summ = dict(peak_worker_rss_mb=peak_mb, inputs=a.inputs, crnn=crnn, engines=['crnn_' + os.path.basename(os.path.normpath(d)) for d in crnn] + ['tess'],
-                hint_2027=a.hint_2027, workers=a.workers, ort_threads=a.ort_threads, crnn_sorted=not a.crnn_bench_batching, wall_s=round(wall, 1), pdfs=[])
+                hint_2027=a.hint_2027, cache_in=len(_CACHE_IN), cache_out=len(cache_new), workers=a.workers, ort_threads=a.ort_threads, crnn_sorted=not a.crnn_bench_batching, wall_s=round(wall, 1), pdfs=[])
     nrec = nflag = 0; fc = collections.Counter()
     with open(a.out, 'w', encoding='utf-8') as out:
         for pdf in a.inputs:

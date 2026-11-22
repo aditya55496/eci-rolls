@@ -53,19 +53,39 @@ def do_item(hub, item):
         missing = [r for r in OCR_ROLLS if keys.get(r) and not got.get(keys[r])]
         if not pdfs:
             raise RuntimeError("none of the 4 PDFs is in the bucket")
+        # One eci_ocr run per PDF, in roll order (SIR draft before SIR final): each run hands its readings to the next as a
+        # cache (--cache-out / --cache-in). The SIR final repeats ~94 % of the draft's crops pixel for pixel; measured on
+        # AC 174 part 1: final roll 44.2 s -> 10.0 s, output identical (0 of 844 records differ), gold accuracy unchanged.
         out = os.path.join(tmp, "out.jsonl")
-        cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), *pdfs, "--out", out, "--hint-2027", hpath,
-               "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet"]
-        for m in MODELS:
-            cmd += ["--crnn", m]
         t = time.time()
-        r = subprocess.run(cmd, timeout=3600, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        if r.returncode:
-            lines = [l.strip() for l in r.stdout.splitlines() if l.strip() and "_discovery.cc" not in l and "onnxruntime" not in l.lower()]
-            tb = [l for l in lines if "Error" in l or "error" in l or "Killed" in l or "Traceback" in l]
-            raise RuntimeError(f"eci_ocr exit {r.returncode}: " + " | ".join((tb[-3:] or lines[-4:]))[-350:])
+        summs, prev = [], None
+        with open(out, "w", encoding="utf-8") as allout:
+            for i, pdf in enumerate(pdfs):
+                o1 = os.path.join(tmp, f"out{i}.jsonl")
+                cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), pdf, "--out", o1, "--hint-2027", hpath,
+                       "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet"]
+                for m in MODELS:
+                    cmd += ["--crnn", m]
+                if prev:
+                    cmd += ["--cache-in", prev]
+                if i + 1 < len(pdfs):
+                    prev = os.path.join(tmp, f"cache{i}.pkl")
+                    cmd += ["--cache-out", prev]
+                r = subprocess.run(cmd, timeout=3600, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+                if r.returncode:
+                    lines = [l.strip() for l in r.stdout.splitlines() if l.strip() and "_discovery.cc" not in l and "onnxruntime" not in l.lower()]
+                    tb = [l for l in lines if "Error" in l or "error" in l or "Killed" in l or "Traceback" in l]
+                    raise RuntimeError(f"eci_ocr exit {r.returncode}: " + " | ".join((tb[-3:] or lines[-4:]))[-350:])
+                with open(o1, encoding="utf-8") as f:
+                    allout.write(f.read())
+                summs.append(json.load(open(o1 + ".summary.json")))
         secs = time.time() - t
-        summ = json.load(open(out + ".summary.json"))
+        nrec = sum(x["records"] for x in summs)
+        vp = sum(x["voter_pages"] for x in summs)
+        nfl = sum(d["flagged_records"] for x in summs for d in x["pdfs"])
+        summ = dict(summs[0], inputs=[i for x in summs for i in x["inputs"]], pdfs=[d for x in summs for d in x["pdfs"]], records=nrec,
+                    voter_pages=vp, wall_s=round(secs, 1), s_per_voter_page_wall=round(secs / max(1, vp), 2),
+                    flag_rate=round(nfl / max(1, nrec), 4), runs=[{k: x.get(k) for k in ("wall_s", "cache_in", "cache_out", "voter_pages")} for x in summs])
         hub.upload_many([(f"ocr/{ac}/{part}{tag}.jsonl.gz", gzip.compress(open(out, "rb").read(), mtime=0), "application/gzip"),
                          (f"ocr/{ac}/{part}{tag}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
     hub.metric("voter_pages", summ.get("voter_pages", 0))

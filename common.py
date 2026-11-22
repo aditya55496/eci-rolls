@@ -18,7 +18,7 @@ ROLLS = {
     "2026-supp-3": "S24-2026-SUPP-3",
     "2027-ssr-draft": "S24-2027-DR",
 }
-OCR_ROLLS = ["2026-sir-draft", "2026-sir-final", "2026-supp-2", "2026-supp-3"]
+OCR_ROLLS = ["2026-sir-draft", "2026-sir-final", "2024-ge-final"]   # order matters: the draft's readings are a cache for the final
 
 
 def pdf_key(roll, ac, name):
