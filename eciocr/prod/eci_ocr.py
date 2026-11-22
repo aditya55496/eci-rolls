@@ -541,11 +541,18 @@ def main():
             for r in recs:  # a page without a heading continues the previous section
                 if r['section']: sec = r['section']
                 else: r['section'] = sec
+            # A "box" found on a page that is not a voter page (cover, map, photo page) reads as garbage: no valid EPIC and most
+            # fields flagged. It is kept in the output, marked, and left out of the counts and the serial check (2026-11-22;
+            # 0 of 2,578 records of 3 checked voter PDFs marked, 6 page-3 boxes marked).
+            for r in recs:
+                if not ensemble2.valid('epic', r['epic'] or '') and len(r['flags']) >= 6:
+                    r['not_voter_box'] = True
+            allrecs, recs = recs, [r for r in recs if not r.get('not_voter_box')]
             m = meta[pdf]
             kind = m['kind'] or (collections.Counter(p['kind'] for p in pages if p.get('kind')).most_common(1) or [(None,)])[0][0]
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
-                        records=len(recs))
+                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs))
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
@@ -560,7 +567,7 @@ def main():
             info['flags_by_field'] = dict(ff.most_common())
             info['hint_matched'] = sum(r['hint_2027'] for r in recs)
             info['sections'] = list(dict.fromkeys(r['section'] for r in recs if r['section']))
-            for r in recs:
+            for r in allrecs:
                 r = dict(source=os.path.basename(pdf), **{k: v for k, v in m.items() if k not in ('pages', 'kind')}, **r)
                 out.write(json.dumps(r, ensure_ascii=False) + '\n')
             nrec += len(recs); nflag += info['flagged_records']; fc.update(ff)
