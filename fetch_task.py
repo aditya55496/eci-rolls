@@ -36,6 +36,19 @@ class SlowRunner(Exception):
     pass
 
 
+def leave_pool():
+    """A slow runner ends its pool worker (SIGTERM to the parent: the runner's own "finish" path), so the hub's fetch slot is
+    free for a fast runner. Exiting alone is not enough: the hub would hand this runner a fetch slot again every minute
+    (seen 2026-11-22: 20 of 32 slots held by slow runners). The worker runs only this family's work."""
+    import signal
+    print("slow runner for voters.eci.gov.in: ending this pool worker so a faster runner gets the slot", flush=True)
+    try:
+        os.kill(os.getppid(), signal.SIGTERM)
+    except OSError:
+        pass
+    time.sleep(5)
+
+
 def session():
     if not hasattr(_local, "s"):
         _local.s = requests.Session()
@@ -151,8 +164,8 @@ def do_item(hub, item):
 
 def main():
     stop = stop_flag()
-    if os.path.exists(SLOW_MARK):          # this runner was too slow for the CDN earlier in this job: leave fetch work to others
-        time.sleep(60)
+    if os.path.exists(SLOW_MARK):          # this runner was too slow for the CDN earlier in this job
+        leave_pool()
         return
     hub = HubClient(PROJECT, job_index=int(os.environ.get("SCRAPE_JOB_INDEX", 0)), total_jobs=int(os.environ.get("SCRAPE_TOTAL_JOBS", 1)))
     try:
@@ -170,7 +183,9 @@ def main():
             except SlowRunner as e:
                 hub.complete([it["key"]], "failed", error=str(e)[:200])
                 open(SLOW_MARK, "w").write(str(e))
-                break
+                hub.close("finished", "slow runner: leaving the pool")
+                leave_pool()
+                return
             except Exception as e:  # one bad AC must not stop the worker
                 hub.error()
                 hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:200])

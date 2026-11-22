@@ -2,8 +2,8 @@
 
 Electoral rolls of Uttar Pradesh (ECI, voters.eci.gov.in), Hindi, all 403 assembly constituencies (ACs). Public records.
 
-Rolls in scope: SIR draft roll 2026, SIR final roll 2026, SSR draft roll 2027. Supplement-2 and -3 (2026) come later. The portal
-serves them only through its captcha form.
+Rolls in scope: SIR draft roll 2026, SIR final roll 2026, SSR draft roll 2027. Supplement-2 and -3 (2026) are skipped (owner
+2026-11-22). The portal serves them only through its captcha form.
 
 ## Projects and tasks
 
