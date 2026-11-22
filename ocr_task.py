@@ -51,7 +51,10 @@ def do_item(hub, item):
         for m in MODELS:
             cmd += ["--crnn", m]
         t = time.time()
-        subprocess.run(cmd, check=True, timeout=3600)
+        r = subprocess.run(cmd, timeout=3600, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+        if r.returncode:
+            tail = " | ".join(l.strip() for l in r.stdout.strip().splitlines()[-4:])
+            raise RuntimeError(f"eci_ocr exit {r.returncode}: {tail}"[-300:])
         secs = time.time() - t
         summ = json.load(open(out + ".summary.json"))
         hub.upload_many([(f"ocr/{ac}/{part}{tag}.jsonl.gz", gzip.compress(open(out, "rb").read(), mtime=0), "application/gzip"),
@@ -84,7 +87,7 @@ def main():
                 hub.complete([it["key"]], "done", fetched=n)
             except Exception as e:  # one bad part must not stop the worker
                 hub.error()
-                hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:200])
+                hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:400])
         hub.close("failed", "stopped by signal") if stop.is_set() else hub.close()
     except BaseException as e:
         hub.close("failed", f"{type(e).__name__}: {e}"[:200])
