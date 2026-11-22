@@ -3,6 +3,7 @@
 Scale (owner 2026-11-22: "use 300 github runners"): fetch 80 workers x 4 threads (no pushback from ECI at 32; owner: more fetch slots), textlayer 12, ocr 256.
 
 eci-rolls-up       task fetch      one item per roll and AC (3 rolls x 403 ACs): every part PDF once into the bucket
+eci-rolls-up-ger   task fetch-ger  one item per AC (403): General Election roll 2024 PDFs through the captcha form
 eci-rolls-up-2027  task textlayer  one item per AC, seeded by plan.py: 2027 SSR draft records from the PDF text layer (no OCR)
 eci-rolls-up-ocr   task ocr        one item per AC and part, seeded by plan.py: OCR of the SIR draft and final 2026 rolls
 Supplement-2 and -3 (2026) are skipped (owner 2026-11-22); the portal serves them only through its captcha form.
@@ -26,6 +27,14 @@ PROJECTS = [
         # and the planner can start that AC's OCR early, instead of every AC waiting for the end of the fetch
         "items": [{"key": f"{roll}/{ac}", "partition_id": ac * 10 + i, "payload": {"roll": roll, "ac": ac, "expected": 350}}
                   for i, roll in enumerate(FETCH_ROLLS) for ac in (ONLY or UP_ACS)],
+    },
+    {
+        # General Election 2024 roll (owner 2026-11-22): only through the portal's captcha form; offline captcha model in captcha/
+        "name": f"{FAMILY}-up-ger", "title": "UP General Election roll 2024 PDFs (captcha form)", "task": "fetch-ger",
+        "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "PDF", "threads": 8, "max_workers": 16,
+        "items": [{"key": f"2024-ge-final/{ac}", "partition_id": ac, "payload": {"roll": "2024-ge-final", "ac": ac, "expected": 420}}
+                  for ac in (ONLY or UP_ACS)],
     },
     {
         "name": f"{FAMILY}-up-2027", "title": "UP SSR draft roll 2027 from the PDF text layer", "task": "textlayer",

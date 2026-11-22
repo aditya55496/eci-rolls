@@ -14,6 +14,9 @@ from scrape_hub_client import HubClient, list_queue, seed_queue
 import eci_api as E
 from common import FETCH_PROJECT, OCR_PROJECT, TEXT_PROJECT, pdf_key
 
+GER_PROJECT = "eci-rolls-up-ger"
+GER_OCR = False      # General Election 2024 OCR: off until the model is checked on that print (owner 2026-11-22: OCR it too)
+
 
 def parts_of(hub, s, roll, ac):
     k = f"{FETCH_PROJECT}/parts/{roll}/{ac}.json"

@@ -38,7 +38,9 @@ def do_item(hub, item):
     keys, tag = p["keys"], p.get("tag", "")         # tag: "" for the SIR rolls; "-supp" when the supplements are read later
     with tempfile.TemporaryDirectory() as tmp:
         hk = f"{TEXT_PROJECT}/hints/{ac}.jsonl.gz"
-        got = download(hub, FETCH_PROJECT, [keys[r] for r in OCR_ROLLS if keys.get(r)], tmp)
+        got = {}
+        for proj in {keys[r].split("/", 1)[0] for r in OCR_ROLLS if keys.get(r)}:   # each PDF through the project that stored it
+            got.update(download(hub, proj, [keys[r] for r in OCR_ROLLS if keys.get(r) and keys[r].startswith(proj + "/")], tmp))
         hint = download(hub, TEXT_PROJECT, [hk], tmp)[hk]
         if not hint:
             raise RuntimeError(f"no 2027 hints for AC {ac} yet")
@@ -49,7 +51,8 @@ def do_item(hub, item):
             for line in f:
                 o.write(line)
                 nh += 1
-        pdfs = [got[keys[r]] for r in OCR_ROLLS if keys.get(r) and got.get(keys[r])]
+        runs = [(r, got[keys[r]]) for r in OCR_ROLLS if keys.get(r) and got.get(keys[r])]
+        pdfs = [p_ for _, p_ in runs]
         missing = [r for r in OCR_ROLLS if keys.get(r) and not got.get(keys[r])]
         if not pdfs:
             raise RuntimeError("none of the 4 PDFs is in the bucket")
@@ -60,10 +63,11 @@ def do_item(hub, item):
         t = time.time()
         summs, prev = [], None
         with open(out, "w", encoding="utf-8") as allout:
-            for i, pdf in enumerate(pdfs):
+            for i, (roll, pdf) in enumerate(runs):
                 o1 = os.path.join(tmp, f"out{i}.jsonl")
                 cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), pdf, "--out", o1, "--hint-2027", hpath,
-                       "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet"]
+                       "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet",
+                       "--roll-year", roll[:4]]
                 for m in MODELS:
                     cmd += ["--crnn", m]
                 if prev:
