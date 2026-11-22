@@ -24,6 +24,9 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", OCR_PROJECT)
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 min; keep 10 min spare
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
+# General Election 2024 print: the same models fine-tuned on it (g5; held-out AC 22: 77.8 -> 87.7 % of records right, flags
+# 58 -> 42 %). The SIR rolls keep the models above (hand check of 402 boxes from 112 ACs: no clear gain from g5).
+MODELS_BY_ROLL = {"2024-ge-final": [os.path.join(HERE, "models", m) for m in ("c11g5q", "c9g5q", "c4g5q", "c3g5q")]}
 try:
     CODE = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
 except OSError:
@@ -68,7 +71,7 @@ def do_item(hub, item):
                 cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), pdf, "--out", o1, "--hint-2027", hpath,
                        "--stage1", "1", "--workers", str(WORKERS), "--ort-threads", "1", "--quiet",
                        "--roll-year", roll[:4]]
-                for m in MODELS:
+                for m in MODELS_BY_ROLL.get(roll, MODELS):
                     cmd += ["--crnn", m]
                 if prev:
                     cmd += ["--cache-in", prev]
