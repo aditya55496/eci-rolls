@@ -136,7 +136,7 @@ def do_item(hub, item):
             hub.metric("pdf_bytes", len(b))
             return n, ""
 
-        threads = max(1, min(16, int(hub.settings.get("threads", 8))))
+        threads = int(os.environ.get("ECI_GER_THREADS") or 0) or max(1, min(16, int(hub.settings.get("threads", 8))))
         errs = []
         with cf.ThreadPoolExecutor(threads) as ex:
             for n, err in ex.map(one, ids):

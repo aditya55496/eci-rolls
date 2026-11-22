@@ -9,5 +9,5 @@ for p in PROJECTS:
     register_project(p["name"], title=p["title"], unit_label=p["unit_label"], record_label=p["record_label"],
                      expected_units=len(p["items"]), expected_records=sum(i["payload"].get("expected", 0) for i in p["items"]))
     set_pool(p["name"], FAMILY, p["task"], target=p["target"], env=p["env"], probe=p["probe"], threads=p["threads"],
-             max_workers=p["max_workers"], **({"proxy": p["proxy"]} if p.get("proxy") else {}))
+             max_workers=p["max_workers"], **{k: p[k] for k in ("proxy", "geo") if p.get(k)})
     print(p["name"], "queue:", seed_queue(p["name"], p["items"]) if p["items"] else "seeded by plan.py")

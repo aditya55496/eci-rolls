@@ -33,8 +33,10 @@ PROJECTS = [
         "name": f"{FAMILY}-up-ger", "title": "UP General Election roll 2024 PDFs (captcha form)", "task": "fetch-ger",
         # the file server gateway-vpd.eci.gov.in answers only from India (checked 2026-11-22: timeouts from US/SG, no DNS from DE):
         # the hub's Mumbai proxies, one per worker
-        "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None, "proxy": "IN",
-        "unit_label": "AC", "record_label": "PDF", "threads": 8, "max_workers": 8,
+        # and the pool server dev-vps-3 (Mumbai, owner 2026-11-22: "use this server"; geo "IN"), whose workers set larger
+        # chunks and more threads in their own environment (ECI_GER_CHUNK, ECI_GER_THREADS): one captcha per AC there
+        "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None, "proxy": "IN", "geo": "IN",
+        "unit_label": "AC", "record_label": "PDF", "threads": 8, "max_workers": 12,
         "items": [{"key": f"2024-ge-final/{ac}", "partition_id": ac, "payload": {"roll": "2024-ge-final", "ac": ac, "expected": 420}}
                   for ac in (ONLY or UP_ACS)],
     },
