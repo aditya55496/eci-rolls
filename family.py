@@ -1,6 +1,6 @@
 """Projects of the eci-rolls family: the 5 UP electoral rolls in scope (owner 2026-11-22), Hindi, all 403 assembly constituencies.
 
-Scale (owner 2026-11-22: "use 300 github runners"): fetch 48 workers x 4 threads (no pushback from ECI at 32), textlayer 12, ocr 256.
+Scale (owner 2026-11-22: "use 300 github runners"): fetch 80 workers x 4 threads (no pushback from ECI at 32; owner: more fetch slots), textlayer 12, ocr 256.
 
 eci-rolls-up       task fetch      one item per roll and AC (3 rolls x 403 ACs): every part PDF once into the bucket
 eci-rolls-up-2027  task textlayer  one item per AC, seeded by plan.py: 2027 SSR draft records from the PDF text layer (no OCR)
@@ -21,7 +21,7 @@ PROJECTS = [
     {
         "name": f"{FAMILY}-up", "title": "UP electoral roll PDFs (SIR draft + final 2026, SSR draft 2027)", "task": "fetch",
         "target": "voters.eci.gov.in", "env": {}, "probe": f"{FAMILY}:voters.eci.gov.in",
-        "unit_label": "roll x AC", "record_label": "PDF", "threads": 4, "max_workers": 48,
+        "unit_label": "roll x AC", "record_label": "PDF", "threads": 4, "max_workers": 80,
         # partition_id = AC x 10 + roll: the hub hands items out in partition order, so all 3 rolls of an AC finish together
         # and the planner can start that AC's OCR early, instead of every AC waiting for the end of the fetch
         "items": [{"key": f"{roll}/{ac}", "partition_id": ac * 10 + i, "payload": {"roll": roll, "ac": ac, "expected": 350}}
