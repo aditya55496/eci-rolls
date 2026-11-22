@@ -42,8 +42,8 @@ def download(hub, target, keys, dest, session=None):
     """Download bucket objects of project `target` through the hub's short-lived links. Returns {key: local path or None}."""
     s = session or requests.Session()
     urls = {}
-    for i in range(0, len(keys), 200):
-        urls.update(hub.read_urls(target, keys[i:i + 200]))
+    for i in range(0, len(keys), 100):
+        urls.update(hub.read_urls(target, keys[i:i + 100]))
     out = {}
     for k in keys:
         path = os.path.join(dest, k.replace("/", "__"))

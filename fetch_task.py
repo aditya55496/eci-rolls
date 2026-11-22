@@ -72,8 +72,8 @@ def stored_already(hub, roll, ac, ids):
     keys = {f"{PROJECT}/pdf/{roll}/{ac}/{E.pdf_name(roll, ac, ids[rid]['partNumber'])}": rid for rid in ids}
     urls = {}
     ks = list(keys)
-    for i in range(0, len(ks), 200):
-        urls.update(hub.read_urls(PROJECT, ks[i:i + 200]))
+    for i in range(0, len(ks), 100):
+        urls.update(hub.read_urls(PROJECT, ks[i:i + 100]))
     s = requests.Session()
     have = set()
     for k, rid in keys.items():
@@ -93,7 +93,7 @@ def do_item(hub, item):
     hub.upload_many([(f"parts/{roll}/{ac}.json", json.dumps({"roll": roll, "ac": ac, "fetched": E.now(), "parts": parts},
                                                            ensure_ascii=False).encode(), "application/json")])
     ids = {f"{roll}/{ac}/{int(p['partNumber'])}": p for p in parts}
-    have = stored_already(hub, roll, ac, ids) if item.get("attempts") else set()
+    have = stored_already(hub, roll, ac, ids) if (item.get("attempts") or 0) > 1 else set()
     todo = [(rid, p) for rid, p in ids.items() if rid not in have]
     hub.metric("pdfs_skipped_known", len(ids) - len(todo))
     stored = 0
