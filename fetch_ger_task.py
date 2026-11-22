@@ -15,6 +15,7 @@ import concurrent.futures as cf
 import hashlib
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -56,7 +57,7 @@ def part_list(hub, roll, ac):
 
 
 def file_ids(hub, roll, ac, district, parts):
-    """One captcha (solved offline, up to 5 guesses) -> {part: file id}."""
+    """One captcha (solved offline, up to 5 guesses) -> file ids (one per part the portal serves; sometimes fewer than asked)."""
     for attempt in range(4):
         wait = _last_captcha[0] + CAPTCHA_GAP_S - time.time()
         if wait > 0:
@@ -75,10 +76,10 @@ def file_ids(hub, roll, ac, district, parts):
                 continue
             if g.status_code == 200 and g.json().get("payload"):
                 ids = g.json()["payload"]
-                if len(ids) != len(parts):
-                    raise RuntimeError(f"generate gave {len(ids)} ids for {len(parts)} parts")
                 hub.metric("captcha_ok")
-                return dict(zip(parts, ids))
+                if len(ids) != len(parts):
+                    hub.metric("generate_short", len(parts) - len(ids))
+                return ids                  # the part of each file comes from its file name (refId), not from the order
             if g.status_code == 400 and "aptcha" in g.text:
                 hub.metric("captcha_wrong_guess")
                 continue
@@ -111,33 +112,50 @@ def do_item(hub, item):
     todo = sorted(byno)
     if (item.get("attempts") or 0) > 1:                     # retry: skip parts already in the bucket
         todo = [n for n in todo if not stored(hub, roll, ac, n)]
-    stored_n, rounds, why = 0, 0, {}
+    stored_n, rounds, why, absent = 0, 0, {}, {}
+    part_re = re.compile(r"-HIN-(\d+)-WI\.pdf$")
     while todo and rounds < MAX_ROUNDS and time.time() < DEADLINE:
         rounds += 1
         chunk, todo = todo[:CHUNK], todo[CHUNK:]
         ids = file_ids(hub, roll, ac, district, chunk)
+        got = set()
 
-        def one(n):
-            b, name, err = get_file(hub, ids[n])
+        def one(fid):
+            b, name, err = get_file(hub, fid)
             if b is None:
-                why[n] = str(err)
-                return n, 0
+                return None, str(err)
+            m = part_re.search(name or "")
+            n = int(m.group(1)) if m else None
+            if n not in byno:
+                return None, f"unexpected file {name}"
             up = hub.upload_many([(f"pdf/{roll}/{ac}/{name}", b, "application/pdf")])[0]
             p = byno[n]
             hub.record(f"{roll}/{ac}/{n}", {"roll": roll, "ac": ac, "part": n, "part_name": p.get("partName"), "district": p.get("districtCd"),
                                             "part_id": p.get("partId"), "file": name, "key": up["key"], "bytes": len(b),
                                             "sha256": hashlib.sha256(b).hexdigest(), "fetched": E.now()})
             hub.metric("pdf_bytes", len(b))
-            return n, 1
+            return n, ""
 
         threads = max(1, min(16, int(hub.settings.get("threads", 8))))
+        errs = []
         with cf.ThreadPoolExecutor(threads) as ex:
-            for n, ok in ex.map(one, chunk):
-                if ok:
+            for n, err in ex.map(one, ids):
+                if n is not None:
+                    got.add(n)
                     stored_n += 1
-                    why.pop(n, None)
-                else:
-                    todo.append(n)                       # next chunk, new captcha and new ids
+                elif err:
+                    errs.append(err)
+        for n in chunk:
+            if n in got:
+                why.pop(n, None)
+                continue
+            if len(ids) < len(chunk) and not errs:      # the portal did not give a file for this part
+                absent[n] = absent.get(n, 0) + 1
+            why[n] = errs[0] if errs else "no file id"
+            if absent.get(n, 0) >= 3:
+                hub.failure("pdf", f"{roll}/{ac}/{n}", "the portal gives no file for this part (3 tries)")
+                continue
+            todo.append(n)                               # next chunk, new captcha and new ids
     if todo:
         raise RuntimeError(f"{len(todo)} parts not fetched after {rounds} rounds ({stored_n} stored); e.g. "
                            + ", ".join(f"{n}: {why.get(n, '?')}" for n in todo[:3]))
