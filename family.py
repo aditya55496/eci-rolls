@@ -41,6 +41,12 @@ PROJECTS = [
                   for ac in (ONLY or UP_ACS)],
     },
     {
+        # EPIC repair of SIR OCR output made before the repairs existed (2026-11-23); seeded per AC from the server
+        "name": f"{FAMILY}-up-repair", "title": "UP SIR OCR: EPIC repair from the 2027 roll (no new OCR)", "task": "repair",
+        "target": "eci-rolls-repair", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 60, "items": [],
+    },
+    {
         "name": f"{FAMILY}-up-2027", "title": "UP SSR draft roll 2027 from the PDF text layer", "task": "textlayer",
         "target": "eci-rolls-bucket", "env": {}, "probe": None,
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 12, "items": [],

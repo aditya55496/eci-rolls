@@ -21,6 +21,10 @@
     "ocr": [
       "python",
       "ocr_task.py"
+    ],
+    "repair": [
+      "python",
+      "repair_task.py"
     ]
   }
 }
