@@ -1,7 +1,7 @@
 """Task `repair`: apply the EPIC repairs (eciocr/prod/epicfix.py: fix + fix2) to the finished SIR OCR output of one AC.
 
 Queue item (project eci-rolls-up-repair): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...]}.
-Second fix (2026-11-23): key "final_deleted/<ac>", payload {"ac", "parts", "fix": "final_deleted"}: SIR final-roll voters deleted
+Second fix (2026-11-23): key "final_deleted/<ac>", payload {"ac", "p": [parts], "fix": "final_deleted"}: SIR final-roll voters deleted
 after the draft (stamped boxes taken for page noise) get the draft's fields (epicfix.final_deleted); originals kept under ocr_v2/.
 Then (and for GE 2024: fix "serial_gaps", payload tag "-ge2024") boxes taken for page noise whose serial fills a gap in the
 sequence become voters (epicfix.serial_gaps).
@@ -32,8 +32,13 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)
 
 def do_item(hub, item):
     ac = int(item["payload"]["ac"])
-    parts = [int(p) for p in item["payload"]["parts"]]
     fix = item["payload"].get("fix", "epic")
+    # fixes after the EPIC repair keep their parts under "p", not "parts": a worker that still runs the old code of this task
+    # (runner jobs check the family out once, at their start) fails on such an item instead of running the EPIC repair on it
+    # (2026-11-23: 362 final_deleted items were taken by old-code jobs; no file changed, but their hub records were overwritten)
+    parts = [int(p) for p in item["payload"]["parts" if fix == "epic" else "p"]]
+    if fix not in BACKUP:
+        raise RuntimeError(f"unknown fix {fix!r}")
     with tempfile.TemporaryDirectory() as tmp:
         idx = None
         if fix == "epic":
