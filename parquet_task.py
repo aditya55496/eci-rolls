@@ -1,6 +1,7 @@
 """Task `parquet`: one AC's electoral-roll records as Parquet files (owner 2026-11-24).
 
-Queue item (project eci-rolls-up-parquet): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...], "rolls": [...]}.
+Queue item (project eci-rolls-up-parquet): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...], "rolls": [...]}
+(GE 2024: key "ge/<ac>", payload {"ac", "ge_parts": [...], "rolls": ["2024-ge-final"]}).
 Rolls: "2026-sir-draft" and "2026-sir-final" from the OCR output (ocr/<ac>/<part>.jsonl.gz: both rolls in one file, after the
 EPIC and final-roll repairs), "2027-ssr-draft" from the text layer (text/<ac>.jsonl.gz); later "2024-ge-final"
 (ocr/<ac>/<part>-ge2024.jsonl.gz).
@@ -138,6 +139,23 @@ def do_item(hub, item):
                 c["parts_without_ocr_file"] = missing
                 rec["rolls"][roll] = c
             by = None
+        if "2024-ge-final" in rolls:   # GE 2024: its own OCR files, ocr/<ac>/<part>-ge2024.jsonl.gz (parts: payload ge_parts)
+            gparts = [int(x) for x in p.get("ge_parts", [])]
+            keys = [f"{OCR_PROJECT}/ocr/{ac}/{x}-ge2024.jsonl.gz" for x in gparts]
+            got = download(hub, OCR_PROJECT, keys, tmp)
+            rows, missing = [], []
+            for x, k in zip(gparts, keys):
+                if not got.get(k):
+                    missing.append(x)
+                    continue
+                with gzip.open(got[k], "rt", encoding="utf-8") as fh:
+                    rows += [json.loads(line) for line in fh if line.strip()]
+                os.remove(got[k])
+            c = counts(rows)
+            c["bytes"] = write(hub, "2024-ge-final", ac, to_table(rows, OCR_SCHEMA, "2024-ge-final", ac)) if rows else 0
+            c["parts_without_ocr_file"] = missing
+            rec["rolls"]["2024-ge-final"] = c
+            rows = None
         if "2027-ssr-draft" in rolls:
             k = f"{TEXT_PROJECT}/text/{ac}.jsonl.gz"
             path = download(hub, TEXT_PROJECT, [k], tmp)[k]
@@ -147,7 +165,7 @@ def do_item(hub, item):
             c = {"rows": len(rows), "ac_in_pdf_differs": sum(1 for r in rows if _int(r.get("ac")) != ac),
                  "bytes": write(hub, "2027-ssr-draft", ac, to_table(rows, TEXT_SCHEMA, "2027-ssr-draft", ac))}
             rec["rolls"]["2027-ssr-draft"] = c
-    hub.record(str(ac), rec)
+    hub.record(item["key"], rec)   # "<ac>" for SIR + 2027, "ge/<ac>" for GE 2024
     hub.metric("parquet_rows", sum(v["rows"] for v in rec["rolls"].values()))
     return sum(v["rows"] for v in rec["rolls"].values())
 
