@@ -47,6 +47,12 @@ PROJECTS = [
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 60, "items": [],
     },
     {
+        # Parquet export of the finished rolls (2026-11-24), one item per AC, seeded from the server; a small pool share
+        "name": f"{FAMILY}-up-parquet", "title": "UP rolls as Parquet (SIR draft + final 2026, SSR draft 2027; later GE 2024)", "task": "parquet",
+        "target": "eci-rolls-parquet", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 16, "items": [],
+    },
+    {
         "name": f"{FAMILY}-up-2027", "title": "UP SSR draft roll 2027 from the PDF text layer", "task": "textlayer",
         "target": "eci-rolls-bucket", "env": {}, "probe": None,
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 12, "items": [],

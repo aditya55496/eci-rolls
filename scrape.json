@@ -25,6 +25,10 @@
     "repair": [
       "python",
       "repair_task.py"
+    ],
+    "parquet": [
+      "python",
+      "parquet_task.py"
     ]
   }
 }
