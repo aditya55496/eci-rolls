@@ -54,18 +54,15 @@ def do_item(hub, item):
                 n_fix2 += b
                 out = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0)
                 hub.upload_many([(f"ocr_v1/{ac}/{p}.jsonl.gz", raw, "application/gzip")])
-                OCR_TARGET_FILES.append((f"ocr/{ac}/{p}.jsonl.gz", out))
-        # the repaired files belong to the OCR project: write them through a client of that project
-        if OCR_TARGET_FILES:
-            ocr_hub.upload_many([(path, data, "application/gzip") for path, data in OCR_TARGET_FILES])
-            OCR_TARGET_FILES.clear()
+                # the repaired file belongs to the OCR project: written through a client of that project, one file per call
+                # (a whole AC in one call is over the hub's limit: 422 too_long / 520)
+                ocr_hub.upload_many([(f"ocr/{ac}/{p}.jsonl.gz", out, "application/gzip")])
     hub.record(str(ac), {"ac": ac, "parts": len(parts), "files": n_files, "records": n_recs, "files_changed": n_changed,
                          "epic_fix1": n_fix1, "epic_fix2": n_fix2})
     hub.metric("epics_repaired", n_fix1 + n_fix2)
     return n_fix1 + n_fix2
 
 
-OCR_TARGET_FILES = []
 ocr_hub = None
 
 
