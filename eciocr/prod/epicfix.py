@@ -125,3 +125,31 @@ def final_deleted(recs):
         r.pop('not_voter_box', None)
         n += 1
     return n
+
+
+def serial_gaps(recs):
+    """A box marked not_voter_box whose serial fills a gap in its PDF's serial sequence is a voter box (2026-11-23).
+    The not_voter_box rule (EPIC not valid AND >= 6 flags) is meant for garbage on cover / map / photo pages, but it also took
+    real voter boxes: deleted voters under a DELETED stamp, often with old-format EPICs such as UP/9/041/0303522 (GE 2024:
+    AC 111 part 192, all 10 missing serials). Per PDF (record 'source'): voters' serials 1..last, where last is the highest
+    voter serial not above the number of boxes + 10 (one far-out misread such as 11001 must not open a huge range). A marked box
+    whose serial is in 1..last and not yet taken becomes a voter: 'voter_by_serial': True, flags kept. Returns the number changed."""
+    by = {}
+    for r in recs:
+        by.setdefault(r.get('source'), []).append(r)
+    n = 0
+    for rs in by.values():
+        cap = len(rs) + 10
+        have = {int(r['serial_no']) for r in rs if not r.get('not_voter_box') and str(r.get('serial_no') or '').isdigit()
+                and int(r['serial_no']) <= cap}
+        if not have:
+            continue
+        last = max(have)
+        for r in rs:
+            s = str(r.get('serial_no') or '')
+            if r.get('not_voter_box') and s.isdigit() and 1 <= int(s) <= last and int(s) not in have:
+                r.pop('not_voter_box', None)
+                r['voter_by_serial'] = True
+                have.add(int(s))
+                n += 1
+    return n

@@ -3,6 +3,8 @@
 Queue item (project eci-rolls-up-repair): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...]}.
 Second fix (2026-11-23): key "final_deleted/<ac>", payload {"ac", "parts", "fix": "final_deleted"}: SIR final-roll voters deleted
 after the draft (stamped boxes taken for page noise) get the draft's fields (epicfix.final_deleted); originals kept under ocr_v2/.
+Then (and for GE 2024: fix "serial_gaps", payload tag "-ge2024") boxes taken for page noise whose serial fills a gap in the
+sequence become voters (epicfix.serial_gaps).
 Outputs made before the repairs existed (2026-11-23) still carry EPICs whose prefix the CRNNs changed. No new OCR: the rules need
 only the output and the AC's 2027 roll (hints/<ac>.jsonl.gz). For each part: ocr/<ac>/<part>.jsonl.gz is read, repaired and
 written back only when something changed; the original is kept once as ocr_v1/<ac>/<part>.jsonl.gz. One hub record per AC with
@@ -40,7 +42,8 @@ def do_item(hub, item):
             if not hp:
                 raise RuntimeError(f"no 2027 hints for AC {ac}")
             idx = epicfix.index(json.loads(l) for l in gzip.open(hp, "rt", encoding="utf-8"))
-        keys = [f"{OCR_PROJECT}/ocr/{ac}/{p}.jsonl.gz" for p in parts]
+        tag = item["payload"].get("tag", "")          # "-ge2024" for the GE 2024 outputs
+        keys = [f"{OCR_PROJECT}/ocr/{ac}/{p}{tag}.jsonl.gz" for p in parts]
         got = download(hub, OCR_PROJECT, keys, tmp)
         n_files = n_changed = n_fix1 = n_fix2 = n_recs = 0
         for p, k in zip(parts, keys):
@@ -51,7 +54,9 @@ def do_item(hub, item):
             n_files += 1
             n_recs += len(recs)
             if fix == "final_deleted":                # SIR final: deleted voters taken for page noise (epicfix.final_deleted)
-                a, b = epicfix.final_deleted(recs), 0
+                a, b = epicfix.final_deleted(recs), epicfix.serial_gaps(recs)
+            elif fix == "serial_gaps":                # GE 2024: boxes taken for page noise that fill a serial gap
+                a, b = 0, epicfix.serial_gaps(recs)
             else:
                 voters = [r for r in recs if not r.get("not_voter_box")]
                 a = epicfix.fix(voters, idx)
@@ -61,10 +66,10 @@ def do_item(hub, item):
                 n_fix1 += a
                 n_fix2 += b
                 out = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0)
-                hub.upload_many([(f"{'ocr_v1' if fix == 'epic' else 'ocr_v2'}/{ac}/{p}.jsonl.gz", raw, "application/gzip")])
+                hub.upload_many([(f"{BACKUP[fix]}/{ac}/{p}{tag}.jsonl.gz", raw, "application/gzip")])
                 # the repaired file belongs to the OCR project: written through a client of that project, one file per call
                 # (a whole AC in one call is over the hub's limit: 422 too_long / 520)
-                ocr_hub.upload_many([(f"ocr/{ac}/{p}.jsonl.gz", out, "application/gzip")])
+                ocr_hub.upload_many([(f"ocr/{ac}/{p}{tag}.jsonl.gz", out, "application/gzip")])
     hub.record(str(ac) if fix == "epic" else f"{fix}/{ac}", {"ac": ac, "fix": fix, "parts": len(parts), "files": n_files, "records": n_recs, "files_changed": n_changed,
                          "epic_fix1": n_fix1, "epic_fix2": n_fix2})
     hub.metric("epics_repaired" if fix == "epic" else f"{fix}_repaired", n_fix1 + n_fix2)
@@ -72,6 +77,7 @@ def do_item(hub, item):
 
 
 ocr_hub = None
+BACKUP = {"epic": "ocr_v1", "final_deleted": "ocr_v2", "serial_gaps": "ocr_v3"}   # each pass keeps the file it changed
 
 
 def main():
