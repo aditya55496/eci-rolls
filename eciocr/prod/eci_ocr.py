@@ -26,6 +26,7 @@ import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
 from segment import segment, _mask, cells           # noqa: E402
+import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
@@ -361,12 +362,12 @@ def load_hints(path):
     return H
 
 
-def decide_box(per_engine, names, pix, hints):
+def decide_box(per_engine, names, pix, hints, stamp=None):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
-    out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names])
+    out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
     readings = {}
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
@@ -388,7 +389,9 @@ def process_page(task):
     if not boxes: return dict(pdf=pdf, page=pno, boxes=0, skip='no voter boxes', timing=tm, size=gray.shape[::-1])
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
-    segs_list = [{k: im for k, im in segment(g).items() if im.size} for g in box_grays]
+    segs_list, stamps = [], []
+    for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
+        segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g) for g in box_grays]
     tm['segment'] = round(time.time() - t, 3)
     t = time.time()
@@ -404,7 +407,7 @@ def process_page(task):
         names1 = _E.names[:K] + ['tess']
         need = []
         for i, r in enumerate(reads):
-            _, fl, _, hinted, _ = decide_box(r, names1, pix[i], _OPT['hints'])
+            _, fl, _, hinted, _ = decide_box(r, names1, pix[i], _OPT['hints'], stamps[i])
             if fl or not hinted: need.append(i)
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups={'line'})
@@ -424,7 +427,7 @@ def process_page(task):
         for y, h in heads:
             if y <= b[1] + 5 and h: section = h
         nm = (_E.names[:K] + ['tess']) if i in stage1_only else _E.names
-        out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'])
+        out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i])
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
@@ -542,6 +545,9 @@ def main():
         tasks += [(pdf, p, kind) for p in parse_pages(a.pages, n)]
     global _HINTS, _CACHE_IN, _COLLECT
     ensemble2.AGE_GAP = 2027 - a.roll_year
+    if a.roll_year < 2026 and os.environ.get('ECI_STAMP_TEMPLATE', '1') != '0':  # GE 2024 print: DELETED stamp -> fixed line positions
+        import segment as _seg
+        _seg.STAMP_CHECK = True; _seg.TEMPLATE_OVERRIDE = _seg.TEMPLATE_GER
     if a.cache_in:
         _CACHE_IN = pickle.load(open(a.cache_in, 'rb'))
     _COLLECT = bool(a.cache_out)

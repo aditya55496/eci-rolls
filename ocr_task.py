@@ -24,9 +24,9 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", OCR_PROJECT)
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 min; keep 10 min spare
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
-# General Election 2024 print: the same models fine-tuned on it (g6, trained clean: held-out AC 22 77.8 (SIR models) -> 92.6 %
-# of records right, unflagged 100 %). The SIR rolls keep the models above (hand check of 402 boxes from 112 ACs: no clear gain from g5).
-MODELS_BY_ROLL = {"2024-ge-final": [os.path.join(HERE, "models", m) for m in ("c11g6q", "c9g6q", "c4g6q", "c3g6q")]}
+# General Election 2024 print: the same models fine-tuned on it (g8: stamp-overlay and EPIC training) plus the stamp fix and
+# two decision rules: GE gold v3 (1,600 boxes, 32 never-trained ACs, hand-checked) 97.35 % weighted, unflagged 99.38 %. The SIR rolls keep the models above (hand check of 402 boxes from 112 ACs: no clear gain from g5).
+MODELS_BY_ROLL = {"2024-ge-final": [os.path.join(HERE, "models", m) for m in ("c11g8q", "c9g8q", "c4g8q", "c3g8q")]}
 try:
     CODE = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
 except OSError:

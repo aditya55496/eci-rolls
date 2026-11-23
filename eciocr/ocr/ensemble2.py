@@ -41,11 +41,13 @@ CONFW = None  # set by --confvote
 # 2024 roll: 3 -> gap 2 or 3, measured on AC 174 part 1: 735 of 772 voters 3, 22 voters 2). Set by eci_ocr --roll-year.
 AGE_GAP = 1
 EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
+EPIC_PAIR = os.environ.get('ECI_EPIC_PAIR', '1') != '0'    # rule 1 (2026-11-23), see decide()
+CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
-def decide(cands, hint, pix, names=None, confs=None):
+def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     out, flags = {}, []
     for f in FIELDS:
         vals = [c[f] for c in cands]
@@ -54,14 +56,32 @@ def decide(cands, hint, pix, names=None, confs=None):
             tv = [v for v, nm in zip(vals, names or [''] * len(vals)) if nm.startswith('tess')] or vals
             out[f] = (next((v for v in tv if v), '#') if pix else '')
             if pix and not any(tv): flags.append(f)
+            # 2026-11-23 (rule 2): Tesseract misses letter codes under the DELETED stamp ('' -> default '#'). When the pixel test
+            # says a code is printed, Tesseract gives nothing or only '#', and the first CRNN reads a letter code, take that;
+            # the field stays flagged. gold_v3 (GE 2024): 20 of 82 stamped boxes had S/E/R read as '#'. Only for boxes with a
+            # DELETED stamp (stamp=True from segment.LAST_STAMP): on unstamped boxes the CRNN reads real '#' codes as R/E
+            # (gold_v3 measured run: 4 such errors without this condition).
+            if CODE_CRNN and stamp and pix and all(t in ('', '#') for t in tv) and names:
+                j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
+                if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
+                    out[f] = vals[j]
+                    if f not in flags: flags.append(f)
             continue
         if f in ('serial_no', 'part_no', 'epic'):
             c = collections.Counter(vis); top, n = c.most_common(1)[0]
             out[f] = vals[vis.index(top)]
             if n * 2 <= len(vals) and names:
-                for p in PREF.get(f, []):
-                    j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
-                    if j is not None and vals[j]: out[f] = vals[j]; break
+                cr = [i for i, nm in enumerate(names) if nm.startswith('crnn')][:2]
+                if (f == 'epic' and EPIC_PAIR and len(cr) == 2 and vals[cr[0]] and visual(vals[cr[0]]) == visual(vals[cr[1]])
+                        and valid('epic', vals[cr[0]])):
+                    # 2026-11-23 (rule 1): no majority, but the two strongest CRNNs (c11, c9) agree on a valid EPIC: take it
+                    # instead of the Tesseract fallback (c4/c3 cannot read most letters, so a right c11+c9 pair lost to one
+                    # Tesseract misread such as SISA.../ZWL00...; gold_v3: 22 boxes)
+                    out[f] = vals[cr[0]]
+                else:
+                    for p in PREF.get(f, []):
+                        j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
+                        if j is not None and vals[j]: out[f] = vals[j]; break
             if f == 'epic' and EPIC_CONFIRM and hint and hint.get('epic') and visual(hint['epic']) in vis:
                 # an engine read exactly this voter's EPIC from the 2027 roll (that is how the record was found): take it, even
                 # when more engines agree on another prefix (CRNNs turn prefixes they never saw into training prefixes;

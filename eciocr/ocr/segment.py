@@ -60,7 +60,24 @@ def trim(im, margin=4):
 # line centres as a fraction of box height (median of normally split gold boxes)
 TEMPLATE_SIR = [0.2937, 0.4097, 0.5226, 0.6484]
 TEMPLATE_SUP = [0.2835, 0.4085, 0.5247, 0.6524]
+# General Election 2024 print: median line centres of 1,499 unstamped gold_v2 boxes split by the profile (2026-11-23)
+TEMPLATE_GER = [0.2896, 0.4105, 0.5244, 0.6503]
+# Set by eci_ocr.py for rolls before 2026 (GE 2024): the DELETED stamp's lower letters reach the empty band under the 4th
+# line, which no unstamped box has ink in (gold_v2: 82/82 stamped boxes >= 0.0007, 0/1,518 unstamped). Such boxes are cut
+# at TEMPLATE_OVERRIDE even when the ink profile gives 4 plausible bands (the stamp shifts them by a line).
+STAMP_CHECK = False
+TEMPLATE_OVERRIDE = None
 LAST_CENTRES = None
+LAST_STAMP = None
+
+
+def stamp_below(gray, xl, px):
+    """Fraction of ink (< 160, long horizontal rules removed) in the band 0.72-0.92 of box height, text column only."""
+    h, w = gray.shape
+    lo = gray[int(0.72 * h): int(0.92 * h), xl: px]
+    d = (lo < 160).astype(np.uint8)
+    d = cv2.subtract(d, cv2.morphologyEx(d, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, w // 6), 1))))
+    return float(d.sum()) / max(1, d.size)
 
 
 def clean_edges(band):
@@ -142,13 +159,14 @@ def segment(gray):
     pad = max(2, int(0.012 * h))
     body_h = h - 3 - (top_bottom + 2)
     hs = [b - a for a, b, lo, hi in merged]
-    global LAST_CENTRES
+    global LAST_CENTRES, LAST_STAMP
     LAST_CENTRES = None
-    if len(merged) == 4 and not (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]):
+    LAST_STAMP = STAMP_CHECK and stamp_below(gray, xl, px) >= 0.0007
+    if len(merged) == 4 and not (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]) and not LAST_STAMP:
         LAST_CENTRES = [((a + b) / 2 + top_bottom + 2) / h for a, b, lo, hi in merged]
-    if len(merged) < 4 or (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]):
+    if len(merged) < 4 or (hs and max(hs) > 1.6 * sorted(hs)[len(hs) // 2]) or LAST_STAMP:
         # stamp (DELETED) or other ink broke the profile split: cut at template line positions
-        T = TEMPLATE_SUP if len(small) >= 2 else TEMPLATE_SIR
+        T = TEMPLATE_OVERRIDE or (TEMPLATE_SUP if len(small) >= 2 else TEMPLATE_SIR)
         cs = [c * h - (top_bottom + 2) for c in T]  # line centres in body coords
         p = (cs[3] - cs[0]) / 3
         edges = [max(0, int(cs[0] - p / 2))] + [int((cs[j] + cs[j + 1]) / 2) for j in range(3)] + [min(body_h, int(cs[3] + p / 2))]
