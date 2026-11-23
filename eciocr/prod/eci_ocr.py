@@ -143,8 +143,9 @@ class Engines:
             # per worker and runner VMs (16 GB, 2 processes x 2 workers) ran out of memory. Off: 0.9 GB per worker, output identical.
             so.enable_cpu_mem_arena = False
             s = ort.InferenceSession(os.path.join(d, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
+            h = s.get_inputs()[0].shape[2]   # line height the model was trained at (48; smaller students: 32)
             self.crnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s, s.get_inputs()[0].name,
-                              json.load(open(os.path.join(d, 'charset.json')))))
+                              json.load(open(os.path.join(d, 'charset.json'))), h if isinstance(h, int) else 48))
         self.tessdata = tessdata
         self.crnn_sort = crnn_sort
         try:
@@ -158,8 +159,8 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims):
-        H = 48; xs = []
+    def _crnn_batch(sess, inp, CH, ims, H=48):
+        xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
             w = min(800, max(8, int(im.shape[1] * H / im.shape[0])))
@@ -180,15 +181,15 @@ class Engines:
         return out
 
     def crnn_read(self, eng, ims):
-        _, sess, inp, CH = eng
+        _, sess, inp, CH, H = eng
         if not ims: return []
         if not self.crnn_sort or len(ims) == 1:
-            return self._crnn_batch(sess, inp, CH, ims)
+            return self._crnn_batch(sess, inp, CH, ims, H)
         order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
         out = [None] * len(ims)
         for j in range(0, len(order), 64):
             idx = order[j:j + 64]
-            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx])): out[i] = r
+            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], H)): out[i] = r
         return out
 
     @staticmethod
