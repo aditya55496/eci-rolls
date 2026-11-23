@@ -58,12 +58,16 @@ def _int(v):
         return None
 
 
-def to_table(rows, schema, roll):
+def to_table(rows, schema, roll, ac=None):
     names = [f.name for f in schema]
     cols = {n: [] for n in names}
     for r in rows:
         r = dict(r)
         r.setdefault("part", r.get("roll_part"))
+        if ac is not None and _int(r.get("ac")) != ac:
+            # the AC is the item's; the text layer reads it from the PDF header, which is wrong for some ACs (2026-11-24:
+            # AC 320's 2027 PDFs give 64; the voters are AC 320's). The header value is kept in 'extra' as ac_in_pdf.
+            r["ac_in_pdf"], r["ac"] = r.get("ac"), ac
         extra = {k: v for k, v in r.items() if k not in cols and k != "roll_part"}
         for n in names:
             if n == "roll":
@@ -130,7 +134,7 @@ def do_item(hub, item):
             for roll in ocr_rolls:
                 rows = by[roll]
                 c = counts(rows)
-                c["bytes"] = write(hub, roll, ac, to_table(rows, OCR_SCHEMA, roll)) if rows else 0
+                c["bytes"] = write(hub, roll, ac, to_table(rows, OCR_SCHEMA, roll, ac)) if rows else 0
                 c["parts_without_ocr_file"] = missing
                 rec["rolls"][roll] = c
             by = None
@@ -140,7 +144,8 @@ def do_item(hub, item):
             if not path:
                 raise RuntimeError(f"no 2027 text layer for AC {ac}")
             rows = [json.loads(l) for l in gzip.open(path, "rt", encoding="utf-8") if l.strip()]
-            c = {"rows": len(rows), "bytes": write(hub, "2027-ssr-draft", ac, to_table(rows, TEXT_SCHEMA, "2027-ssr-draft"))}
+            c = {"rows": len(rows), "ac_in_pdf_differs": sum(1 for r in rows if _int(r.get("ac")) != ac),
+                 "bytes": write(hub, "2027-ssr-draft", ac, to_table(rows, TEXT_SCHEMA, "2027-ssr-draft", ac))}
             rec["rolls"]["2027-ssr-draft"] = c
     hub.record(str(ac), rec)
     hub.metric("parquet_rows", sum(v["rows"] for v in rec["rolls"].values()))
