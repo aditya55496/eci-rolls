@@ -32,7 +32,8 @@ try:
 except OSError:
     CODE = ""
 CPUS = len(os.sched_getaffinity(0))
-WORKERS = max(1, CPUS // 2)       # the pool runs 2 worker processes per 4-CPU runner job: 2 OCR processes each
+WORKERS = int(os.environ.get("ECI_OCR_WORKERS") or max(1, CPUS // 2))   # pool: 2 worker processes per 4-CPU runner job, 2 OCR processes each
+# (ECI_OCR_WORKERS: set by hosts where the CPU count seen is not the CPU share, e.g. Modal containers)
 
 
 def do_item(hub, item):
