@@ -6,7 +6,7 @@ server/modal). Same OS and Tesseract packages as the runners (Ubuntu 24.04 apt),
 match the runners'. A copy stops when ocr_task finds no work twice in a row; the container ends when all its copies stopped.
 
   modal run modal_ocr.py::check                      one container: CPU/memory it sees (no OCR)
-  modal run --detach modal_ocr.py::main --n 75       75 containers x CPU cores (1,200 cores at CPU=16)
+  modal deploy modal_ocr.py && python modal_ocr.py spawn 75   75 containers x CPU cores (1,200 cores at CPU=16), no client needed
   modal app stop eci-ocr                             stop all (claimed items are freed by the hub's stale rule and stolen)
 """
 import os
@@ -94,3 +94,13 @@ def main(n: int = 1, hours: float = 20.0):
 @app.local_entrypoint()
 def check():
     print(probe.remote())
+
+
+if __name__ == "__main__":
+    # Deployed app + spawned calls: they run on without any local client. (`modal run --detach` with .map() stopped 3 min after
+    # its local client ended: 2026-11-23 19:29.)  modal deploy modal_ocr.py && python modal_ocr.py spawn 75 [hours]
+    if sys.argv[1:2] == ["spawn"]:
+        n, hours = int(sys.argv[2]), float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
+        f = modal.Function.from_name("eci-ocr", "worker")
+        calls = [f.spawn(i, n, hours) for i in range(n)]
+        print(f"spawned {len(calls)} containers:", " ".join(c.object_id for c in calls[:3]), "...")
