@@ -1,6 +1,8 @@
 """Task `repair`: apply the EPIC repairs (eciocr/prod/epicfix.py: fix + fix2) to the finished SIR OCR output of one AC.
 
 Queue item (project eci-rolls-up-repair): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...]}.
+Second fix (2026-11-23): key "final_deleted/<ac>", payload {"ac", "parts", "fix": "final_deleted"}: SIR final-roll voters deleted
+after the draft (stamped boxes taken for page noise) get the draft's fields (epicfix.final_deleted); originals kept under ocr_v2/.
 Outputs made before the repairs existed (2026-11-23) still carry EPICs whose prefix the CRNNs changed. No new OCR: the rules need
 only the output and the AC's 2027 roll (hints/<ac>.jsonl.gz). For each part: ocr/<ac>/<part>.jsonl.gz is read, repaired and
 written back only when something changed; the original is kept once as ocr_v1/<ac>/<part>.jsonl.gz. One hub record per AC with
@@ -29,12 +31,15 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)
 def do_item(hub, item):
     ac = int(item["payload"]["ac"])
     parts = [int(p) for p in item["payload"]["parts"]]
+    fix = item["payload"].get("fix", "epic")
     with tempfile.TemporaryDirectory() as tmp:
-        hk = f"{TEXT_PROJECT}/hints/{ac}.jsonl.gz"
-        hp = download(hub, TEXT_PROJECT, [hk], tmp)[hk]
-        if not hp:
-            raise RuntimeError(f"no 2027 hints for AC {ac}")
-        idx = epicfix.index(json.loads(l) for l in gzip.open(hp, "rt", encoding="utf-8"))
+        idx = None
+        if fix == "epic":
+            hk = f"{TEXT_PROJECT}/hints/{ac}.jsonl.gz"
+            hp = download(hub, TEXT_PROJECT, [hk], tmp)[hk]
+            if not hp:
+                raise RuntimeError(f"no 2027 hints for AC {ac}")
+            idx = epicfix.index(json.loads(l) for l in gzip.open(hp, "rt", encoding="utf-8"))
         keys = [f"{OCR_PROJECT}/ocr/{ac}/{p}.jsonl.gz" for p in parts]
         got = download(hub, OCR_PROJECT, keys, tmp)
         n_files = n_changed = n_fix1 = n_fix2 = n_recs = 0
@@ -45,21 +50,24 @@ def do_item(hub, item):
             recs = [json.loads(l) for l in gzip.decompress(raw).decode("utf-8").splitlines() if l.strip()]
             n_files += 1
             n_recs += len(recs)
-            voters = [r for r in recs if not r.get("not_voter_box")]
-            a = epicfix.fix(voters, idx)
-            b = epicfix.fix2(voters, idx, 1)          # SIR 2026 vs the 2027 roll: age gap 0 or 1
+            if fix == "final_deleted":                # SIR final: deleted voters taken for page noise (epicfix.final_deleted)
+                a, b = epicfix.final_deleted(recs), 0
+            else:
+                voters = [r for r in recs if not r.get("not_voter_box")]
+                a = epicfix.fix(voters, idx)
+                b = epicfix.fix2(voters, idx, 1)          # SIR 2026 vs the 2027 roll: age gap 0 or 1
             if a or b:
                 n_changed += 1
                 n_fix1 += a
                 n_fix2 += b
                 out = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0)
-                hub.upload_many([(f"ocr_v1/{ac}/{p}.jsonl.gz", raw, "application/gzip")])
+                hub.upload_many([(f"{'ocr_v1' if fix == 'epic' else 'ocr_v2'}/{ac}/{p}.jsonl.gz", raw, "application/gzip")])
                 # the repaired file belongs to the OCR project: written through a client of that project, one file per call
                 # (a whole AC in one call is over the hub's limit: 422 too_long / 520)
                 ocr_hub.upload_many([(f"ocr/{ac}/{p}.jsonl.gz", out, "application/gzip")])
-    hub.record(str(ac), {"ac": ac, "parts": len(parts), "files": n_files, "records": n_recs, "files_changed": n_changed,
+    hub.record(str(ac) if fix == "epic" else f"{fix}/{ac}", {"ac": ac, "fix": fix, "parts": len(parts), "files": n_files, "records": n_recs, "files_changed": n_changed,
                          "epic_fix1": n_fix1, "epic_fix2": n_fix2})
-    hub.metric("epics_repaired", n_fix1 + n_fix2)
+    hub.metric("epics_repaired" if fix == "epic" else f"{fix}_repaired", n_fix1 + n_fix2)
     return n_fix1 + n_fix2
 
 
