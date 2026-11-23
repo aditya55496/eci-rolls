@@ -139,6 +139,9 @@ class Engines:
         self.crnn = []
         for d in crnn_dirs:
             so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1
+            # no memory arena (2026-11-23): the arena grows with every new crop width and never shrinks; a GE 2024 part took 2.8-4.4 GB
+            # per worker and runner VMs (16 GB, 2 processes x 2 workers) ran out of memory. Off: 0.9 GB per worker, output identical.
+            so.enable_cpu_mem_arena = False
             s = ort.InferenceSession(os.path.join(d, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
             self.crnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s, s.get_inputs()[0].name,
                               json.load(open(os.path.join(d, 'charset.json')))))
@@ -556,6 +559,8 @@ def main():
         _HINTS = load_hints(a.hint_2027)
     import multiprocessing as mp
     ctx = mp.get_context('fork')
+    import gc
+    gc.collect(); gc.freeze()   # objects loaded before the fork (hints, cache) stay shared: the workers' GC does not touch them
     by_pdf = collections.defaultdict(list)
     with ctx.Pool(a.workers, _init, (crnn, a.tessdata, not a.crnn_bench_batching, a.hint_2027, tmp, a.ort_threads, a.stage1, a.confvote)) as pool:
         for i, r in enumerate(pool.imap(process_page, tasks, chunksize=1)):
