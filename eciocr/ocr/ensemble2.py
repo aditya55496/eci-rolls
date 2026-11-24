@@ -63,6 +63,51 @@ NOHINT_NAMES = int(os.environ.get('ECI_NOHINT_NAMES', '0') or 0)
 # flagged only because Tesseract disagrees when ALL CRNNs read the same valid value. Flag study of the no-hint runs: GE gold 267
 # gender + 183 relation_label flags were of this kind (Tesseract misreads the line). Checked first on the non-gold val set.
 NOHINT_CLOSED = os.environ.get('ECI_NOHINT_CLOSED', '0') != '0'
+# job2 r3 2026-11-25 (ECI_NOHINT_TESSCLEAN=bits, default 0 = off): no 2027 roll, name / relation_name: when ALL CRNNs (at least
+# 4) read the same valid value and Tesseract differs from it ONLY by Tesseract noise, the field is not flagged. Bit 1 (always on
+# when set): marks and junk that never belong to a printed name (stress signs U+0951 / U+0952, ! |, Devanagari digits), a leaked
+# label prefix ('पति का नाम! ...'), a doubled virama ('नन््' = 'न्'), extra spaces. Bit 2: Tesseract dropped u-matra signs only.
+# Bit 4: Tesseract inserted anusvara signs only. Bit 8: Tesseract inserted nukta signs only (REJECTED in sim: +2 G26 silent
+# errors, printed nukta in फ़ूल...). Bit 16: Tesseract inserted subscript ra only. Bit 32: Tesseract inserted virama only. Flag study r3 (j2Is outputs): single-edit Tesseract differences on GE: anusvara inserted 637,
+# virama 194, nukta 184, u-matra dropped 91; val / G26: the 'नन््' artifact, u-matra dropped.
+NOHINT_TESSCLEAN = int(os.environ.get('ECI_NOHINT_TESSCLEAN', '0') or 0)
+_TJUNK = re.compile('[\u0951\u0952!|\u0966-\u096f]')
+_TLABEL = re.compile(r'^(?:.{0,8}का\s*नाम\s*[:;।|.]?|नाम\s*[:;।|.]+)\s*')
+
+
+def _tess_clean(t, level):
+    t = _TJUNK.sub('', t)
+    t = _TLABEL.sub('', t) if 'नाम' in t else t
+    t = re.sub('(.)\\1\u094d\u094d', '\\1\u094d', t).replace('\u094d\u094d', '\u094d')  # 'नन््' -> 'न्' (half-letter glyph artifact)
+    return ' '.join(t.split())
+
+
+def _only_ops(a, b, drop, ins):
+    """True when b = a with only chars of `drop` deleted and chars of `ins` inserted (DP over both strings)."""
+    m = len(b)
+    row = [True] + [False] * m
+    for j in range(1, m + 1): row[j] = row[j - 1] and b[j - 1] in ins
+    for ca in a:
+        new = [row[0] and ca in drop] + [False] * m
+        for j in range(1, m + 1):
+            new[j] = (row[j - 1] and ca == b[j - 1]) or (row[j] and ca in drop) or (new[j - 1] and b[j - 1] in ins)
+        row = new
+    return row[m]
+
+
+def _tess_noise_only(crnn, tess, level):
+    """level bits: 1 = junk / label / glyph-artifact cleaning (always on), 2 = Tesseract dropped u-matra, 4 = Tesseract
+    inserted anusvara, 8 = Tesseract inserted nukta"""
+    a, b = visual(crnn), visual(_tess_clean(tess or '', level))
+    if a == b: return True
+    drop = '\u0941' if level & 2 else ''
+    ins = ('\u0902' if level & 4 else '') + ('\u093c' if level & 8 else '') + ('\u094d' if level & 32 else '')
+    if level & 16 and '\u094dर' in b:  # bit 16: Tesseract inserted a subscript ra ('्र') only
+        b2 = b.replace('\u094dर', '')
+        if a.replace('\u094dर', '') == b2 and b.count('\u094dर') > a.count('\u094dर'): return True
+    return bool(drop or ins) and _only_ops(a, b, drop, ins)
+
+
 _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
 
 
@@ -164,6 +209,12 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 and sum(nm.startswith('crnn') for nm in (names or [])) >= NOHINT_NAMES:
             v = _crnn_all_agree(f, vals, vis, names)
             if v is not None:
+                out[f] = v; continue
+        if hint is None and NOHINT_TESSCLEAN and f in ('name', 'relation_name') and n < need and names \
+                and sum(nm.startswith('crnn') for nm in names) >= 4:
+            v = _crnn_all_agree(f, vals, vis, names)
+            others = [vals[i] for i, nm in enumerate(names) if not nm.startswith('crnn')]
+            if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others):
                 out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:
