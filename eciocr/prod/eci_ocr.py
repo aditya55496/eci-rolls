@@ -158,6 +158,16 @@ class Engines:
             so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1; so.enable_cpu_mem_arena = False
             s = ort.InferenceSession(os.path.join(dd, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
             self.digit = ('digit', s, s.get_inputs()[0].name, json.load(open(os.path.join(dd, 'charset.json'))))
+        # job2 r3 (ECI_NOHINT_VALSET=DIR,DIR..., default off; only without 2027 hints): extra CRNNs that read ONLY the lines of
+        # flagged text fields; the value of such a field = strict majority of these extras + the main engines named in
+        # ECI_NOHINT_VALKEEP (comma list of engine names, e.g. crnn_job2_r2_indx0). Flags do not change (the field stays flagged).
+        self.vcrnn = []
+        for d in filter(None, os.environ.get('ECI_NOHINT_VALSET', '').split(',')):
+            so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1; so.enable_cpu_mem_arena = False
+            s = ort.InferenceSession(os.path.join(d, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
+            self.vcrnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s, s.get_inputs()[0].name,
+                               json.load(open(os.path.join(d, 'charset.json')))))
+        self.valkeep = [x for x in os.environ.get('ECI_NOHINT_VALKEEP', '').split(',') if x]
         try:
             self.tapi = TessAPI(tessdata) if not os.environ.get('ECI_TESS_CLI') else None
         except OSError:
@@ -487,6 +497,35 @@ def decide_box(per_engine, names, pix, hints, stamp=None):
     return out, flags, readings, hint is not None, cands
 
 
+_VALF = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
+
+
+def _valset(recs, segs_list):
+    """job2 r3: value of flagged text fields from the ECI_NOHINT_VALSET extras + ECI_NOHINT_VALKEEP engines (see Engines)."""
+    need = []  # (record index, line key)
+    for i, r in enumerate(recs):
+        for ln in sorted({SRC[f] for f in r['flags'] if f in _VALF}):
+            if ln in segs_list[i]: need.append((i, ln))
+    if not need: return
+    ext = {}
+    for eng in _E.vcrnn:
+        for (i, ln), (txt, _) in zip(need, _E.crnn_read(eng, [segs_list[i][ln] for i, ln in need])):
+            ext.setdefault(i, {}).setdefault(eng[0], {})[ln] = txt
+    for i, per in ext.items():
+        r = recs[i]
+        for f in r['flags']:
+            if f not in _VALF: continue
+            rd = r['readings'].get(f, {})
+            vs = [rd[n] for n in _E.valkeep if isinstance(rd.get(n), str) and rd[n]]
+            for n, lines in per.items():
+                if SRC[f] in lines:
+                    v = from_lines(lines)[f]; rd[n] = v
+                    if v: vs.append(v)
+            if not vs: continue
+            c = collections.Counter(visual(v) for v in vs); top, k = c.most_common(1)[0]
+            if k * 2 > len(vs): r[f] = next(v for v in vs if visual(v) == top)
+
+
 def process_page(task):
     pdf, pno, kind = task
     if ensemble2.EPIC_STATE_ON:   # job5: the state's code of old-format EPICs (ensemble2._epic_state)
@@ -577,6 +616,8 @@ def process_page(task):
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
+    if _E.vcrnn and not _OPT['hints']:
+        t = time.time(); _valset(recs, segs_list); tm['valset'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
     for rec in recs: rec['t_box_s'] = round(tm['total'] / len(recs), 3)
     out = dict(pdf=pdf, page=pno, boxes=len(boxes), kind=kind, records=recs, timing=tm, size=gray.shape[::-1])
