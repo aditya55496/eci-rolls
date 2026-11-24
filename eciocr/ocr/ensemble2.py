@@ -50,6 +50,17 @@ NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.
 # caused ~11,000 of ~11,400 house_no flags on the no-hint gold runs). Set on a non-gold validation set (14 UP ACs outside every
 # gold set). ECI_NOHINT_DIGITS=1 = on (default off).
 NOHINT_DIGITS = os.environ.get('ECI_NOHINT_DIGITS', '0') != '0'
+# job2 2026-11-25 (ECI_EPIC_FMT=1, default off): (a) the CRNNs have no backslash and read the old-format separator '\\' as '1':
+# a reading 'UP' [+ one separator] + 14 digits with '1' at digit 3 and digit 7 is rewritten to UP\\dd\\ddd\\ddddddd (field flagged);
+# (b) the majority EPIC is not valid but the two first CRNNs agree on a valid one -> take it (field flagged). With the relaxed
+# EPIC_RE of ensemble.py. Found on GE gold v3 (3 EPIC errors, all flagged); no EPIC error of the 2026 gold / HC is of these kinds.
+EPIC_FMT = os.environ.get('ECI_EPIC_FMT', '0') == '1'
+_EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
+
+
+def _epic_bs(v):
+    m = _EPIC_BS.match(v or '')
+    return 'UP\\%s\\%s\\%s' % m.groups() if m else v
 
 
 def _crnn_all_agree(f, vals, vis, names):
@@ -82,6 +93,11 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                     if f not in flags: flags.append(f)
             continue
         if f in ('serial_no', 'part_no', 'epic'):
+            fmt_flag = False
+            if f == 'epic' and EPIC_FMT:
+                v2 = [_epic_bs(v) for v in vals]
+                if v2 != vals:
+                    fmt_flag = True; vals = v2; vis = [visual(v) for v in vals]
             c = collections.Counter(vis); top, n = c.most_common(1)[0]
             out[f] = vals[vis.index(top)]
             if n * 2 <= len(vals) and names:
@@ -102,7 +118,11 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 # flag check 2026-11-23: 14 of 28 unflagged EPIC errors in 500 flagged records were of this kind)
                 out[f] = hint['epic']
                 continue
-            if f in CORE and (n < 2 or not valid(f, out[f])): flags.append(f)
+            if f == 'epic' and EPIC_FMT and not valid(f, out[f]) and names:
+                cr = [i for i, nm in enumerate(names) if nm.startswith('crnn')][:2]
+                if len(cr) == 2 and vals[cr[0]] and visual(vals[cr[0]]) == visual(vals[cr[1]]) and valid(f, vals[cr[0]]):
+                    out[f] = vals[cr[0]]; fmt_flag = True
+            if f in CORE and (n < 2 or not valid(f, out[f]) or fmt_flag): flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):
             h = visual(hint[f])

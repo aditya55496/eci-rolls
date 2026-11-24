@@ -9,6 +9,10 @@ sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
 
 EPIC_RE = re.compile(r'^([A-Z]{3}[0-9]{7}|[A-Z]{2}/[0-9]{2}/[0-9]{3}/[0-9]{6,7})$')
+# job2 2026-11-25 (ECI_EPIC_FMT=1, default off): old-format EPICs also with a 1-digit district (UP/9/027/0132288: 37 right
+# boxes in GE gold v3, all flagged before only for the format) and with backslashes (UP\\58\\283\\0723298: printed in 2 GE boxes)
+if os.environ.get('ECI_EPIC_FMT', '0') == '1':
+    EPIC_RE = re.compile(r'^([A-Z]{3}[0-9]{7}|[A-Z]{2}/[0-9]{1,2}/[0-9]{3}/[0-9]{6,7}|[A-Z]{2}\\[0-9]{1,2}\\[0-9]{3}\\[0-9]{6,7})$')
 LABELS = {'पिता का नाम', 'पति का नाम', 'माता का नाम', 'अन्य'}
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 
