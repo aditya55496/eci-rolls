@@ -486,6 +486,7 @@ PARTNO_LIST = os.environ.get('ECI_PARTNO_LIST', '0') == '1'
 CODE_RE = re.compile(r'(?:#|[SERQM])[0-9]?')
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)   # see ensemble2.agree_eng and sequence_confirm
 ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,line').split(',')))
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
@@ -763,6 +764,12 @@ def sequence_confirm(recs):
         if 'serial_no' not in r['flags'] or s[i] is None: continue
         prev_ok = (s[i - 1] is not None and s[i - 1] + 1 == s[i]) if i > 0 else s[i] == 1
         next_ok = (s[i + 1] is not None and s[i + 1] - 1 == s[i]) if i + 1 < len(s) else prev_ok and i > 0
+        if (ENG_AGREE and r.get('lang') == 'ENG' and i + 2 < len(s) and (i == 0 or recs[i - 1]['page'] < r['page'] - 1)
+                and s[i + 1] is not None and s[i + 2] is not None and s[i + 1] - 1 == s[i] == s[i + 2] - 2
+                and recs[i + 2]['page'] == r['page']):
+            # job3 (2026-11-25, ECI_ENG_AGREE): first record after pages that were not read (--pages): the next two records
+            # of the same page confirm it (no previous neighbour exists)
+            prev_ok = next_ok = True
         if prev_ok and next_ok:
             r['flags'].remove('serial_no'); r['readings'].pop('serial_no', None)
             r['serial_by_sequence'] = True; n += 1

@@ -62,6 +62,29 @@ def hvis(f, v):
     return visual(v)
 
 
+# 2026-11-25 (job3): English rolls, hinted box, a hint field (or age) that no engine reads as in the 2027 roll: when every engine
+# reads the SAME valid value and the engines include at least one CRNN and Tesseract (independent readers), take it unflagged:
+# the print differs from 2027 (new spelling, house number, age) - the same evidence the no-hint rule accepts. ECI_ENG_AGREE=1.
+# ECI_ENG_AGREE=2 (held-out check with Opus reads, 12 non-gold S05/S14 parts): agreeing engines were wrong in 12 of 117 boxes, all
+# where the value is CLOSE to the 2027 value (1-2 letters: clipped descenders j/y/g -> i/v/q, I/l) or a truncated part of it
+# (a wrap line lost); ages and clearly different values were right (82 of 83). Mode 2 takes only ages and values whose
+# normalised edit distance to the 2027 value is >= 0.34 and that are not a prefix / suffix of it (or it of them).
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
+
+
+def agree_eng(f, vals, names, hv=''):
+    if not (ENG_AGREE and LANG == 'ENG' and names and len(vals) >= 2): return False
+    if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
+    v = [visual(x) for x in vals]
+    if not (v[0] and all(x == v[0] for x in v) and valid(f, vals[0])): return False
+    if ENG_AGREE >= 2 and f != 'age':
+        from rapidfuzz.distance import Levenshtein
+        a, b = v[0].lower(), visual(str(hv or '')).lower()
+        if not b or a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a): return False
+        if Levenshtein.normalized_distance(a, b) < 0.34: return False
+    return True
+
+
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 # job2 2026-11-25 (no 2027 roll): house_no and age are not flagged only because Tesseract disagrees when ALL CRNNs read the same
 # valid value (house_no: with a digit and without . , ; : - the CRNNs confuse those marks). Tesseract misreads these lines (it
@@ -344,6 +367,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             h = hvis(f, hint[f])
             m = next((v for v in vals if hvis(f, v) == h), None)
             if m is not None: out[f] = m; continue
+            if agree_eng(f, vals, names, hint[f]): out[f] = vals[0]; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
                 for p in PREF.get(f, []):
@@ -367,6 +391,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 if not crnn_ok: flags.append(f)
                 continue
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
+            if agree_eng(f, vals, names, hint['age']): out[f] = vals[0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue
         c = collections.Counter(vis); top, n = c.most_common(1)[0]
