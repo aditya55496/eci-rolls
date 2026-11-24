@@ -33,6 +33,10 @@
     "fetch-hi": [
       "python",
       "fetch_hi_task.py"
+    ],
+    "ssrtext": [
+      "python",
+      "ssrtext_task.py"
     ]
   }
 }
