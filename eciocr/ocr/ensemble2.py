@@ -70,6 +70,7 @@ def hvis(f, v):
 # (a wrap line lost); ages and clearly different values were right (82 of 83). Mode 2 takes only ages and values whose
 # normalised edit distance to the 2027 value is >= 0.34 and that are not a prefix / suffix of it (or it of them).
 ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
+ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
 
 
 def agree_eng(f, vals, names, hv=''):
@@ -312,7 +313,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             # the field stays flagged. gold_v3 (GE 2024): 20 of 82 stamped boxes had S/E/R read as '#'. Only for boxes with a
             # DELETED stamp (stamp=True from segment.LAST_STAMP): on unstamped boxes the CRNN reads real '#' codes as R/E
             # (gold_v3 measured run: 4 such errors without this condition).
-            if CODE_CRNN and stamp and pix and all(t in ('', '#') for t in tv) and names:
+            # job3 (ECI_ENG_CODE=1): English rolls have no stamp test; when the pixel test says a code is printed and NO Tesseract
+            # reading gave anything (not even '#'), the first CRNN's letter code is taken (the field stays flagged)
+            eng_code = ENG_CODE and LANG == 'ENG' and pix and all(t == '' for t in tv)
+            if ((CODE_CRNN and stamp) or eng_code) and pix and all(t in ('', '#') for t in tv) and names:
                 j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
                 if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
                     out[f] = vals[j]
@@ -441,6 +445,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
                 if not v: continue
+                if ENG_CODE and LANG == 'ENG' and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
                 w[visual(v)] += (cf.get(LINE_OF[f], CONFW) if nm.startswith('crnn') else CONFW)
             if w:
                 top = w.most_common(1)[0][0]
