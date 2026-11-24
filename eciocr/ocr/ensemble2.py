@@ -309,9 +309,6 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others):
                 out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
-        if hint is None and NOHINT_AMP and f == 'house_no' and f in flags:
-            v = amp_pick(vals, names)
-            if v is not None: out[f] = v
     if LEX is not None:
         for f in flags:
             if f not in ('name', 'relation_name'): continue
@@ -330,6 +327,9 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             if w:
                 top = w.most_common(1)[0][0]
                 out[f] = next(c[f] for c in cands if visual(c[f]) == top)
+    if hint is None and NOHINT_AMP and 'house_no' in flags:  # after the CONFW vote (production default 0.6)
+        v = amp_pick([c['house_no'] for c in cands], names)
+        if v is not None: out['house_no'] = v
     return out, flags
 
 
