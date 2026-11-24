@@ -170,7 +170,8 @@ class Engines:
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
     def _crnn_batch(sess, inp, CH, ims):
-        H = 48; xs = []
+        H = sess.get_inputs()[0].shape[2]   # job2: the model's input height (48 for every production model; 32 px students)
+        H = H if isinstance(H, int) and H > 0 else 48; xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
             w = min(800, max(8, int(im.shape[1] * H / im.shape[0])))
