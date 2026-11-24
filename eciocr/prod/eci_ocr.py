@@ -341,6 +341,7 @@ def parse_heading(lines):
 
 _E = None
 _OPT = {}
+ALLREAD = os.environ.get('ECI_ALLREAD', '0') != '0'   # job1 2026-11-25: dump all engine readings per record (eval only)
 
 
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
@@ -437,6 +438,9 @@ def process_page(task):
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if ALLREAD:  # job1 (evaluation only): every engine's fields + CRNN line confidences, for offline decide() studies
+            rec['allreads'] = {n: [r[n][0], {k: float(v) for k, v in r[n][1].items()}] for n in nm}
+            rec['stage1_only'] = i in stage1_only
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
