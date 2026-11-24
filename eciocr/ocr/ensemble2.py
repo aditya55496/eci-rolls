@@ -116,6 +116,26 @@ def _epic_bs(v):
     return 'UP\\%s\\%s\\%s' % m.groups() if m else v
 
 
+# job2 r3 (ECI_NOHINT_HOUSE_PUNCT=1, default off, with NOHINT_DIGITS): house_no with . , ; : (excluded by the DIGITS rule because
+# the CRNNs confuse those marks) is not flagged when all CRNNs agree AND every other engine (Tesseract) has the same sequence of
+# these marks (Tesseract drops digits such as the 1 in 'बी.15' -> 'बी.5', but reads the marks).
+# job2 r3 (ECI_NOHINT_SLACK1=field,field, default empty): no 2027 roll: in these fields one dissenting CRNN is allowed when all
+# other engines (Tesseract included) read the same valid value (>= 5 engines).
+SLACK1_F = set(filter(None, os.environ.get('ECI_NOHINT_SLACK1', '').split(',')))
+HOUSE_PUNCT = os.environ.get('ECI_NOHINT_HOUSE_PUNCT', '0') != '0'
+
+
+def _house_punct_agree(vals, vis, names):
+    cr = [i for i, nm in enumerate(names or []) if nm.startswith('crnn')]
+    if len(cr) < 2 or len({vis[i] for i in cr}) != 1: return None
+    v = vals[cr[0]]
+    if not v or not any(c.isdigit() for c in v): return None
+    pv = [c for c in v if c in '.,;:']
+    for i, nm in enumerate(names):
+        if i not in cr and [c for c in (vals[i] or '') if c in '.,;:'] != pv: return None
+    return v
+
+
 def _crnn_all_agree(f, vals, vis, names):
     cr = [i for i, nm in enumerate(names or []) if nm.startswith('crnn')]
     if len(cr) < 2 or len({vis[i] for i in cr}) != 1: return None
@@ -200,9 +220,14 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
+        if hint is None and f in SLACK1_F and n == len(vals) - 1 and len(vals) >= 5 and names and valid(f, out[f]):
+            odd = [nm for nm, x in zip(names, vis) if x != top]
+            if odd and odd[0].startswith('crnn'): need = n  # one CRNN alone dissents, Tesseract with the majority
         if hint is None and ((NOHINT_DIGITS and f in ('house_no', 'age')) or (NOHINT_CLOSED and f in ('gender', 'relation_label'))) \
                 and n < need:
             v = _crnn_all_agree(f, vals, vis, names)
+            if v is None and HOUSE_PUNCT and f == 'house_no':
+                v = _house_punct_agree(vals, vis, names)
             if v is not None:
                 out[f] = v; continue
         if hint is None and NOHINT_NAMES and f in ('name', 'relation_name') and n < need \
