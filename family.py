@@ -47,6 +47,20 @@ PROJECTS = [
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 60, "items": [],
     },
     {
+        # Every roll of the states that publish Hindi rolls, in Hindi (owner 2026-11-24). Items from plan_hi.py, seeded from the
+        # server. CDN route (SIR draft/final 2026, SSR draft 2027): any IP, all GitHub runners.
+        "name": f"{FAMILY}-hi-cdn", "title": "Hindi-state rolls: PDFs from the public path (SIR 2026, SSR 2027)", "task": "fetch-hi",
+        "target": "voters.eci.gov.in", "env": {}, "probe": "eci-rolls:voters.eci.gov.in",
+        "unit_label": "AC roll", "record_label": "PDF", "threads": 4, "max_workers": 160, "items": [],
+    },
+    {
+        # Form route (every other roll: GE 2024, draft/final 2024-2025, supplements, bye-elections): the file server answers only
+        # from India -> the hub's Mumbai proxies and dev-vps-3 (181-eci-hi-form-local.sh)
+        "name": f"{FAMILY}-hi-form", "title": "Hindi-state rolls: PDFs through the captcha form (GE 2024, 2024-25 rolls, supplements)",
+        "task": "fetch-hi", "target": "gateway-voters.eci.gov.in", "env": {}, "probe": None, "proxy": "IN", "geo": "IN",
+        "unit_label": "AC roll", "record_label": "PDF", "threads": 8, "max_workers": 12, "items": [],
+    },
+    {
         # Parquet export of the finished rolls (2026-11-24), one item per AC, seeded from the server; a small pool share
         "name": f"{FAMILY}-up-parquet", "title": "UP rolls as Parquet (SIR draft + final 2026, SSR draft 2027; later GE 2024)", "task": "parquet",
         "target": "eci-rolls-parquet", "env": {}, "probe": None,

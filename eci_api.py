@@ -104,3 +104,27 @@ def generate_request(roll, ac, district, parts, answer, captcha_id, state="S24")
 
 def file_url(file_id):
     return VPD + f"api/v1/ext-printing-publish/get-published-file?fileId={file_id}"
+
+
+# ---- any state, any roll (task fetch-hi, 2026-11-24). A roll is the portal's own record from get-publish-eroll-type:
+# {"id": "S12-2026-DR", "year": 2026, "ref": "SIR-DraftRoll", "gen": "EROLLGEN", "rev": 1}. Measured 2026-11-24 (MP, Bihar): the
+# public file path serves only the newest EROLLGEN rolls (SIR draft/final 2026, SSR draft 2027); every other roll (GE 2024,
+# draft/final 2024-2025, Bihar's 2025 SIR rolls, supplements, bye-elections) comes only through the captcha form.
+def roll_part_list_request(roll, state, ac):
+    body = {"stateCd": state, "acNumber": str(ac), "rollTypeRefId": roll["ref"], "pdfGenType": roll["gen"], "revisionNo": roll["rev"],
+            "year": str(roll["year"]), "misKey": MISKEY}
+    return GW + "api/v1/printing-publish/get-publish-part-list", enc_body(body)
+
+
+def roll_pdf_name(roll, state, ac, part, lang="HIN"):
+    return f"{roll['year']}-{roll['gen']}-{state}-{ac}-{roll['ref']}-Revision{roll['rev']}-{lang}-{part}-WI.pdf"
+
+
+def roll_pdf_url(roll, state, ac, part, lang="HIN"):
+    return f"{SITE}/eroll/{roll['year']}/{state.lower()}/{roll['ref'].lower()}/{ac}/{roll_pdf_name(roll, state, ac, part, lang)}"
+
+
+def roll_generate_request(roll, state, ac, district, parts, answer, captcha_id, lang="HIN"):
+    body = {"stateCd": state, "acNumber": str(ac), "partNumberList": list(parts), "districtCd": district, "captcha": answer,
+            "captchaId": captcha_id, "langCd": lang, "publishedRollId": roll["id"], "misKey": MISKEY}
+    return GW + "api/v1/printing-publish/generate-published-pdfs", enc_body(body)

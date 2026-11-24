@@ -29,6 +29,10 @@
     "parquet": [
       "python",
       "parquet_task.py"
+    ],
+    "fetch-hi": [
+      "python",
+      "fetch_hi_task.py"
     ]
   }
 }
