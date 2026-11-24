@@ -613,6 +613,9 @@ def main():
                 epic_fixed = epicfix.fix(recs, _EPIC_IDX) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
             else:
                 epic_fixed = 0
+                if os.environ.get('ECI_EPIC_PREFIX', '0') != '0':   # job2: no 2027 roll -> rare-prefix check (epicfix.prefix_check)
+                    import epicfix
+                    epic_fixed = epicfix.prefix_check(recs)[0]
             m = meta[pdf]
             kind = m['kind'] or (collections.Counter(p['kind'] for p in pages if p.get('kind')).most_common(1) or [(None,)])[0][0]
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
