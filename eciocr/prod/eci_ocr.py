@@ -563,6 +563,8 @@ def main():
     import gc
     gc.collect(); gc.freeze()   # objects loaded before the fork (hints, cache) stay shared: the workers' GC does not touch them
     by_pdf = collections.defaultdict(list)
+    if os.environ.get('ECI_STAGE1'):   # job1 2026-11-25 (evaluation switch): overrides --stage1 (number of stage-1 CRNNs)
+        a.stage1 = int(os.environ['ECI_STAGE1'])
     with ctx.Pool(a.workers, _init, (crnn, a.tessdata, not a.crnn_bench_batching, a.hint_2027, tmp, a.ort_threads, a.stage1, a.confvote)) as pool:
         for i, r in enumerate(pool.imap(process_page, tasks, chunksize=1)):
             cache_new.update(r.pop('cache', {}))

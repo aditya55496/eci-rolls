@@ -44,11 +44,18 @@ EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 EPIC_PAIR = os.environ.get('ECI_EPIC_PAIR', '1') != '0'    # rule 1 (2026-11-23), see decide()
 CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
+# job1 2026-11-25 (off by default): a 2027 match by ONE engine only counts when that engine is a CRNN with line confidence >= HINT_CONF
+# (or a second engine reads the same value). A low-confidence single match is flagged with the matched value kept (no confidence
+# re-vote); in the stage-1 cascade the box then goes to stage 2, where the other engines can confirm it. Silent errors measured
+# 2026-11-25: almost all unflagged errors are boxes where one model reproduced the 2027 spelling of a value printed otherwise in 2026.
+HINT_CONF = float(os.environ.get('ECI_HINT_CONF') or 0)
+HINT_CONF_FIELDS = ('name', 'relation_name', 'house_no')
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
 def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     out, flags = {}, []
+    keep = set()   # fields flagged by the HINT_CONF rule: value stays the 2027-matched reading
     for f in FIELDS:
         vals = [c[f] for c in cands]
         vis = [visual(v) for v in vals]
@@ -93,6 +100,11 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         if hint and f in HINT_FIELDS and hint.get(f):
             h = visual(hint[f])
             m = next((v for v, x in zip(vals, vis) if x == h), None)
+            if m is not None and HINT_CONF > 0 and f in HINT_CONF_FIELDS and names and confs:
+                J = [i for i, x in enumerate(vis) if x == h]
+                strong = len(J) >= 2 or any(names[i].startswith('crnn') and (confs[i] or {}).get(LINE_OF[f], 1.0) >= HINT_CONF for i in J)
+                if not strong:
+                    out[f] = m; flags.append(f); keep.add(f); continue
             if m is not None: out[f] = m; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
@@ -123,7 +135,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         return out, flags
     if CONFW is not None and confs:
         for f in flags:
-            if f not in LINE_OF: continue
+            if f not in LINE_OF or f in keep: continue
             w = collections.Counter()
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
