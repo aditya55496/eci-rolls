@@ -90,9 +90,22 @@ def in_bucket(hub, keys):
     return have
 
 
+def upload(hub, files):
+    """hub.upload_many, riding out a busy bucket: B2 answers 503 under heavy load (2026-11-24, ~470 MB/s from the pool); the
+    client's own retries are short, so wait 20 / 40 / 80 s and try again before giving up on the file."""
+    for wait in (20, 40, 80, None):
+        try:
+            return hub.upload_many(files)
+        except RuntimeError as e:
+            if wait is None or "HTTP 503" not in str(e):
+                raise
+            hub.metric("upload_503_wait")
+            time.sleep(wait)
+
+
 def store(hub, roll, state, ac, p, name, b, extra=None):
     part = int(p["partNumber"])
-    up = hub.upload_many([(f"pdf/{roll['id']}/{ac}/{name}", b, "application/pdf")])[0]
+    up = upload(hub, [(f"pdf/{roll['id']}/{ac}/{name}", b, "application/pdf")])[0]
     hub.record(f"{roll['id']}/{ac}/{part}", {"state": state, "roll": roll["id"], "ac": ac, "part": part, "part_name": p.get("partName"),
                                              "district": p.get("districtCd"), "part_id": p.get("partId"), "file": name, "key": up["key"],
                                              "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest(), "fetched": E.now(), **(extra or {})})
@@ -268,7 +281,7 @@ def do_item(hub, item):
     if not parts:
         hub.record(f"{roll['id']}/{ac}", {"state": state, "roll": roll["id"], "ac": ac, "parts": 0, "note": "empty part list"})
         return 0
-    hub.upload_many([(f"parts/{roll['id']}/{ac}.json", json.dumps({"state": state, "roll": roll, "ac": ac, "fetched": E.now(),
+    upload(hub, [(f"parts/{roll['id']}/{ac}.json", json.dumps({"state": state, "roll": roll, "ac": ac, "fetched": E.now(),
                                                                    "parts": parts}, ensure_ascii=False).encode(), "application/json")])
     stored, known = (do_cdn if route == "cdn" else do_form)(hub, roll, state, ac, lang, parts)
     hub.record(f"{roll['id']}/{ac}", {"state": state, "roll": roll["id"], "ac": ac, "lang": lang, "route": route, "parts": len(parts),
