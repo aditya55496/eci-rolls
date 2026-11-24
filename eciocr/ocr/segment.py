@@ -6,7 +6,7 @@ Box layout (SIR roll and supplement):
 We find the inner ruled cells from the line mask, then text lines by a
 horizontal ink profile. Works at any resolution.
 """
-import cv2
+import os, cv2
 import numpy as np
 
 
@@ -32,13 +32,18 @@ def cells(gray):
     return bw, (photo[0] if photo else None), small
 
 
-def trim(im, margin=4):
-    """Cut a field crop to its ink (plus a margin); ruled lines removed first."""
+def trim(im, margin=4, dark=None):
+    """Cut a field crop to its ink (plus a margin); ruled lines removed first.
+    dark (job4, 2026-11-25, English lines): only pixels darker than this count as ink for the cut. English SIR pages are JPEG
+    with a light grey haze (values 200-250) next to some lines; the mask took it as ink, so name crops kept a long empty tail and
+    the English CRNNs read a '1' / "'" / '7' there (gold: 132 of 2,058 names of one model, all in the same box positions)."""
     if im.size == 0: return im
     bw = _mask(im)
     lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, im.shape[1] // 3), 1)))
     lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(6, int(im.shape[0] * 0.8)))))
     ink = cv2.subtract(bw, lines)
+    if dark is not None:
+        ink[im >= dark] = 0
     cols = np.where(ink.sum(0) > 0)[0]; rows = np.where(ink.sum(1) > 0)[0]
     if not len(cols): return im
     # 2026-11-23: a thin sliver of ink (<= 6 px wide) at either end, >= 20 px away from the rest, is a frame edge or noise
@@ -187,6 +192,7 @@ def segment(gray):
 # lines 1 and 2 as one ink run), so the cut points come from the grid, each moved to the emptiest rows near it.
 ENG_PITCH = 0.1035      # line pitch / box height
 ENG_MAX_LINES = 8
+ENG_DARK = int(os.environ.get('ECI_ENG_DARK', '170')) or None   # job4: ink threshold of the English line cut (0 = off)
 
 
 def _runs_min(prof, c0, c1):
@@ -255,7 +261,7 @@ def segment_eng(gray):
             if k >= 4: break     # empty band after >= 4 lines: end of the text block
             continue
         y0, y1 = y_body + a, y_body + min(b, len(prof))
-        out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]))
+        out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
         k += 1
         if k >= ENG_MAX_LINES: break
     return out
