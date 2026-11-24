@@ -10,7 +10,8 @@ Queue item: key "<roll id>/<ac>", payload {"state": "S12", "ac": 1, "lang": "HIN
   downloaded at once, parts without a file id go into the next chunk).
 Output: parts/<roll id>/<ac>.json (the part list), pdf/<roll id>/<ac>/<file name the portal gives>, one hub record per PDF
 ("<roll id>/<ac>/<part>": bytes, sha256, part name) and one per AC. A retry (or payload "recheck": true) skips parts already
-in the bucket. Payload "probe_only": true (ACs done before the part-list fix): no listed part is fetched; only the language check
+in the bucket. Payload "check_only": true: the printed-totals check of the PDFs already in the bucket, plus the language check
+and the probe above the list (fetches nothing that is stored). Payload "probe_only": true (ACs done before the part-list fix): no listed part is fetched; only the language check
 and the probe above the list run.
 
 Part-list gap (checked 2026-11-24): get-publish-part-list ignores the roll and gives the AC's CURRENT part list. A roll can have
@@ -21,6 +22,12 @@ names / ids in the records come from the current list: for an older roll they ca
 Language (cdn): the planned language is checked on the public path first; if it has no file there, the first language that
 has one is used (2026-11-24: Tamil Nadu and Puducherry SIR 2026 rolls exist only in Tamil, Lakshadweep and Kerala ACs 1-3 only in
 Malayalam on the public path, although the discovery table lists English / Kannada). The AC record says "lang_used".
+
+Completeness (AC record "completeness"), not against the part list: every PDF is checked against what it prints itself
+(printcheck.py: page total in the footer = pages in the file, part number in the header = the file's part, cover electors
+total = the summary's net total); the AC's stored part numbers must run 1..highest without a hole, and the probe above the
+highest must end in EXTRA_MISS numbers without a file. "electors_printed" is the sum of the printed totals. The PDFs do not
+print how many parts the AC has. Per-part results: printcheck/<roll id>/<ac>.json in the bucket.
 """
 import base64
 import concurrent.futures as cf
@@ -37,6 +44,7 @@ import requests
 from scrape_hub_client import HubClient, stop_flag, timed_get, timed_post
 
 import eci_api as E
+import printcheck
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "captcha"))
 from captcha_solver import solve  # noqa: E402
@@ -53,6 +61,10 @@ SLOW_AFTER = 8
 SLOW_MARK = "/tmp/eci-rolls-slow-runner"
 EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))      # numbers in a row without a file that end the probe above the list
 FORM_PROBE = 30                                               # part numbers per probe request on the form route
+# completeness check against the totals printed in each PDF (printcheck.py; Tesseract, ~0.3 s CPU per PDF). On by default where
+# Tesseract is installed (the runners); the local form units on dev-vps-3 set ECI_PRINT_CHECK=0 (no bulk OCR on that server):
+# their ACs are checked later with payload "check_only" on the runners.
+PRINT_CHECK = os.environ.get("ECI_PRINT_CHECK", "1") == "1" and printcheck.available()
 LANGS = ["ENG", "HIN", "TAM", "MAL", "KAN", "TEL", "BEN", "MAR", "GUJ", "ORI", "PAN", "ASM", "URD"]
 _local = threading.local()
 _last_captcha = [0.0]
@@ -117,12 +129,29 @@ def upload(hub, files):
             time.sleep(wait)
 
 
+def print_check(hub, part, b):
+    """printcheck.check() reduced to what the records keep; None when the check is off."""
+    if not PRINT_CHECK:
+        return None
+    try:
+        c = printcheck.check(b, part, hub.lang_used)
+    except Exception as e:  # a PDF the reader cannot open is a fault of the file, not of the task
+        c = {"ok": False, "error": f"{type(e).__name__}: {e}"[:120]}
+    c = {k: c.get(k) for k in ("ok", "pages", "part", "totals", "electors", "pdf_pages", "pages_printed", "pages_printed_last", "error")
+         if c.get(k) is not None}
+    hub.checks[part] = c
+    hub.metric("print_check_bad", 0 if c["ok"] else 1)
+    return c
+
+
 def store(hub, roll, state, ac, p, name, b, extra=None):
     part = int(p["partNumber"])
     up = upload(hub, [(f"pdf/{roll['id']}/{ac}/{name}", b, "application/pdf")])[0]
+    c = print_check(hub, part, b)
     hub.record(f"{roll['id']}/{ac}/{part}", {"state": state, "roll": roll["id"], "ac": ac, "part": part, "part_name": p.get("partName"),
                                              "district": p.get("districtCd"), "part_id": p.get("partId"), "file": name, "key": up["key"],
-                                             "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest(), "fetched": E.now(), **(extra or {})})
+                                             "bytes": len(b), "sha256": hashlib.sha256(b).hexdigest(), "fetched": E.now(),
+                                             **({"printed": c} if c else {}), **(extra or {})})
     hub.metric("pdf_bytes", len(b))
 
 
@@ -179,11 +208,52 @@ def cdn_lang(hub, roll, state, ac, lang, nums):
     return lang
 
 
+def check_stored(hub, roll, state, ac, lang, byno, key, cdn_probe):
+    """check_only: the printed-totals check of the listed parts already in the bucket; parts not in the bucket are "missing";
+    then the probe above the list as in a normal run (cdn: do_cdn in probe_only mode; form: do_form in probe_only mode)."""
+    keys = {n: key(n) for n in sorted(byno)}
+    urls = {}
+    ks = list(keys.values())
+    for i in range(0, len(ks), 100):
+        urls.update(hub.read_urls(PROJECT, ks[i:i + 100]))
+
+    def one(n):
+        for attempt in range(3):
+            try:
+                r = requests.get(urls[keys[n]], timeout=180)
+            except requests.RequestException:
+                time.sleep(5 * (attempt + 1))
+                continue
+            if r.status_code == 404:
+                return n, None
+            if r.status_code == 200:
+                return n, r.content
+            time.sleep(10 * (attempt + 1))
+        raise RuntimeError(f"bucket read failed for part {n} (retry later)")
+
+    missing, seen = [], 0
+    with cf.ThreadPoolExecutor(4) as ex:
+        for n, b in ex.map(one, sorted(byno)):
+            if b is None:
+                missing.append(n)
+            else:
+                print_check(hub, n, b)
+                seen += 1
+    hub.probe_only = True
+    hub.check_only = False
+    parts = [byno[n] for n in sorted(byno)]
+    stored, known, info = (do_cdn if cdn_probe else do_form)(hub, roll, state, ac, lang, parts)
+    info["missing"] = sorted(missing)
+    return stored, known, info
+
+
 def do_cdn(hub, roll, state, ac, lang, parts):
     byno = {int(p["partNumber"]): p for p in parts}
-    lang = cdn_lang(hub, roll, state, ac, lang, sorted(byno))
+    lang = hub.lang_used = cdn_lang(hub, roll, state, ac, lang, sorted(byno))
     key = lambda n: f"{PROJECT}/pdf/{roll['id']}/{ac}/{E.roll_pdf_name(roll, state, ac, n, lang)}"  # noqa: E731
     todo = sorted(byno)
+    if hub.check_only:
+        return check_stored(hub, roll, state, ac, lang, byno, key, cdn_probe=True)
     if hub.probe_only:
         todo = []
     elif hub.skip_known:
@@ -288,7 +358,10 @@ def do_form(hub, roll, state, ac, lang, parts):
     byno = {int(p["partNumber"]): p for p in parts}
     district = parts[0]["districtCd"]
     todo = sorted(byno)
+    hub.lang_used = lang
     guess = lambda n: f"{PROJECT}/pdf/{roll['id']}/{ac}/{E.roll_pdf_name(roll, state, ac, n, lang)}"  # noqa: E731
+    if hub.check_only:
+        return check_stored(hub, roll, state, ac, lang, byno, guess, cdn_probe=False)
     if hub.probe_only:
         todo = []
     elif hub.skip_known:      # the portal's file names follow this rule for the rolls seen so far; a miss only means a re-download
@@ -367,12 +440,31 @@ def do_form(hub, roll, state, ac, lang, parts):
     return stored_n, known, {"lang_used": lang, "extra_parts": sorted(extra), "missing": sorted(missing)}
 
 
+def completeness(hub, parts, info, mode):
+    """The AC's completeness against what the PDFs print (see the module doc). "complete" is None when the printed check did
+    not run on every PDF of the AC (check off, or a probe_only run)."""
+    listed = {int(x["partNumber"]) for x in parts}
+    have = sorted((listed - set(info["missing"])) | set(info["extra_parts"]))
+    holes = [n for n in range(1, (have[-1] if have else 0) + 1) if n not in set(have)]
+    C = hub.checks
+    bad = sorted(n for n, c in C.items() if not c.get("ok"))
+    unread = {k: sum(1 for c in C.values() if c.get(k) == "unread") for k in ("pages", "part", "totals")}
+    checked_all = bool(have) and set(have) <= set(C)      # a retry or probe_only run does not re-read PDFs stored earlier
+    return {"parts_with_file": len(have), "highest_part": have[-1] if have else None, "holes": holes[:200], "n_holes": len(holes),
+            "printed_checked": len(C), "printed_bad": bad[:200], "n_printed_bad": len(bad), "printed_unread": unread,
+            "electors_printed": sum(c.get("electors") or 0 for c in C.values()),
+            "electors_unread": sum(1 for c in C.values() if not c.get("electors")),
+            "complete": (not holes and not bad) if checked_all else None}
+
+
 def do_item(hub, item):
     p = item["payload"]
     roll, state, ac, lang, route = p["roll"], p["state"], int(p["ac"]), p.get("lang", "HIN"), p["route"]
     hub.attempts = item.get("attempts") or 0
     hub.skip_known = hub.attempts > 1 or bool(p.get("recheck"))
     hub.probe_only = bool(p.get("probe_only"))    # an AC done before this change: only the language check and the probe above the list
+    hub.check_only = bool(p.get("check_only"))    # printed-totals check of the stored PDFs (+ language check and probe)
+    hub.checks, hub.lang_used = {}, lang
     parts = sorted(part_list(hub, roll, state, ac), key=lambda x: int(x["partNumber"]))
     if MAX_PARTS:
         parts = parts[:MAX_PARTS]
@@ -381,10 +473,15 @@ def do_item(hub, item):
         return 0
     upload(hub, [(f"parts/{roll['id']}/{ac}.json", json.dumps({"state": state, "roll": roll, "ac": ac, "fetched": E.now(),
                                                                    "parts": parts}, ensure_ascii=False).encode(), "application/json")])
+    mode = "check_only" if hub.check_only else "probe_only" if hub.probe_only else "fetch"
     stored, known, info = (do_cdn if route == "cdn" else do_form)(hub, roll, state, ac, lang, parts)
+    info["completeness"] = completeness(hub, parts, info, mode)
+    if hub.checks:
+        upload(hub, [(f"printcheck/{roll['id']}/{ac}.json", json.dumps({"roll": roll, "state": state, "ac": ac, "lang_used": info["lang_used"],
+                     "mode": mode, "checked": E.now(), "parts": {str(k): v for k, v in sorted(hub.checks.items())}}).encode(), "application/json")])
     hub.record(f"{roll['id']}/{ac}", {"state": state, "roll": roll["id"], "ac": ac, "lang": lang, "route": route, "parts": len(parts),
                                       "stored_now": stored, "known_before": known, "part_numbers": [int(x["partNumber"]) for x in parts],
-                                      **info, **({"probe_only": True} if hub.probe_only else
+                                      **info, "mode": mode, **({"probe_only": True} if mode == "probe_only" else
                                                  {"files": len(parts) - len(info["missing"]) + len(info["extra_parts"])}),
                                       "part_list": "current list of the AC (the portal ignores the roll)", "checked": E.now()})
     return stored
