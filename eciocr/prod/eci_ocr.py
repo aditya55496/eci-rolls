@@ -460,6 +460,18 @@ def load_hints(path):
     return H
 
 
+NOHINT_CASCADE = int(os.environ.get('ECI_NOHINT_CASCADE', '0') or 0)
+_CASC_TXT = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
+
+
+def _stage1_agree(cs):
+    c1 = cs[0]
+    if not all(visual(c[f]) == visual(c1[f]) for c in cs[1:] for f in _CASC_TXT): return False
+    if not all(ensemble2.valid(f, c1[f]) for f in _CASC_TXT): return False
+    h = c1['house_no']
+    return any(ch.isdigit() for ch in h) and not any(ch in h for ch in '.,;:')
+
+
 def decide_box(per_engine, names, pix, hints, stamp=None):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     cands = [from_lines(per_engine[n][0]) for n in names]
@@ -522,6 +534,20 @@ def process_page(task):
                 t1[0].update(t2[0]); reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
+    elif NOHINT_CASCADE and not _OPT['hints'] and len(_E.crnn) > NOHINT_CASCADE:
+        # job2 (no 2027 roll, ECI_NOHINT_CASCADE=N, default 0 = off): stage 1 = first N CRNNs + Tesseract Latin fields; a box whose
+        # N stage-1 CRNNs read the same valid text fields (house_no with a digit, without . , ; :) takes them unflagged; the
+        # other engines (rest of the CRNNs + Tesseract lines) read only the remaining boxes
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(NOHINT_CASCADE)), tess_groups={'num', 'epic', 'code'})
+        need = [i for i, r in enumerate(reads) if not _stage1_agree([from_lines(r[n][0]) for n in _E.names[:NOHINT_CASCADE]])]
+        if need:
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(NOHINT_CASCADE, len(_E.crnn))), tess_groups={'line'})
+            for i, r2 in zip(need, more):
+                t1 = reads[i]['tess']; t2 = r2.pop('tess')
+                t1[0].update(t2[0]); reads[i].update(r2)
+        tm['stage2_boxes'] = len(need)
+        stage1_only = set(range(len(reads))) - set(need)
+        K = NOHINT_CASCADE
     else:
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm)
         stage1_only = set()
@@ -534,6 +560,10 @@ def process_page(task):
             if y <= b[1] + 5 and h: section = h
         nm = (_E.names[:K] + ['tess']) if i in stage1_only else _E.names
         out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i])
+        if NOHINT_CASCADE and not _OPT['hints'] and i in stage1_only:   # the stage-1 CRNN pair settled the text fields
+            for f in _CASC_TXT:
+                out[f] = cands[0][f]
+                if f in flags: flags.remove(f); readings.pop(f, None)
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
