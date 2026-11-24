@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""OCR of image-only electoral roll PDFs (UP, Hindi): SIR rolls and supplements -> one JSONL record per voter box.
+"""OCR of image-only electoral roll PDFs (Hindi script): SIR rolls and supplements -> one JSONL record per voter box.
+
+States: built on UP; the printed label variants of Bihar, MP, Rajasthan, Chhattisgarh, Uttarakhand, Haryana, Jharkhand, Delhi,
+Chandigarh and the Nepali parts of West Bengal are parsed by parse.from_lines (2026-11-25, see parse.py).
 
 Usage:
   eci_ocr.py INPUT.pdf [INPUT2.pdf ...] --out OUT.jsonl [--crnn DIR ...] [--hint-2027 hints.jsonl] [--workers 4]
@@ -322,15 +325,27 @@ def text_lines(band):
     return out
 
 
+# section line: 'अनुभाग संख्या और नाम :' (UP, Haryana), 'अनुभाग संख्या एवं नाम :' (Bihar, CG), 'अनुभाग की संख्या व नाम :'
+# (MP, Rajasthan, Jharkhand, Delhi), 'अनुभाग संख्या व नाम' without colon (Uttarakhand, Chandigarh), 'खण्डको संख्या अनि नाँउ'
+# without colon (West Bengal, Nepali; c11q reads 'ख्डको ... नाँठ 1-...'). Without a colon: the first 'N-name' after the word.
+SECTION_WORD = re.compile(r'अनुभाग|प्रभाग|ख[ण्ं]*ड')
+SECTION_NOCOLON = re.compile(r'([0-9]+)\s*-\s*(.*)')
+LEAD_MARKS = '\u093c\u094d\u0901\u0902\u0903'   # a heading read as '1-्गोटेगांव': marks cannot start a name
+
+
 def parse_heading(lines):
     """Heading lines (CRNN text) -> section: 'N-name' for SIR sections, or one of LISTS. Last match in the band wins."""
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
-        if 'अनुभाग' in t and ':' in t:
+        if SECTION_WORD.search(t) and ':' in t:
             v = t.split(':', 1)[1].strip(' :.-')
             m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
-            return f'{m.group(1)}-{m.group(2)}' if m else v
+            return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS)}' if m else v
+        w = SECTION_WORD.search(t)
+        if w:
+            m = SECTION_NOCOLON.search(t, w.end())
+            if m: return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS)}'
         m = process.extractOne(' '.join(t.split()[:3]), LISTS, scorer=fuzz.ratio)
         if m and m[1] >= 75: return m[0]
     return None
@@ -342,6 +357,7 @@ _E = None
 _OPT = {}
 
 
+RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
@@ -386,6 +402,14 @@ def process_page(task):
     gray = page_gray(pdf, pno)
     tm['extract'] = round(time.time() - t0, 3)
     if gray is None: return dict(pdf=pdf, page=pno, boxes=0, skip='no image', timing=tm)
+    scale = 1.0
+    if RESCALE_H and gray.shape[0] > RESCALE_H * 1.25:
+        # 2026-11-25: Uttarakhand, Haryana, Jharkhand, Delhi and Chandigarh SIR pages are 2806 px high (240 dpi; UP: 1679 px,
+        # 144 dpi). At 240 dpi the EPIC and line crops hold the cell borders and much white space, the CRNNs read e.g.
+        # 'UPI127760' for URG1127760 and the code pixel test fires on every left-column box. Pages above 1.25 x 1679 px are
+        # scaled to 1679 px (INTER_AREA) before layout; bbox in the output is in the scaled page (record 'page_scale').
+        scale = RESCALE_H / gray.shape[0]
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     t = time.time()
     boxes = find_boxes(gray)
     tm['layout'] = round(time.time() - t, 3)
@@ -436,6 +460,7 @@ def process_page(task):
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if scale != 1.0: rec['page_scale'] = round(scale, 4)
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
@@ -499,8 +524,8 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-S(\d+)-(\d+)-.*-HIN-(\d+)-', b)
-    return dict(state=f'S{m.group(1)}', ac=int(m.group(2)), roll_part=int(m.group(3))) if m else {}
+    m = re.search(r'-([SU]\d+)-(\d+)-.*-HIN-(\d+)-', b)   # S = state, U = union territory (Delhi U05, Chandigarh U02)
+    return dict(state=m.group(1), ac=int(m.group(2)), roll_part=int(m.group(3))) if m else {}
 
 
 def parse_pages(spec, n):
