@@ -6,6 +6,7 @@ Box layout (SIR roll and supplement):
 We find the inner ruled cells from the line mask, then text lines by a
 horizontal ink profile. Works at any resolution.
 """
+import os
 import cv2
 import numpy as np
 
@@ -202,6 +203,34 @@ def _runs_min(prof, c0, c1):
     return c0 + (r0 + r1 + 1) // 2
 
 
+# job3 (2026-11-25): the grid cut between two touching English lines often goes through the descenders of the upper line (j, y,
+# g, p, q): 'Indrajit' -> 'Indraiit', 'Piyarun' -> 'Pivarun', 'Begum' -> 'Bequm', and CRNN + Tesseract then agree on the wrong
+# text (held-out check, 12 S05/S14 parts: 8 of 12 wrong 'agreeing' values). ECI_ENG_DESC = F (> 0): each line crop reaches F x the
+# line pitch below its cut; ink components that start below the cut (the next line) are whitened, components that cross the cut
+# (this line's descenders) are kept. Default 0 = engpipe crops (the CRNNs are trained on the crops of the setting in use).
+ENG_DESC = float(os.environ.get('ECI_ENG_DESC', '0') or 0)
+
+
+def _with_descenders(gray, y0, y1, x0, x1, ext):
+    y2 = min(gray.shape[0] - 3, y1 + ext)
+    if y2 <= y1 or y1 <= y0: return gray[y0:y1, x0:x1]
+    m = min(y0, max(2, ext // 2))                       # rows above the band: to see what continues from the line above
+    band = gray[y0 - m:y2, x0:x1].copy()
+    bw = _mask(band); cut = y1 - y0 + m
+    n, lab, st, _ = cv2.connectedComponentsWithStats(bw, 8)
+    keep = np.zeros(bw.shape, np.uint8)
+    for j in range(1, n):
+        x, y, w, h, _a = st[j]
+        if y >= cut - 1: continue                       # starts below the cut: the next line
+        if y == 0 and y + h <= m + 0.35 * (cut - m): continue  # reaches above the margin and ends high: the upper line's descender
+        if y + h <= m: continue                         # entirely above the band
+        keep[lab == j] = 1
+    keep = cv2.dilate(keep, np.ones((3, 3), np.uint8)) > 0
+    band[~keep & ((bw > 0) | (band > 140))] = 255     # removed components and their grey edges -> white
+    ext_ = band[cut:]; ext_[~keep[cut:]] = 255          # below the cut: only this line's descenders (+ their grey edge)
+    return band[m:]
+
+
 def segment_eng(gray):
     """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom)."""
     h, w = gray.shape
@@ -255,7 +284,10 @@ def segment_eng(gray):
             if k >= 4: break     # empty band after >= 4 lines: end of the text block
             continue
         y0, y1 = y_body + a, y_body + min(b, len(prof))
-        out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]))
+        if ENG_DESC:
+            out[f'line{k}'] = trim(clean_edges(_with_descenders(gray, y0, y1, xl, px, int(ENG_DESC * P))))
+        else:
+            out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]))
         k += 1
         if k >= ENG_MAX_LINES: break
     return out
