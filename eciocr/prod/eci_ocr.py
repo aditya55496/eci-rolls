@@ -575,6 +575,36 @@ def eng_epic_prefix(recs, min_other=3):
     return n
 
 
+def draft_fill(recs, path):
+    """job4 (2026-11-25): SIR FINAL roll + the OCR records of the SIR DRAFT roll of the same part. The final roll prints the
+    same voters (minus deletions, plus additions); in West Bengal it stamps 'UNDER ADJUDICATION' over the text of some boxes,
+    which no engine reads. Only UNFLAGGED draft records are used (their values are as trustworthy as any unflagged record).
+    For a final record with flags whose EPIC (output or any engine reading) is an unflagged draft EPIC, each flagged field
+    except serial / code / part:
+      - an engine of the final read the draft value -> value = draft value, field unflagged ('confirmed_by_draft')
+      - else value = draft value, field STAYS flagged ('filled_from_draft'): no value is accepted that no engine read.
+    Serial numbers are not taken from the draft (the final renumbers)."""
+    D = {}
+    for l in open(path, encoding='utf-8'):
+        d = json.loads(l)
+        if not d.get('flags') and not d.get('not_voter_box') and ensemble2.valid('epic', d.get('epic') or ''): D[d['epic']] = d
+    st = collections.Counter()
+    for r in recs:
+        if not r['flags']: continue
+        cand = [r['epic']] + list((r.get('readings', {}).get('epic') or {}).values())
+        d = next((D[e] for e in cand if isinstance(e, str) and e in D), None)
+        if d is None: continue
+        st['matched'] += 1
+        for f in list(r['flags']):
+            if f in ('serial_no', 'code', 'part_no') or f not in d: continue
+            rd = [v for k, v in (r.get('readings', {}).get(f) or {}).items() if isinstance(v, str) and not k.startswith(('hint', 'crnn_conf'))]
+            if f == 'epic' or any(visual(v) == visual(d[f]) for v in rd):
+                r[f] = d[f]; r['flags'].remove(f); r.setdefault('confirmed_by_draft', []).append(f); st['confirmed'] += 1
+            else:
+                r[f] = d[f]; r.setdefault('filled_from_draft', []).append(f); st['filled'] += 1
+    return dict(st)
+
+
 def serial_check(recs):
     """SIR: serials must run 1..N in reading order. Flags breaks; returns a summary."""
     s = [int(r['serial_no']) if r['serial_no'].isdigit() else None for r in recs]
@@ -652,6 +682,8 @@ def main():
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
     ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-* file names, else HIN), HIN or ENG')
+    ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
+                    'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
     a = ap.parse_args()
     crnn = a.crnn or [os.environ.get('ECI_CRNN', '/data/models/crnn/c1')]
@@ -730,6 +762,8 @@ def main():
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
             if ENG_NOHINT and not _HINTS and recs:
                 info['epic_by_prefix'] = eng_epic_prefix(recs)
+            if a.draft_records and recs:
+                info['draft_fill'] = draft_fill(recs, a.draft_records)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
