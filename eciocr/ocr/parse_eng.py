@@ -122,7 +122,9 @@ def fix_epic(e):
     e = re.sub(r'\s+', '', (e or '').upper())
     if 0 < e.count('/') < 3 and re.fullmatch(r'[A-Z0-9]{3}[0-9/]{7,8}', e) and len(e.replace('/', '7')) == 10:
         e = e.replace('/', '7')   # Tesseract (EPIC whitelist has '/') reads 7 as '/' in new-style EPICs: YKS15/0423
-    if '/' in e:
+    if '/' in e:   # old-style 'WB/17/114/129145': letters before the first '/', digits after it (job4: was 'W8/...')
+        m = re.match(r'^([A-Z0-9]{2,3})(/.*)$', e)
+        if m: return m.group(1).translate(str.maketrans('0158', 'OISB')) + m.group(2).translate(str.maketrans('OIlSB', '01158'))
         return e.translate(str.maketrans('OIlSB', '01158'))
     m = re.match(r'^([A-Z0-9]{3})([A-Z0-9]{6,8})$', e)
     if m:
