@@ -46,6 +46,20 @@ CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23)
 EPIC_TESS_NOHINT = os.environ.get('ECI_EPIC_TESS_NOHINT', '1') != '0'   # rule 3 (2026-11-25), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
+# job2 2026-11-25 (no 2027 roll): house_no and age are not flagged only because Tesseract disagrees when ALL CRNNs read the same
+# valid value (house_no: with a digit and without . , ; : - the CRNNs confuse those marks). Tesseract misreads these lines (it
+# caused ~11,000 of ~11,400 house_no flags on the no-hint gold runs). Set on a non-gold validation set (14 UP ACs outside every
+# gold set). ECI_NOHINT_DIGITS=1 = on (default off).
+NOHINT_DIGITS = os.environ.get('ECI_NOHINT_DIGITS', '0') != '0'
+
+
+def _crnn_all_agree(f, vals, vis, names):
+    cr = [i for i, nm in enumerate(names or []) if nm.startswith('crnn')]
+    if len(cr) < 2 or len({vis[i] for i in cr}) != 1: return None
+    v = vals[cr[0]]
+    if not v or not valid(f, v): return None
+    if f == 'house_no' and (not any(c.isdigit() for c in v) or any(c in v for c in '.,;:')): return None
+    return v
 
 
 def decide(cands, hint, pix, names=None, confs=None, stamp=None):
@@ -125,6 +139,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
+        if hint is None and NOHINT_DIGITS and f in ('house_no', 'age') and n < need:
+            v = _crnn_all_agree(f, vals, vis, names)
+            if v is not None:
+                out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:
         for f in flags:

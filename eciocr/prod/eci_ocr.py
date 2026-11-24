@@ -150,6 +150,14 @@ class Engines:
                               json.load(open(os.path.join(d, 'charset.json')))))
         self.tessdata = tessdata
         self.crnn_sort = crnn_sort
+        # job2 (2026-11-25): ECI_DIGIT_CRNN=DIR = a CRNN trained only on line2 (house number) and line3 (age, gender) lines; its
+        # readings of those lines take the place of Tesseract's (the 5th voter there). Off when unset.
+        self.digit = None
+        dd = os.environ.get('ECI_DIGIT_CRNN')
+        if dd:
+            so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1; so.enable_cpu_mem_arena = False
+            s = ort.InferenceSession(os.path.join(dd, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
+            self.digit = ('digit', s, s.get_inputs()[0].name, json.load(open(os.path.join(dd, 'charset.json'))))
         try:
             self.tapi = TessAPI(tessdata) if not os.environ.get('ECI_TESS_CLI') else None
         except OSError:
@@ -270,6 +278,10 @@ class Engines:
             else:
                 txts = self.tess_many([self.tess_prep(segs_list[b][k]) for b, k in gk[g]], lang, psm, wl, tmp)
             for (b, k), txt in zip(gk[g], txts): res[b]['tess'][0][k] = txt
+        if self.digit is not None and (tess_groups is None or 'line' in tess_groups):
+            dk = [(b, k) for b, k in gk['line'] if k in ('line2', 'line3')]
+            for (b, k), (txt, c) in zip(dk, self.crnn_read(self.digit, [segs_list[b][k] for b, k in dk])):
+                res[b]['tess'][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
         return res
 
