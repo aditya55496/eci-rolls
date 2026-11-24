@@ -86,7 +86,8 @@ RA = {'ASM': '\u09f0', 'BEN': '\u09b0'}            # ৰ (Assamese), র (Bengal
 DANGLING = re.compile('\u09cd(?=[\u09be-\u09cc\u09d7])')   # a virama right before a vowel sign: a consonant is missing
 CHILLU = {'ണ': 'ൺ', 'ന': 'ൻ', 'ര': 'ർ', 'ല': 'ൽ', 'ള': 'ൾ', 'ക': 'ൿ'}
 CHILLU_RE = re.compile('([ണനരലളക])്‍')
-TAM_RA_RE = re.compile('\u0bbe\u0bcd')
+TAM_RA_RE = re.compile('\u0bbe(?=[\u0bbf-\u0bcd])')   # NFD: an aa-sign right before another vowel sign / virama = ர
+TAM_AARA_RE = re.compile('\u0bbe\u0bbe(?=[\u0bbf-\u0bcd])')   # NFD: 'ாா்' / 'ாாி' = ா + ர் / ா + ரி (not a doubled mark)
 TAM_DANGLING = re.compile('(?<![\u0b95-\u0bb9])\u0bbe')   # a Tamil aa-sign not after a consonant: letters are missing   # Tamil aa-sign + virama = ர் (one glyph for ர and ா)
 
 
@@ -117,6 +118,10 @@ def repair(s, lang, counts=None):
     """Fix the /ActualText artifacts. counts (Counter) gets +1 per repair kind that changed s."""
     counts = counts if counts is not None else collections.Counter()
     s = unicodedata.normalize('NFD', s or '')
+    if lang == 'TAM' and TAM_AARA_RE.search(s):
+        # lang-tam 2026-11-25: 'செல்வகுமாா்' is 'செல்வகுமார்' (2027 print checked by eye), 'முத்துமாாியப்பன்' is
+        # 'முத்துமாரியப்பன்': the second aa-sign is the ர glyph. Done before the doubled-mark collapse, which made 'குமர்'.
+        s = TAM_AARA_RE.sub('\u0bbe\u0bb0', s); counts['tamil_aara'] += 1
     t = MARK_RUN.sub(lambda m: collapse_run(m.group(0)), s)
     if t != s: counts['doubled_mark'] += 1
     s = unicodedata.normalize('NFC', t)
@@ -132,10 +137,12 @@ def repair(s, lang, counts=None):
         counts['bengali_ra'] += 1
     if lang == 'MAL' and CHILLU_RE.search(s):
         s = CHILLU_RE.sub(lambda m: CHILLU[m.group(1)], s); counts['chillu_atomic'] += 1
-    if lang == 'TAM' and TAM_RA_RE.search(s):
-        # Tamil fonts draw ர and the aa-sign ா with one glyph; the /ActualText of 'ர்' is sometimes 'ா்' ('பெயா்').
-        # An aa-sign never takes a virama, so 'ா்' is always 'ர்'.
-        s = TAM_RA_RE.sub('\u0bb0\u0bcd', s); counts['tamil_ra'] += 1
+    if lang == 'TAM':
+        # Tamil fonts draw ர and the aa-sign ா with one glyph; the /ActualText of 'ர்' is sometimes 'ா்' ('பெயா்'), of 'ரி'
+        # 'ாி' ('மோி' = 'மேரி'). An aa-sign never takes a virama or another vowel sign, so that aa-sign is ர (on NFD).
+        d = unicodedata.normalize('NFD', s)
+        if TAM_RA_RE.search(d):
+            s = unicodedata.normalize('NFC', TAM_RA_RE.sub('\u0bb0', d)); counts['tamil_ra'] += 1
     return re.sub(r'\s+', ' ', s).strip()
 
 
@@ -147,7 +154,9 @@ FOLD = {'ASM': str.maketrans('\u09f0\u09f1', '\u09b0\u09ac'), 'BEN': str.maketra
 def letters(s, lang, trace=False):
     """Multiset for the glyph cross-check. The glyph trace is in visual order, so it gets only the order-free repairs."""
     if trace:
-        s = unicodedata.normalize('NFC', MARK_RUN.sub(lambda m: collapse_run(m.group(0)), unicodedata.normalize('NFD', s)))
+        s = unicodedata.normalize('NFD', s)
+        if lang == 'TAM': s = TAM_AARA_RE.sub('\u0bbe\u0bb0', s)   # as repair(): 'ாா்' = ார் before the collapse
+        s = unicodedata.normalize('NFC', MARK_RUN.sub(lambda m: collapse_run(m.group(0)), s))
         if lang in RA:
             s = s.replace('\u09ac\u09bc', '\u09b0')
         if lang == 'MAL':
