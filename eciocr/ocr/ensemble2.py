@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
 from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
+import parse_guj
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -52,6 +53,7 @@ LANG = 'HIN'
 
 
 def valid(f, v):
+    if LANG == 'GUJ': return parse_guj.valid_guj(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 

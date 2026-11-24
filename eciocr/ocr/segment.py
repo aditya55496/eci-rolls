@@ -259,3 +259,118 @@ def segment_eng(gray):
         k += 1
         if k >= ENG_MAX_LINES: break
     return out
+
+
+# ---------------------------------------------------------------- Gujarati rolls (2026-11-25, job lang-guj)
+# Gujarati SIR boxes (S06, 144 dpi pages, box ~377 x 155 px) print the same 4 labelled lines as the Hindi print, but the text
+# column is narrow: a long name or relative name WRAPS to an unlabelled next line (dev pages: ~40 % of boxes have 5-7 lines).
+# Line pitch 18 px = 0.116 of the box height. Gujarati has no headline: i-matra hooks, reph and anusvara rise above the letters,
+# u/uu-matras and conjunct halves hang below them, so neighbouring lines overlap vertically and no ink-free row exists between
+# them. A row cut would split marks between two crops. segment_guj therefore cuts on the grid only to find the lines, then
+# builds each line crop from whole ink components: a component belongs to the line whose CORE (rows with >= 50 % of the
+# line's peak ink) it overlaps most, else to the nearest core; other lines' components are whitened.
+GUJ_PITCH = 0.116
+
+
+def _top_cells(gray):
+    """serial (+ code), part, epic crops and the body geometry shared by the line segmenters."""
+    h, w = gray.shape
+    bw, photo, small = cells(gray)
+    out = {}
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    for i, (x, y, cw, ch) in enumerate(small[:2]):
+        cell = gray[y + 3: y + ch - 3, x + 3: x + cw - 3]
+        if i == 0:
+            ink = (_mask(cell) > 0).sum(0) > 0
+            left = ink[: int(0.4 * len(ink))]
+            if left.sum() > 2:
+                cols = np.where(ink)[0]
+                gaps = [(cols[j + 1] - cols[j], cols[j]) for j in range(len(cols) - 1)]
+                g, at = max(gaps) if gaps else (0, 0)
+                if g > 0.12 * len(ink):
+                    out['code'] = trim(cell[:, : at + 2]); out['serial'] = trim(cell[:, at + 2:])
+                    continue
+            out['serial'] = trim(cell)
+        else:
+            out['part'] = trim(cell)
+    ex0 = (small[-1][0] + small[-1][2] + 4) if small else int(0.55 * w)
+    ex0 = max(ex0, int(0.45 * w))
+    out['epic'] = trim(gray[3: top_bottom + 1, ex0: w - 4])
+    px = photo[0] - 3 if photo else int(0.72 * w)
+    xl = max(6, int(0.018 * w))
+    return out, bw, top_bottom, xl, px
+
+
+def line_bands(prof, P, max_lines=8):
+    """Grid cut points (as segment_eng) -> list of (a, b) bands that hold a text line."""
+    thr = 2
+    ink = np.where(prof > thr)[0]
+    if not len(ink): return []
+    top = int(ink[0])
+    cuts = [max(0, top - int(0.2 * P))]
+    for k in range(1, max_lines + 1):
+        g = top + k * P - 0.12 * P
+        c0, c1 = int(g - 0.3 * P), int(g + 0.3 * P)
+        if c0 >= len(prof): break
+        cuts.append(_runs_min(prof, max(cuts[-1] + int(0.5 * P), c0), min(len(prof), c1)) if c1 > c0 else int(g))
+    cuts = [c for i, c in enumerate(cuts) if i == 0 or c > cuts[i - 1]]
+    out = []
+    for a, b in zip(cuts, cuts[1:] + [len(prof)]):
+        band = prof[a:b]
+        if (band > thr).sum() < 0.3 * P:
+            if len(out) >= 4: break
+            continue
+        out.append((a, min(b, len(prof))))
+        if len(out) >= max_lines: break
+    return out
+
+
+def segment_guj(gray, pitch=None):
+    """Gujarati box -> dict: serial (+ code), part, epic, line0..lineN (N = 3..7), each line from whole ink components."""
+    h, w = gray.shape
+    out, bw, top_bottom, xl, px = _top_cells(gray)
+    P = (pitch or GUJ_PITCH) * h
+    rules = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    rules = cv2.dilate(rules, np.ones((3, 1), np.uint8))
+    y_body = top_bottom + 2
+    body = cv2.subtract(bw, rules)[y_body: h - 3, xl:px]
+    if body.size == 0: return out
+    prof = (body > 0).sum(1).astype(int)
+    bands = line_bands(prof, P)
+    if not bands: return out
+    cores = []
+    for a, b in bands:
+        seg = prof[a:b]; m = seg.max()
+        rows = np.where(seg >= 0.5 * m)[0]
+        cores.append((a + rows[0], a + rows[-1] + 1))
+    # components: a component that overlaps the cores of two lines (marks of neighbouring lines touching) is split at the cut
+    # between the bands; every (piece of a) component then goes to the band that holds its vertical centre
+    cuts = [b for a, b in bands[:-1]]
+    n, lab, st, _ = cv2.connectedComponentsWithStats(body, 8)
+    assign = np.full(lab.shape, -1, np.int16)
+    for j in range(1, n):
+        x, y, cw, ch, area = st[j]
+        ov = [max(0, min(y + ch, c1) - max(y, c0)) for c0, c1 in cores]
+        sub = lab[y:y + ch, x:x + cw] == j
+        if sum(o >= 2 for o in ov) >= 2:
+            for k, (a, b) in enumerate(bands):
+                lo, hi = (0 if k == 0 else a), (body.shape[0] if k == len(bands) - 1 else b)
+                r0, r1 = max(y, lo), min(y + ch, hi)
+                if r1 > r0:
+                    blk = assign[r0:r1, x:x + cw]; blk[sub[r0 - y:r1 - y]] = k
+        else:
+            yc = y + ch / 2.0
+            k = next((i for i, c in enumerate(cuts) if yc < c), len(bands) - 1)
+            if ov[k] == 0 and max(ov) > 0: k = int(np.argmax(ov))   # centre in another band but only touches one core
+            blk = assign[y:y + ch, x:x + cw]; blk[sub] = k
+    region = gray[y_body: h - 3, xl:px]
+    for k in range(len(bands)):
+        m = assign == k
+        rows = np.where(m.any(1))[0]
+        if not len(rows): continue
+        y0, y1 = int(rows[0]), int(rows[-1]) + 1
+        keep = cv2.dilate(m[y0:y1].astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        crop_ = region[y0:y1].copy()
+        crop_[~keep] = 255
+        out[f'line{k}'] = trim(crop_)
+    return out
