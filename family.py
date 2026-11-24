@@ -54,6 +54,13 @@ PROJECTS = [
         "unit_label": "AC roll", "record_label": "PDF", "threads": 4, "max_workers": 160, "items": [],
     },
     {
+        # CDN rolls of ALL other states (owner 2026-11-24: "complete the CDN downloads for all states"; English where offered,
+        # else the state's language). Items from plan_cdn_all.py.
+        "name": f"{FAMILY}-all-cdn", "title": "All-state rolls: PDFs from the public path (SIR 2026, SSR 2027), English or state language",
+        "task": "fetch-hi", "target": "voters.eci.gov.in", "env": {}, "probe": "eci-rolls:voters.eci.gov.in",
+        "unit_label": "AC roll", "record_label": "PDF", "threads": 4, "max_workers": 640, "items": [],
+    },
+    {
         # Form route (every other roll: GE 2024, draft/final 2024-2025, supplements, bye-elections): the file server answers only
         # from India -> the hub's Mumbai proxies and dev-vps-3 (181-eci-hi-form-local.sh)
         "name": f"{FAMILY}-hi-form", "title": "Hindi-state rolls: PDFs through the captcha form (GE 2024, 2024-25 rolls, supplements)",
