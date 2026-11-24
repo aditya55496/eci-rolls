@@ -6,6 +6,10 @@ Queue item (project eci-rolls-up): key "<roll>/<ac>", payload {"roll": "2026-sir
    pdf/<roll>/<ac>/<file name as the portal names it>. One hub record per PDF: <roll>/<ac>/<part> with bytes, sha256, the
    server's Last-Modified and the part (polling station) name. PDFs already stored are skipped (hub.known).
 A missing PDF (HTTP 404) is a failure entry, not a stop. 403/429 are counted as blocks; the hub then slows the project down.
+3. Part-list gap (2026-11-24): the portal's part list is the AC's CURRENT list (2027), not the roll's; the UP SIR rolls have
+   ~4,000 parts above it. After the listed parts the task probes higher numbers until EXTRA_MISS in a row answer 404, stores
+   them the same way (record "extra_part": true) and writes "extra_parts" into the AC record. Payload "probe_only": true (ACs
+   done before this change): only the probe runs. Part names / ids of the listed parts come from the current list.
 """
 import concurrent.futures as cf
 import hashlib
@@ -29,6 +33,7 @@ MAX_PARTS = int(os.environ.get("ECI_MAX_PARTS", "0"))
 SLOW_BPS = float(os.environ.get("ECI_SLOW_BPS", "300000"))
 SLOW_AFTER = 8
 SLOW_MARK = "/tmp/eci-rolls-slow-runner"
+EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))
 _local = threading.local()
 
 
@@ -118,7 +123,9 @@ def do_item(hub, item):
     hub.upload_many([(f"parts/{roll}/{ac}.json", json.dumps({"roll": roll, "ac": ac, "fetched": E.now(), "parts": parts},
                                                            ensure_ascii=False).encode(), "application/json")])
     ids = {f"{roll}/{ac}/{int(p['partNumber'])}": p for p in parts}
-    have = stored_already(hub, roll, ac, ids) if (item.get("attempts") or 0) > 1 else set()
+    probe_only = bool(item["payload"].get("probe_only"))
+    retry = (item.get("attempts") or 0) > 1
+    have = set(ids) if probe_only else stored_already(hub, roll, ac, ids) if retry else set()
     todo = [(rid, p) for rid, p in ids.items() if rid not in have]
     hub.metric("pdfs_skipped_known", len(ids) - len(todo))
     stored, speeds, gave_up, slow = 0, [], [], threading.Event()
@@ -151,6 +158,37 @@ def do_item(hub, item):
             delay = hub.settings.get("delay_ms", 0)
             if delay:
                 time.sleep(delay / 1000)
+        # above the (current) part list: until EXTRA_MISS numbers in a row answer 404
+        extra, miss = [], 0
+        top = top0 = max(int(p["partNumber"]) for p in parts)
+        while miss < EXTRA_MISS and not slow.is_set() and not gave_up and top < top0 + 3000:
+            batch = list(range(top + 1, top + 1 + max(EXTRA_MISS, threads)))
+            known = stored_already(hub, roll, ac, {f"{roll}/{ac}/{n}": {"partNumber": n} for n in batch}) if (retry or probe_only) else set()
+
+            def probe(n):
+                rid = f"{roll}/{ac}/{n}"
+                if rid in known:
+                    return "ok"
+                b, info = get_pdf(hub, roll, ac, n, speeds)
+                if b is None:
+                    if info != "404":
+                        gave_up.append(rid)
+                        return "err"
+                    return "404"
+                name = E.pdf_name(roll, ac, n)
+                up = hub.upload_many([(f"pdf/{roll}/{ac}/{name}", b, "application/pdf")])[0]
+                hub.record(rid, {"roll": roll, "ac": ac, "part": n, "file": name, "key": up["key"], "bytes": len(b),
+                                 "sha256": hashlib.sha256(b).hexdigest(), "last_modified": info, "fetched": E.now(), "extra_part": True})
+                hub.metric("pdf_bytes", len(b))
+                return "new"
+
+            for n, r in zip(batch, ex.map(probe, batch)):
+                miss = miss + 1 if r == "404" else 0
+                if r in ("ok", "new"):
+                    extra.append(n)
+                stored += r == "new"
+            top = batch[-1]
+        hub.metric("extra_parts", len(extra))
     if slow.is_set():
         med = sorted(speeds[-SLOW_AFTER:])[SLOW_AFTER // 2]
         hub.metric("slow_runner")
@@ -158,7 +196,9 @@ def do_item(hub, item):
     if gave_up:
         raise RuntimeError(f"{len(gave_up)} PDFs not fetched (retry later), {stored} stored")
     hub.record(f"{roll}/{ac}", {"roll": roll, "ac": ac, "parts": len(parts), "stored_now": stored, "known_before": len(ids) - len(todo),
-                                "part_numbers": [int(p["partNumber"]) for p in parts]})
+                                "part_numbers": [int(p["partNumber"]) for p in parts], "extra_parts": extra,
+                                "part_list": "current list of the AC (the portal ignores the roll)", "probe_only": probe_only,
+                                "checked": E.now()})
     return stored
 
 
