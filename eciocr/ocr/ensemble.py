@@ -18,6 +18,9 @@ if os.environ.get('ECI_EPIC_FMT', '0') == '1':
 # MP/021/163/642044). A superset of the UP old format; off in the adopted sets v4a and j2Ps (not gold-checked).
 if os.environ.get('ECI_EPIC_OLDFMT', '0') == '1':
     EPIC_RE = re.compile(EPIC_RE.pattern[:-2] + r'|[A-Z]{2}/[0-9]{1,3}/[0-9]{2,3}/[0-9]{6,7})$')
+# job5 2026-11-25 (ECI_EPIC_STATE=1): Haryana old-format EPICs have a 2-digit 3rd part (HR/01/07/0279513, 46 job5 gold boxes)
+if os.environ.get('ECI_EPIC_STATE', '0') == '1':
+    EPIC_RE = re.compile(EPIC_RE.pattern.replace('/[0-9]{3}/', '/[0-9]{2,3}/'))
 LABELS = {'पिता का नाम', 'पति का नाम', 'माता का नाम', 'अन्य'}
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 

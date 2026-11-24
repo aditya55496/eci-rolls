@@ -489,6 +489,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None):
 
 def process_page(task):
     pdf, pno, kind = task
+    if ensemble2.EPIC_STATE_ON:   # job5: the state's code of old-format EPICs (ensemble2._epic_state)
+        ensemble2.EPIC_STATE = ensemble2.STATE_EPIC_CODE.get(pdf_meta(pdf).get('state'))
     t0 = time.time(); tm = {}
     gray = page_gray(pdf, pno)
     tm['extract'] = round(time.time() - t0, 3)

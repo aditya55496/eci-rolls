@@ -110,7 +110,30 @@ def _tess_noise_only(crnn, tess, level):
     return bool(drop or ins) and _only_ops(a, b, drop, ins)
 
 
+# job5 2026-11-25 (ECI_PAREN_GUARD=1, default off): the CRNN charsets have no '(' ')'. Himachal prints house numbers such as
+# 13(1), 56(2)2, 57(2)क; all CRNNs read ')' as '1' with one voice (13/11, 56/212) and the record was not flagged (6 silent
+# errors on the job5 SSR gold). When any engine (Tesseract) reads a bracket in house_no and the chosen value has none, the
+# field is flagged.
+PAREN_GUARD = os.environ.get('ECI_PAREN_GUARD', '0') == '1'
 _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
+
+
+# job5 2026-11-25 (ECI_EPIC_STATE=1, default off): old-format EPICs ('BR/02/007/123010') start with the state's 2-letter code.
+# The CRNNs never saw BR / HR / HP and read them as 8R, HP, HA, HF. Each engine's reading of an old-format EPIC whose 2-letter
+# part differs from the state's code in at most 1 character gets the state's code (set per PDF by eci_ocr from the file name,
+# EPIC_STATE). Codes checked on job5 gold prints: S04 BR, S07 HR, S08 HP, S24 UP. Other states: no change (code unknown).
+EPIC_STATE_ON = os.environ.get('ECI_EPIC_STATE', '0') == '1'
+STATE_EPIC_CODE = {'S04': 'BR', 'S07': 'HR', 'S08': 'HP', 'S24': 'UP'}
+EPIC_STATE = None
+_EPIC_OLD = re.compile(r'^(..)([/\\])([0-9]{1,2})\2([0-9]{2,3})\2([0-9]{6,7})$')   # Haryana: HR/01/07/0279513 (2-digit part)
+_EPIC_CONF = {frozenset(p) for p in ('8B', '0D', '1I', '5S', '2Z', 'PR')}   # digit/letter shapes the CRNNs mix up
+
+
+def _epic_state(v):
+    m = _EPIC_OLD.match(v or '')
+    if not m or not EPIC_STATE or m.group(1) == EPIC_STATE: return v
+    if sum(a != b and frozenset(a + b) not in _EPIC_CONF for a, b in zip(m.group(1), EPIC_STATE)) > 1: return v
+    return EPIC_STATE + v[2:]
 
 
 def _epic_bs(v):
@@ -169,6 +192,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             continue
         if f in ('serial_no', 'part_no', 'epic'):
             fmt_flag = False
+            if f == 'epic' and EPIC_STATE_ON and EPIC_STATE:
+                vals = [_epic_state(v) for v in vals]; vis = [visual(v) for v in vals]
             if f == 'epic' and EPIC_FMT:
                 v2 = [_epic_bs(v) for v in vals]
                 if v2 != vals:
@@ -246,6 +271,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for p in pref:
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
+        if PAREN_GUARD and f == 'house_no' and any(b in v for v in vals for b in '()') and not any(b in out[f] for b in '()'):
+            flags.append(f); continue
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
         if hint is None and f in SLACK1_F and n == len(vals) - 1 and len(vals) >= 5 and names and valid(f, out[f]):
             odd = [nm for nm, x in zip(names, vis) if x != top]
