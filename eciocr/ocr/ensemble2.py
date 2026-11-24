@@ -121,11 +121,12 @@ _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
 # job5 2026-11-25 (ECI_EPIC_STATE=1, default off): old-format EPICs ('BR/02/007/123010') start with the state's 2-letter code.
 # The CRNNs never saw BR / HR / HP and read them as 8R, HP, HA, HF. Each engine's reading of an old-format EPIC whose 2-letter
 # part differs from the state's code in at most 1 character gets the state's code (set per PDF by eci_ocr from the file name,
-# EPIC_STATE). Codes checked on job5 gold prints: S04 BR, S07 HR, S08 HP, S24 UP. Other states: no change (code unknown).
+# EPIC_STATE). Codes checked on job5 gold prints: S04 BR, S07 HR, S08 HP, S24 UP; S12 MP (own code) and S26 Chhattisgarh MP
+# (MP/021/163/642044, ocrv5 local test). Other states: no change (code unknown).
 EPIC_STATE_ON = os.environ.get('ECI_EPIC_STATE', '0') == '1'
-STATE_EPIC_CODE = {'S04': 'BR', 'S07': 'HR', 'S08': 'HP', 'S24': 'UP'}
+STATE_EPIC_CODE = {'S04': 'BR', 'S07': 'HR', 'S08': 'HP', 'S24': 'UP', 'S12': 'MP', 'S26': 'MP'}
 EPIC_STATE = None
-_EPIC_OLD = re.compile(r'^(..)([/\\])([0-9]{1,2})\2([0-9]{2,3})\2([0-9]{6,7})$')   # Haryana: HR/01/07/0279513 (2-digit part)
+_EPIC_OLD = re.compile(r'^(..)([/\\])([0-9]{1,3})\2([0-9]{2,3})\2([0-9]{6,7})$')   # Haryana: HR/01/07/0279513 (2-digit part)
 _EPIC_CONF = {frozenset(p) for p in ('8B', '0D', '1I', '5S', '2Z', 'PR')}   # digit/letter shapes the CRNNs mix up
 
 
