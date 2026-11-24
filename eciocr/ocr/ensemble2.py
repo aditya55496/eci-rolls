@@ -43,6 +43,7 @@ AGE_GAP = 1
 EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 EPIC_PAIR = os.environ.get('ECI_EPIC_PAIR', '1') != '0'    # rule 1 (2026-11-23), see decide()
 CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23), see decide()
+EPIC_TESS_NOHINT = os.environ.get('ECI_EPIC_TESS_NOHINT', '1') != '0'   # rule 3 (2026-11-25), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
@@ -89,6 +90,17 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 out[f] = hint['epic']
                 continue
             if f in CORE and (n < 2 or not valid(f, out[f])): flags.append(f)
+            elif f == 'epic' and hint is None and EPIC_TESS_NOHINT and names and any(nm.startswith('tess') for nm in names) \
+                    and visual(vals[next(i for i, nm in enumerate(names) if nm.startswith('tess'))]) != visual(out[f]):
+                # 2026-11-25 (rule 3): without a 2027 record nothing confirms the EPIC. The CRNNs know only the EPIC prefixes of
+                # their training ACs and turn others into them with one voice (eye check of 4 boxes per part: Jharkhand KDF/KKD ->
+                # XGF in 5 of 8, Delhi ZIP -> ZSY in 3 of 4, West Bengal IBN -> BLN in 1 of 4, all unflagged; Tesseract had
+                # all 9 right). Tesseract reads letters as printed:
+                # when it disagrees with the chosen EPIC, flag (value unchanged: taking Tesseract's value when only the prefix
+                # differs fixed 9 of 9 such boxes of other states but cost UP bench gold without hints 95.19 -> 95.15).
+                # Bench gold (UP, 4,266 boxes): with hints unchanged (97.80 / 99.632 / 4.57 %); without hints flagged
+                # 60.97 -> 61.18 %, unflagged 99.700 -> 99.698 %, record 95.19 unchanged.
+                flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):
             h = visual(hint[f])
