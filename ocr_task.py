@@ -26,7 +26,10 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~2 
 MODELS = [os.path.join(HERE, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
 # General Election 2024 print: the same models fine-tuned on it (g8: stamp-overlay and EPIC training) plus the stamp fix and
 # two decision rules: GE gold v3 (1,600 boxes, 32 never-trained ACs, hand-checked) 97.35 % weighted, unflagged 99.38 %. The SIR rolls keep the models above (hand check of 402 boxes from 112 ACs: no clear gain from g5).
-MODELS_BY_ROLL = {"2024-ge-final": [os.path.join(HERE, "models", m) for m in ("c11g8q", "c9g8q", "c4g8q", "c3g8q")]}
+# Faster students (2026-11-24, speed study): half-width CRNNs distilled from the g8 models, all convs int8; 3.8x less CPU per
+# GE part (400.9 -> 106.1 s, same core and load). GE gold v3 97.56 % (g8 97.35), hand-check 98.01 (97.76), 2026 gold 98.74
+# (98.69); misses by <= 1 box: name 98.89 (98.90), relation 99.13 (99.14), anusvara errors 4 (3), 2026 unflagged 99.47 (99.55).
+MODELS_BY_ROLL = {"2024-ge-final": [os.path.join(HERE, "models", m) for m in ("c11g9s", "c9g9s", "c4g9s", "c3g9s")]}
 try:
     CODE = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
 except OSError:
