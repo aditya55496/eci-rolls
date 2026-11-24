@@ -182,6 +182,59 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     return out, flags
 
 
+# ---------------------------------------------------------------- job4 (2026-11-25): English rolls WITHOUT a 2027 roll
+# Measured on the job4 dev gold (440 boxes of 11 states, non-gold; rules chosen there, then tested once on the English gold):
+# requiring ALL engines to agree (decide() without a hint) flags 24-38 % of English boxes, because Tesseract misreads names /
+# houses that the English CRNNs read right. decide_eng_nohint():
+#   stage 1 (stage1=True, the first 2 CRNNs, trained on different data): a field is accepted when both CRNNs read the same
+#            valid value. A box with every field accepted is done; otherwise stage 2.
+#   stage 2: accepted when all CRNNs agree on a valid value and a Tesseract reading equals it; or when more than half of the
+#            CRNNs and a Tesseract reading agree on a valid value. Else flagged (value: majority of all engines, CRNN order on
+#            ties). An EPIC / serial flagged only for missing Tesseract support is settled per PDF (eci_ocr: EPIC prefix
+#            seen in >= 3 other records of the PDF; serial: sequence_confirm).
+#   plausibility (both stages): gender Male with a Husband label / Female with a Wife label, age outside 18..120 -> flag.
+NOHINT_SUPPORT = {}   # last decide_eng_nohint call: {field: 'crnn_unanimous'} for fields flagged only for missing Tesseract support
+
+
+def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
+    global NOHINT_SUPPORT
+    NOHINT_SUPPORT = {}
+    out, flags = {}, []
+    ci = [i for i, nm in enumerate(names) if nm.startswith('crnn')]
+    ti = [i for i, nm in enumerate(names) if nm.startswith('tess')]
+    if stage1: ci = ci[:2]
+    for f in FIELDS:
+        vals = [c[f] for c in cands]
+        if f == 'code':
+            tv = [vals[i] for i in ti] or vals
+            out[f] = (next((v for v in tv if v), '#') if pix else '')
+            if pix and not any(tv): flags.append(f)
+            continue
+        cv = [visual(vals[i]) for i in ci]; tvv = [visual(vals[i]) for i in ti]
+        allc = collections.Counter(v for v in cv + tvv if v)
+        if allc:
+            top_all = max(allc, key=lambda v: (allc[v], -(cv.index(v) if v in cv else 99)))
+            out[f] = next(vals[i] for i in ci + ti if visual(vals[i]) == top_all)
+        else:
+            out[f] = vals[ci[0]] if ci else ''
+        c = collections.Counter(cv); top, n = c.most_common(1)[0] if cv else ('', 0)
+        if f == 'part_no' and not top: continue
+        ok = False
+        if n == len(cv) and cv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            if stage1: ok = len(cv) >= 2
+            elif top in tvv: ok = True
+            else: NOHINT_SUPPORT[f] = 'crnn_unanimous'
+            if ok or f in NOHINT_SUPPORT: out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        elif not stage1 and n * 2 > len(cv) and top in tvv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        if not ok and f in CORE: flags.append(f)
+    lab = (out.get('relation_label') or '').lower()
+    if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female'):
+        if 'gender' not in flags: flags.append('gender')
+    if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
+    return out, flags
+
+
 def fallback_fix(out, flags, fb, cands, hint):
     """Replace only flagged fields. Prefer the fallback value when it agrees with an engine or 2027;
     if it agrees with neither, still take it (it is the only other reading of the image)."""

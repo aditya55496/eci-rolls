@@ -168,7 +168,10 @@ class Engines:
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
     def _crnn_batch(sess, inp, CH, ims):
-        H = 48; xs = []
+        # job4: input height from the model (48 = all production models; 32 = height-32 students)
+        H = sess.get_inputs()[0].shape[2]
+        H = H if isinstance(H, int) else 48
+        xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
             w = min(800, max(8, int(im.shape[1] * H / im.shape[0])))
@@ -404,7 +407,13 @@ def load_hints(path):
     return H
 
 
-def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
+DUMP = os.environ.get('ECI_DUMP', '0') == '1'
+# job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
+ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
+CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+
+
+def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
     if lang == 'ENG':
@@ -417,7 +426,11 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
-    out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if lang == 'ENG' and ENG_NOHINT and hint is None:
+        out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
+    else:
+        out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
@@ -458,7 +471,25 @@ def process_page(task):
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
-    if K and _OPT['hints']:
+    if lang == 'ENG' and ENG_NOHINT and not _OPT['hints'] and K >= 2:
+        # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
+        # boxes where the 2 CRNNs do not agree on every field
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
+        names1 = _E.names[:2] + _E.tnames
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]]
+        if need:
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
+                                 tess_groups={'line', 'num', 'epic'}, lang=lang)
+            for i, r2 in zip(need, more):
+                for tn in _E.tnames:
+                    t1 = reads[i][tn]; t2 = r2.pop(tn)
+                    t1[0].update(t2[0])
+                reads[i].update(r2)
+        tm['stage2_boxes'] = len(need)
+        stage1_only = set(range(len(reads))) - set(need)
+        K = -2   # marker: names of stage-1 boxes = the first 2 CRNNs, decided with stage1=True
+    # job4 (2026-11-25): ECI_CASCADE_NOHINT=1 runs the cascade without 2027 hints too: stage 2 only for boxes stage 1 flags
+    elif K and (_OPT['hints'] or CASCADE_NOHINT):
         # cascade: stage 1 = first K CRNNs + Tesseract Latin fields; the rest only for boxes stage 1 cannot settle
         # ENG: the Tesseract text lines are read in stage 1 too (the English CRNNs are not yet trusted alone; the roles of
         # the wrap lines come from all engines)
@@ -471,7 +502,7 @@ def process_page(task):
         need = []
         for i, r in enumerate(reads):
             _, fl, _, hinted, _ = decide_box(r, names1, pix[i], _OPT['hints'], stamps[i], lang)
-            if fl or not hinted: need.append(i)
+            if fl or (not hinted and not CASCADE_NOHINT): need.append(i)
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))),
                                  tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang == 'ENG' else {'line'}, lang=lang)
@@ -492,13 +523,22 @@ def process_page(task):
     for i, (b, r) in enumerate(zip(boxes, reads)):
         for y, h in heads:
             if y <= b[1] + 5 and h: section = h
-        nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
-        out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
+        if K == -2:
+            nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
+            out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
+        else:
+            nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
+            out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
+        if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
+            readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, lang=lang, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
+            rec['cands'] = {n: c for n, c in zip(nm, cands)}
+            rec['confs'] = decide_box.confs
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
@@ -529,6 +569,20 @@ def sequence_confirm(recs):
         if prev_ok and next_ok:
             r['flags'].remove('serial_no'); r['readings'].pop('serial_no', None)
             r['serial_by_sequence'] = True; n += 1
+    return n
+
+
+def eng_epic_prefix(recs, min_other=3):
+    """job4 (English, no hints): an EPIC flagged only because no Tesseract reading confirmed it (all CRNNs read the same
+    valid EPIC) is accepted when its 3-letter prefix is the prefix of >= 3 OTHER unflagged EPICs of the same PDF."""
+    pf = collections.Counter(r['epic'][:3] for r in recs if 'epic' not in r['flags'] and ensemble2.valid('epic', r['epic'] or ''))
+    n = 0
+    for r in recs:
+        un = r.get('readings', {}).get('_nohint_crnn_unanimous', [])
+        if 'epic' in r['flags'] and 'epic' in un and pf[r['epic'][:3]] >= min_other:
+            r['flags'].remove('epic'); r['readings'].pop('epic', None); r['epic_by_prefix'] = True; n += 1
+    for r in recs:
+        r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
     return n
 
 
@@ -685,6 +739,8 @@ def main():
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
+            if ENG_NOHINT and not _HINTS and recs:
+                info['epic_by_prefix'] = eng_epic_prefix(recs)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
