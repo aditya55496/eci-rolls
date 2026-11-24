@@ -20,8 +20,11 @@ COLON = re.compile(r'\s*[:;ː：ঃ](?=\s|$|[^ঁ-ঃ়-ৗ])')
 BEN_DIG = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
 
 
+ASM_TO_BEN = str.maketrans({'ৰ': 'র', 'ৱ': 'ব'})   # the line models also learn Assam 2027 lines; WB rolls never print ৰ / ৱ
+
+
 def norm(s):
-    s = unicodedata.normalize('NFC', s or '').replace('‌', '').replace('‍', '')
+    s = unicodedata.normalize('NFC', s or '').replace('‌', '').replace('‍', '').translate(ASM_TO_BEN)
     return re.sub(r'\s+', ' ', s).strip(' ;_')
 
 
