@@ -440,7 +440,7 @@ def process_page(task):
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
         if ALLREAD:  # job1 (evaluation only): every engine's fields + CRNN line confidences, for offline decide() studies
             rec['allreads'] = {n: [r[n][0], {k: float(v) for k, v in r[n][1].items()}] for n in nm}
-            rec['stage1_only'] = i in stage1_only
+            rec['stage1_only'] = i in stage1_only; rec['stamp'] = bool(stamps[i])
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
