@@ -177,3 +177,85 @@ def segment(gray):
         y0 = top_bottom + 2 + lo; y1 = top_bottom + 2 + hi
         out[f'line{i}'] = trim(clean_edges(gray[y0:y1, xl:px]))
     return out
+
+
+# ---------------------------------------------------------------- English rolls (2026-11-25, job engpipe)
+# English SIR boxes print 4 labelled lines (Name / <relative> Name / House Number / Age .. Gender) in a smaller font than the
+# Hindi print, and a long name, relative name or house number WRAPS to an unlabelled next line: a box has 4 to 7 text lines.
+# The lines sit on a fixed grid (measured on 2,064 English gold boxes of 14 states: first line top at 0.23-0.245 of the box
+# height, pitch 0.102-0.105). Neighbouring lines often touch (descender of one, cap of the next: 288 of 2,064 boxes had
+# lines 1 and 2 as one ink run), so the cut points come from the grid, each moved to the emptiest rows near it.
+ENG_PITCH = 0.1035      # line pitch / box height
+ENG_MAX_LINES = 8
+
+
+def _runs_min(prof, c0, c1):
+    """Middle of the longest run of minimal profile values in prof[c0:c1]."""
+    win = prof[c0:c1]
+    if not len(win): return (c0 + c1) // 2
+    m = win.min(); runs, cur = [], None
+    for j, v in enumerate(win):
+        if v <= m + 1: cur = (cur[0], j) if cur else (j, j)
+        elif cur: runs.append(cur); cur = None
+    if cur: runs.append(cur)
+    r0, r1 = max(runs, key=lambda r: r[1] - r[0])
+    return c0 + (r0 + r1 + 1) // 2
+
+
+def segment_eng(gray):
+    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom)."""
+    h, w = gray.shape
+    bw, photo, small = cells(gray)
+    out = {}
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    for i, (x, y, cw, ch) in enumerate(small[:2]):
+        cell = gray[y + 3: y + ch - 3, x + 3: x + cw - 3]
+        if i == 0:
+            ink = (_mask(cell) > 0).sum(0) > 0
+            left = ink[: int(0.4 * len(ink))]
+            if left.sum() > 2:
+                cols = np.where(ink)[0]
+                gaps = [(cols[j + 1] - cols[j], cols[j]) for j in range(len(cols) - 1)]
+                g, at = max(gaps) if gaps else (0, 0)
+                if g > 0.12 * len(ink):
+                    out['code'] = trim(cell[:, : at + 2]); out['serial'] = trim(cell[:, at + 2:])
+                    continue
+            out['serial'] = trim(cell)
+        else:
+            out['part'] = trim(cell)
+    ex0 = (small[-1][0] + small[-1][2] + 4) if small else int(0.55 * w)
+    ex0 = max(ex0, int(0.45 * w))
+    out['epic'] = trim(gray[3: top_bottom + 1, ex0: w - 4])
+    px = photo[0] - 3 if photo else int(0.72 * w)
+    xl = max(6, int(0.018 * w))
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    y_body = top_bottom + 2
+    body = cv2.subtract(bw, lines)[y_body: h - 3, xl:px]
+    prof = (body > 0).sum(1).astype(int)
+    if not len(prof): return out
+    P = ENG_PITCH * h
+    thr = max(2, int(0.01 * body.shape[1]))
+    ink = np.where(prof > thr)[0]
+    if not len(ink): return out
+    top = int(ink[0])
+    # grid boundaries: top - P/4 .. ; each inner boundary moved to the emptiest rows within +-0.3 P of the grid point
+    cuts = [max(0, top - int(0.2 * P))]
+    for k in range(1, ENG_MAX_LINES + 1):
+        g = top + k * P - 0.12 * P   # the gap between lines sits a little above the next line's top
+        c0, c1 = int(g - 0.3 * P), int(g + 0.3 * P)
+        if c0 >= len(prof): break
+        cuts.append(_runs_min(prof, max(cuts[-1] + int(0.5 * P), c0), min(len(prof), c1)) if c1 > c0 else int(g))
+    cuts = [c for i, c in enumerate(cuts) if i == 0 or c > cuts[i - 1]]
+    k = 0
+    for a, b in zip(cuts, cuts[1:] + [len(prof)]):
+        band = prof[a:b]
+        # a text line: enough ink rows (>= 30 % of the pitch) - stamps and stray marks in the empty lower part are thinner
+        if (band > thr).sum() < 0.3 * P:
+            if k >= 4: break     # empty band after >= 4 lines: end of the text block
+            continue
+        y0, y1 = y_body + a, y_body + min(b, len(prof))
+        out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]))
+        k += 1
+        if k >= ENG_MAX_LINES: break
+    return out
