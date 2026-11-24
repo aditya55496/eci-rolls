@@ -37,6 +37,7 @@ from segment import segment, segment_eng, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
+import parse_tam                                    # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -288,7 +289,7 @@ class Engines:
                 f[k] = txt; cf[k] = round(c, 4)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
-        groups = {'line': ('eng' if lang == 'ENG' else 'hin', 7, None), 'num': ('eng', 7, '0123456789'),
+        groups = {'line': (TESS_LANG.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
                   'epic': ('eng', 7, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/'), 'code': ('eng', 7, '#SERMQ0123456789')}
         gk = {g: [] for g in groups}
         for b, k in keys:
@@ -328,7 +329,7 @@ def code_pixel(box_gray, lang='HIN'):
     if not small: return False
     x, y, cw, ch = small[0]
     m = _mask(box_gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
-    if lang == 'ENG' and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
+    if lang in LATIN_TPL and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
         n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
         H, W = m.shape
         for j in range(1, n):
@@ -405,6 +406,12 @@ def parse_heading(lines, lang='HIN'):
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
+        if lang == 'TAM':   # 'பிரிவு எண் மற்றும் பெயர் : 1-<name>' (Tesseract tam)
+            if ':' in t and re.search(r'பிரிவு|எண்', t):
+                v = t.split(':', 1)[1].strip(' :.-')
+                m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
+                if m: return f'{m.group(1)}-{m.group(2).strip()}'
+            continue
         if lang == 'ENG':   # 'Section No and Name : 1-Lozar ,Aldona'
             m = re.search(r'Sect\w*\s+No\.?\s+and\s+Name\s*[:;.]?\s*([0-9]+)\s*-?\s*(.*)', t)
             if m: return f'{m.group(1)}-{m.group(2).strip()}'
@@ -496,6 +503,11 @@ ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,
 # page run in sequence around the box (prev + 1 == s == next - 1; page edges: the two next / two previous boxes); that reading
 # also stands for the Tesseract vote. Other boxes get the Tesseract serial as before. Default off.
 ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
+# lang-tam (2026-11-25): Tamil SIR rolls (S22, U07) use the English SIR box template: segment_eng, the ENG code-cell test, Tesseract
+# 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
+LATIN_TPL = ('ENG', 'TAM')
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam'}
+PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -544,12 +556,13 @@ CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
-    if lang == 'ENG':
-        # English: line roles voted over all engines, then every engine parsed with the same roles (parse_eng)
+    if lang in LATIN_TPL:
+        # English / Tamil: line roles voted over all engines, then every engine parsed with the same roles (parse_eng / parse_tam)
+        P, from_l = PARSERS[lang]
         nl = max([int(k[4:]) + 1 for n in names for k in per_engine[n][0] if k.startswith('line')], default=0)
-        roles = parse_eng.box_roles([per_engine[n][0] for n in names], nl)
-        per_engine = {n: (parse_eng.canonical(per_engine[n][0], roles), parse_eng.canonical_conf(per_engine[n][1], roles)) for n in names}
-        cands = [parse_eng.from_lines_eng(per_engine[n][0]) for n in names]
+        roles = P.box_roles([per_engine[n][0] for n in names], nl)
+        per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
+        cands = [from_l(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
@@ -648,8 +661,8 @@ def process_page(task):
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang == 'ENG':
-            segs_list.append({k: im for k, im in segment_eng(g).items() if im.size}); stamps.append(False)
+        if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
+            segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM').items() if im.size}); stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
@@ -659,8 +672,8 @@ def process_page(task):
     for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
-        if lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
-            heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], 'eng' if lang == 'ENG' else 'hin', 7), lang)))
+        if lang in LATIN_TPL or not _E.crnn:   # English / Tamil headings: Tesseract reads the print well (and runs without CRNNs)
+            heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], TESS_LANG.get(lang, 'hin'), 7), lang)))
         else:
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
@@ -690,7 +703,7 @@ def process_page(task):
         # ENG_S1_TESS (job3, 2026-11-25): Tesseract groups of stage 1 for English rolls (env ECI_ENG_S1_TESS, comma list of
         # num/epic/code/line; default all four = engpipe behaviour). With trusted English CRNNs, 'num,code' keeps Tesseract
         # text lines (95 % of the Tesseract time) for the stage-2 boxes only.
-        s1t = ENG_S1_TESS if lang == 'ENG' else {'num', 'epic', 'code'}
+        s1t = ENG_S1_TESS if lang in LATIN_TPL else {'num', 'epic', 'code'}
         seq_ok = set()
         if lang == 'ENG' and ENG_SEQ and 'num' in s1t and _E.crnn:
             reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t - {'num'}, lang=lang)
@@ -721,7 +734,7 @@ def process_page(task):
             if fl or (not hinted and not CASCADE_NOHINT): need.append(i)
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))),
-                                 tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang == 'ENG' else {'line'}, lang=lang)
+                                 tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang in LATIN_TPL else {'line'}, lang=lang)
             for i, r2 in zip(need, more):
                 for tn in _E.tnames:
                     t1 = reads[i][tn]; t2 = r2.pop(tn)
@@ -967,13 +980,14 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-([SU]\d+)-(\d+)-.*-(?:HIN|ENG)-(\d+)-', b)   # S = state, U = union territory (Delhi U05, Chandigarh U02)
+    m = re.search(r'-([SU]\d+)-(\d+)-.*-(?:[A-Z]{3})-(\d+)-', b)   # S = state, U = union territory (Delhi U05, Chandigarh U02)
     return dict(state=m.group(1), ac=int(m.group(2)), roll_part=int(m.group(3))) if m else {}
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG'): return opt.upper()
-    return 'ENG' if '-ENG-' in os.path.basename(path).upper() else 'HIN'
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM'): return opt.upper()
+    b = os.path.basename(path).upper()
+    return 'ENG' if '-ENG-' in b else 'TAM' if '-TAM-' in b else 'HIN'
 
 
 def parse_pages(spec, n):
@@ -1007,7 +1021,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-* file names, else HIN), HIN or ENG')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, TAM for *-TAM-* file names, else HIN), HIN, ENG or TAM')
     ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
                     'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
