@@ -109,7 +109,10 @@ def counts(rows):
 
 def do_item(hub, item):
     p = item["payload"]
-    ac, parts, rolls = int(p["ac"]), [int(x) for x in p.get("parts", [])], p["rolls"]
+    # GE items carry no "rolls" (the key says it): a worker with older code of this task fails on them (KeyError) instead
+    # of overwriting the AC's SIR record with an empty one (2026-11-24)
+    rolls = p.get("rolls") or (["2024-ge-final"] if item["key"].startswith("ge/") else [])
+    ac, parts = int(p["ac"]), [int(x) for x in p.get("parts", [])]
     rec = {"ac": ac, "rolls": {}}
     with tempfile.TemporaryDirectory() as tmp:
         ocr_rolls = [r for r in rolls if r in ("2026-sir-draft", "2026-sir-final")]
