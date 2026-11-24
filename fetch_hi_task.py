@@ -9,7 +9,18 @@ Queue item: key "<roll id>/<ac>", payload {"state": "S12", "ac": 1, "lang": "HIN
   task `fetch-ger` for UP (offline captcha solver, one captcha per chunk of parts, paced captchas, single-use file ids
   downloaded at once, parts without a file id go into the next chunk).
 Output: parts/<roll id>/<ac>.json (the part list), pdf/<roll id>/<ac>/<file name the portal gives>, one hub record per PDF
-("<roll id>/<ac>/<part>": bytes, sha256, part name) and one per AC. A retry skips parts already in the bucket.
+("<roll id>/<ac>/<part>": bytes, sha256, part name) and one per AC. A retry (or payload "recheck": true) skips parts already
+in the bucket. Payload "probe_only": true (ACs done before the part-list fix): no listed part is fetched; only the language check
+and the probe above the list run.
+
+Part-list gap (checked 2026-11-24): get-publish-part-list ignores the roll and gives the AC's CURRENT part list. A roll can have
+parts above that list (UP SIR 2026: ~4,015 parts in 294 ACs; Gujarat, Kerala and Uttarakhand SIR 2026 seen too) or fewer parts
+(Bihar 2025 rolls: 12-15 % of the listed parts have no file). So after the listed parts the task probes higher part numbers until
+EXTRA_MISS numbers in a row have no file, stores what it finds and writes "extra_parts" and "missing" into the AC record. Part
+names / ids in the records come from the current list: for an older roll they can belong to a different polling station.
+Language (cdn): the planned language is checked on the public path first; if it has no file there, the first language that
+has one is used (2026-11-24: Tamil Nadu and Puducherry SIR 2026 rolls exist only in Tamil, Lakshadweep and Kerala ACs 1-3 only in
+Malayalam on the public path, although the discovery table lists English / Kannada). The AC record says "lang_used".
 """
 import base64
 import concurrent.futures as cf
@@ -40,6 +51,9 @@ MAX_PARTS = int(os.environ.get("ECI_MAX_PARTS", "0"))     # tests only (scrape-c
 SLOW_BPS = float(os.environ.get("ECI_SLOW_BPS", "300000"))
 SLOW_AFTER = 8
 SLOW_MARK = "/tmp/eci-rolls-slow-runner"
+EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))      # numbers in a row without a file that end the probe above the list
+FORM_PROBE = 30                                               # part numbers per probe request on the form route
+LANGS = ["ENG", "HIN", "TAM", "MAL", "KAN", "TEL", "BEN", "MAR", "GUJ", "ORI", "PAN", "ASM", "URD"]
 _local = threading.local()
 _last_captcha = [0.0]
 
@@ -135,41 +149,93 @@ def get_cdn(hub, url, speeds):
     return None, "gave up"
 
 
-def do_cdn(hub, roll, state, ac, lang, parts):
-    names = {int(p["partNumber"]): E.roll_pdf_name(roll, state, ac, int(p["partNumber"]), lang) for p in parts}
-    byno = {int(p["partNumber"]): p for p in parts}
-    todo = sorted(byno)
-    if hub.attempts > 1:
-        have = in_bucket(hub, [f"{PROJECT}/pdf/{roll['id']}/{ac}/{names[n]}" for n in todo])
-        todo = [n for n in todo if f"{PROJECT}/pdf/{roll['id']}/{ac}/{names[n]}" not in have]
-    hub.metric("pdfs_skipped_known", len(byno) - len(todo))
-    stored, speeds, gave_up, slow = 0, [], [], threading.Event()
+def head_ok(url):
+    """True / False for a file / no file (404) on the public path; None when the site does not answer clearly."""
+    for attempt in range(3):
+        try:
+            r = session().head(url, timeout=60)
+        except requests.RequestException:
+            time.sleep(5 * (attempt + 1))
+            continue
+        if r.status_code in (200, 404):
+            return r.status_code == 200
+        time.sleep(10 * (attempt + 1))
+    return None
 
-    def one(n):
+
+def cdn_lang(hub, roll, state, ac, lang, nums):
+    """The language the public path serves for this AC roll: the planned one, else the first language with a file."""
+    sample = sorted({nums[0], nums[len(nums) // 2], nums[-1]})
+    unclear = False
+    for lg in [lang] + [x for x in LANGS if x != lang]:
+        ans = [head_ok(E.roll_pdf_url(roll, state, ac, n, lg)) for n in sample]
+        if any(ans):
+            if lg != lang:
+                hub.metric("lang_fallback")
+            return lg
+        unclear |= None in ans
+    if unclear:
+        raise RuntimeError("public path did not answer clearly while checking the language (retry later)")
+    return lang
+
+
+def do_cdn(hub, roll, state, ac, lang, parts):
+    byno = {int(p["partNumber"]): p for p in parts}
+    lang = cdn_lang(hub, roll, state, ac, lang, sorted(byno))
+    key = lambda n: f"{PROJECT}/pdf/{roll['id']}/{ac}/{E.roll_pdf_name(roll, state, ac, n, lang)}"  # noqa: E731
+    todo = sorted(byno)
+    if hub.probe_only:
+        todo = []
+    elif hub.skip_known:
+        have = in_bucket(hub, [key(n) for n in todo])
+        todo = [n for n in todo if key(n) not in have]
+    known = len(byno) - len(todo)
+    hub.metric("pdfs_skipped_known", known)
+    stored, speeds, gave_up, missing, slow = [0], [], [], [], threading.Event()
+
+    def one(n, p=None):
+        """'ok' (stored), '404' (no file) or 'err'."""
         if slow.is_set():
-            return 0
+            return "err"
         url = E.roll_pdf_url(roll, state, ac, n, lang)
         b, info = get_cdn(hub, url, speeds)
         if len(speeds) >= SLOW_AFTER and sorted(speeds[-SLOW_AFTER:])[SLOW_AFTER // 2] < SLOW_BPS:
             slow.set()
         if b is None:
-            hub.failure("pdf", f"{roll['id']}/{ac}/{n}", f"no PDF ({info})", url=url)
+            if p is not None or info != "404":       # a probe above the list that finds nothing is not a failure
+                hub.failure("pdf", f"{roll['id']}/{ac}/{n}", f"no PDF ({info})", url=url)
             if info != "404":
                 gave_up.append(n)
-            return 0
-        store(hub, roll, state, ac, byno[n], names[n], b, {"last_modified": info})
-        return 1
+            return "404" if info == "404" else "err"
+        store(hub, roll, state, ac, p or {"partNumber": n}, E.roll_pdf_name(roll, state, ac, n, lang), b,
+              {"last_modified": info, **({} if p else {"extra_part": True})})
+        stored[0] += 1
+        return "ok"
 
     threads = max(1, min(16, int(hub.settings.get("threads", 8))))
     with cf.ThreadPoolExecutor(threads) as ex:
-        for k in ex.map(one, todo):
-            stored += k
+        for n, res in zip(todo, ex.map(lambda n: one(n, byno[n]), todo)):
+            if res == "404":
+                missing.append(n)
+        # the part list is the AC's current list, not this roll's: probe above it until EXTRA_MISS numbers in a row have no file
+        extra, top, miss = [], max(byno), 0
+        while miss < EXTRA_MISS and not slow.is_set() and not gave_up and top < max(byno) + 3000:
+            batch = list(range(top + 1, top + 1 + max(EXTRA_MISS, threads)))
+            have = in_bucket(hub, [key(n) for n in batch]) if hub.skip_known else set()
+            res = list(ex.map(lambda n: "known" if key(n) in have else one(n), batch))
+            for n, r in zip(batch, res):
+                miss = miss + 1 if r == "404" else 0
+                if r in ("ok", "known"):
+                    extra.append(n)
+                known += r == "known"
+            top = batch[-1]
     if slow.is_set():
         hub.metric("slow_runner")
-        raise SlowRunner(f"slow runner: {stored} stored, AC handed back")
+        raise SlowRunner(f"slow runner: {stored[0]} stored, AC handed back")
     if gave_up:
-        raise RuntimeError(f"{len(gave_up)} PDFs not fetched (retry later), {stored} stored")
-    return stored, len(byno) - len(todo)
+        raise RuntimeError(f"{len(gave_up)} PDFs not fetched (retry later), {stored[0]} stored")
+    hub.metric("extra_parts", len(extra))
+    return stored[0], known, {"lang_used": lang, "extra_parts": extra, "missing": sorted(missing)}
 
 
 # ---------------------------------------------------------------- route form
@@ -222,12 +288,15 @@ def do_form(hub, roll, state, ac, lang, parts):
     byno = {int(p["partNumber"]): p for p in parts}
     district = parts[0]["districtCd"]
     todo = sorted(byno)
-    if hub.attempts > 1:      # the portal's file names follow this rule for the rolls seen so far; a miss only means a re-download
-        guess = {n: f"{PROJECT}/pdf/{roll['id']}/{ac}/{E.roll_pdf_name(roll, state, ac, n, lang)}" for n in todo}
-        have = in_bucket(hub, list(guess.values()))
-        todo = [n for n in todo if guess[n] not in have]
-    hub.metric("pdfs_skipped_known", len(byno) - len(todo))
-    stored_n, rounds, why, absent = 0, 0, {}, {}
+    guess = lambda n: f"{PROJECT}/pdf/{roll['id']}/{ac}/{E.roll_pdf_name(roll, state, ac, n, lang)}"  # noqa: E731
+    if hub.probe_only:
+        todo = []
+    elif hub.skip_known:      # the portal's file names follow this rule for the rolls seen so far; a miss only means a re-download
+        have = in_bucket(hub, [guess(n) for n in todo])
+        todo = [n for n in todo if guess(n) not in have]
+    known = len(byno) - len(todo)
+    hub.metric("pdfs_skipped_known", known)
+    stored_n, rounds, why, absent, missing = 0, 0, {}, {}, []
     part_re = re.compile(rf"-{lang}-(\d+)-WI\.pdf$")
     threads = int(os.environ.get("ECI_FORM_THREADS") or 0) or max(1, min(16, int(hub.settings.get("threads", 8))))
     while todo and rounds < MAX_ROUNDS and time.time() < DEADLINE:
@@ -263,18 +332,47 @@ def do_form(hub, roll, state, ac, lang, parts):
             why[n] = errs[0] if errs else "no file id"
             if absent.get(n, 0) >= 3:
                 hub.failure("pdf", f"{roll['id']}/{ac}/{n}", "the portal gives no file for this part (3 tries)")
+                missing.append(n)
                 continue
             todo.append(n)
     if todo:
         raise RuntimeError(f"{len(todo)} parts not fetched after {rounds} rounds ({stored_n} stored); e.g. "
                            + ", ".join(f"{n}: {why.get(n, '?')}" for n in todo[:3]))
-    return stored_n, len(byno) - len(todo)
+    # the part list is the AC's current list, not this roll's: ask for FORM_PROBE numbers above it (one captcha); go on while
+    # files come back near the top of the probed range. The portal answers only for numbers that have a file.
+    extra, top = [], max(byno)
+    while time.time() < DEADLINE:
+        probe = [n for n in range(top + 1, top + 1 + FORM_PROBE)]
+        if hub.skip_known:
+            have = in_bucket(hub, [guess(n) for n in probe])
+            extra += [n for n in probe if guess(n) in have]
+            known += sum(guess(n) in have for n in probe)
+            probe = [n for n in probe if guess(n) not in have]
+        got = set()
+        for fid in file_ids(hub, roll, state, ac, district, probe, lang) if probe else []:
+            b, name, err = get_file(hub, fid)
+            m = part_re.search(name or "")
+            if b is None or not m or int(m.group(1)) not in probe:
+                raise RuntimeError(f"probe above the list: {err or 'unexpected file ' + str(name)} (retry later)")
+            n = int(m.group(1))
+            store(hub, roll, state, ac, {"partNumber": n, "districtCd": district}, name, b, {"extra_part": True})
+            got.add(n)
+            stored_n += 1
+        extra += sorted(got)
+        found = [n for n in extra if n > top]
+        if not found or max(found) <= top + FORM_PROBE - EXTRA_MISS:
+            break
+        top += FORM_PROBE
+    hub.metric("extra_parts", len(extra))
+    return stored_n, known, {"lang_used": lang, "extra_parts": sorted(extra), "missing": sorted(missing)}
 
 
 def do_item(hub, item):
     p = item["payload"]
     roll, state, ac, lang, route = p["roll"], p["state"], int(p["ac"]), p.get("lang", "HIN"), p["route"]
     hub.attempts = item.get("attempts") or 0
+    hub.skip_known = hub.attempts > 1 or bool(p.get("recheck"))
+    hub.probe_only = bool(p.get("probe_only"))    # an AC done before this change: only the language check and the probe above the list
     parts = sorted(part_list(hub, roll, state, ac), key=lambda x: int(x["partNumber"]))
     if MAX_PARTS:
         parts = parts[:MAX_PARTS]
@@ -283,9 +381,12 @@ def do_item(hub, item):
         return 0
     upload(hub, [(f"parts/{roll['id']}/{ac}.json", json.dumps({"state": state, "roll": roll, "ac": ac, "fetched": E.now(),
                                                                    "parts": parts}, ensure_ascii=False).encode(), "application/json")])
-    stored, known = (do_cdn if route == "cdn" else do_form)(hub, roll, state, ac, lang, parts)
+    stored, known, info = (do_cdn if route == "cdn" else do_form)(hub, roll, state, ac, lang, parts)
     hub.record(f"{roll['id']}/{ac}", {"state": state, "roll": roll["id"], "ac": ac, "lang": lang, "route": route, "parts": len(parts),
-                                      "stored_now": stored, "known_before": known, "part_numbers": [int(x["partNumber"]) for x in parts]})
+                                      "stored_now": stored, "known_before": known, "part_numbers": [int(x["partNumber"]) for x in parts],
+                                      **info, **({"probe_only": True} if hub.probe_only else
+                                                 {"files": len(parts) - len(info["missing"]) + len(info["extra_parts"])}),
+                                      "part_list": "current list of the AC (the portal ignores the roll)", "checked": E.now()})
     return stored
 
 
