@@ -497,6 +497,14 @@ def decide_box(per_engine, names, pix, hints, stamp=None):
     return out, flags, readings, hint is not None, cands
 
 
+TESS_SKIP = os.environ.get('ECI_NOHINT_TESS_SKIP', '0') != '0'
+
+
+def _crnn_same(cs, f):
+    v = cs[0][f]
+    return bool(v) and ensemble2.valid(f, v) and all(visual(c[f]) == visual(v) for c in cs[1:])
+
+
 _VALF = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
 
 
@@ -590,6 +598,27 @@ def process_page(task):
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
         K = NOHINT_CASCADE
+    elif TESS_SKIP and not _OPT['hints']:
+        # job2 r3 (ECI_NOHINT_TESS_SKIP=1, no 2027 roll, needs ECI_NOHINT_DIGITS=1 + ECI_NOHINT_CLOSED=1): Tesseract does not read
+        # line2 (house) when all CRNNs read the same house number with a digit and without . , ; :, nor line3 (age, gender) when
+        # all CRNNs read the same valid age and gender: decide() takes the CRNN value there whatever Tesseract reads, so the
+        # output is the same and the Tesseract time of those lines is saved.
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, tess_groups={'num', 'epic', 'code'})
+        crn = [n for n in _E.names if n.startswith('crnn')]
+        sub = []
+        for i, r in enumerate(reads):
+            cs = [from_lines(r[n][0]) for n in crn]
+            skip = set()
+            if _crnn_same(cs, 'house_no'):
+                h = cs[0]['house_no']
+                if any(ch.isdigit() for ch in h) and not any(ch in h for ch in '.,;:'): skip.add('line2')
+            if _crnn_same(cs, 'age') and _crnn_same(cs, 'gender'): skip.add('line3')
+            sub.append({k: im for k, im in segs_list[i].items() if k.startswith('line') and k not in skip})
+        tm['tess_lines_skipped'] = sum(sum(k.startswith('line') for k in segs_list[i]) - len(sub[i]) for i in range(len(sub)))
+        more = _E.read_boxes(sub, _OPT['tmp'], tm, crnn_idx=set(), tess_groups={'line'})
+        for i, r2 in enumerate(more):
+            reads[i]['tess'][0].update(r2['tess'][0])
+        stage1_only = set()
     else:
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm)
         stage1_only = set()
