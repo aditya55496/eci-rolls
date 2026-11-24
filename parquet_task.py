@@ -2,6 +2,10 @@
 
 Queue item (project eci-rolls-up-parquet): key "<ac>", payload {"ac": 174, "parts": [1, 2, ...], "rolls": [...]}
 (GE 2024: key "ge/<ac>", payload {"ac", "ge_parts": [...], "rolls": ["2024-ge-final"]}).
+Extra parts (2026-11-24: parts above the portal's current part list, found by the fetch probe): payload "extra_parts":
+{"2026-sir-draft": [...], "2026-sir-final": [...]}; their rows carry "extra_part": true in the JSON column 'extra' (the key is
+absent on all other rows; the schema does not change). Such items name the AC "ac_n" instead of "ac", so a worker with older
+code of this task fails on them (KeyError) instead of writing files without the marker.
 Rolls: "2026-sir-draft" and "2026-sir-final" from the OCR output (ocr/<ac>/<part>.jsonl.gz: both rolls in one file, after the
 EPIC and final-roll repairs), "2027-ssr-draft" from the text layer (text/<ac>.jsonl.gz); later "2024-ge-final"
 (ocr/<ac>/<part>-ge2024.jsonl.gz).
@@ -112,7 +116,8 @@ def do_item(hub, item):
     # GE items carry no "rolls" (the key says it): a worker with older code of this task fails on them (KeyError) instead
     # of overwriting the AC's SIR record with an empty one (2026-11-24)
     rolls = p.get("rolls") or (["2024-ge-final"] if item["key"].startswith("ge/") else [])
-    ac, parts = int(p["ac"]), [int(x) for x in p.get("parts", [])]
+    ac, parts = int(p["ac_n"] if "ac_n" in p else p["ac"]), [int(x) for x in p.get("parts", [])]
+    extra = {r: {int(x) for x in v} for r, v in (p.get("extra_parts") or {}).items()}
     rec = {"ac": ac, "rolls": {}}
     with tempfile.TemporaryDirectory() as tmp:
         ocr_rolls = [r for r in rolls if r in ("2026-sir-draft", "2026-sir-final")]
@@ -133,6 +138,8 @@ def do_item(hub, item):
                         src = r.get("source") or ""
                         roll = "2026-sir-final" if "FinalRoll" in src else "2026-sir-draft" if "DraftRoll" in src else None
                         if roll in by:
+                            if x in extra.get(roll, ()):
+                                r["extra_part"] = True
                             by[roll].append(r)
                 os.remove(got[k])
             for roll in ocr_rolls:
@@ -140,6 +147,9 @@ def do_item(hub, item):
                 c = counts(rows)
                 c["bytes"] = write(hub, roll, ac, to_table(rows, OCR_SCHEMA, roll, ac)) if rows else 0
                 c["parts_without_ocr_file"] = missing
+                if extra.get(roll):
+                    c["extra_parts"] = sorted(extra[roll])
+                    c["extra_part_rows"] = sum(1 for r in rows if r.get("extra_part"))
                 rec["rolls"][roll] = c
             by = None
         if "2024-ge-final" in rolls:   # GE 2024: its own OCR files, ocr/<ac>/<part>-ge2024.jsonl.gz (parts: payload ge_parts)

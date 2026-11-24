@@ -45,3 +45,14 @@ def test_totals_row_rules():
     assert P._totals([627, 330, 297, 627])[:4] == (330, 297, 0, 627)                   # lone '0' dropped by Tesseract
     assert P._totals([2026, 1, 5]) is None
     assert P._num(":5") == 5 and P._num("২৬") == 26 and P._num("No.") is None
+
+
+def test_parquet_extra_part_marker():
+    try:
+        import parquet_task as Q
+    except Exception:       # pyarrow not installed here: the task installs it on the runner
+        return
+    rows = [{"ac": 5, "roll_part": 1, "name": "a"}, {"ac": 5, "roll_part": 2, "name": "b", "extra_part": True}]
+    t = Q.to_table(rows, Q.OCR_SCHEMA, "2026-sir-final", 5).to_pylist()
+    assert t[0]["extra"] is None and t[1]["extra"] == '{"extra_part": true}'
+    assert [c.name for c in Q.OCR_SCHEMA] == [c for c in t[0]]           # schema unchanged
