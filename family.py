@@ -79,6 +79,26 @@ PROJECTS = [
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 12, "items": [],
     },
     {
+        # OCR of the Hindi-state SIR rolls (owner plan 2026-11-25 03:49): one item per part of one AC of one state, both SIR rolls;
+        # model set per item (model_sets.json: v4a with 2027 hints, j2Ps without); hub setting ocr_model_set_map swaps sets for
+        # all pending items. Items from plan_hi_ocr.py, seeded from the server. Same target as the UP OCR (its worker limit).
+        "name": f"{FAMILY}-hi-ocr", "title": "Hindi-state SIR rolls (2025 Bihar, 2026 others): OCR, model set per item (no LLM)",
+        "task": "ocr-any", "target": "eci-rolls-ocr", "env": {}, "probe": None,
+        "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 256, "items": [],
+    },
+    {
+        # the part repairs again on stored ocr-any output (ocr-any runs them itself; this is for outputs older than a fix)
+        "name": f"{FAMILY}-hi-repair", "title": "Hindi-state SIR OCR: repairs on stored output (no new OCR)", "task": "repair-any",
+        "target": "eci-rolls-repair", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 16, "items": [],
+    },
+    {
+        # Parquet per state / roll / AC from the ocr-any output (SIR schema + provenance columns); plan_hi_ocr.py --parquet
+        "name": f"{FAMILY}-hi-parquet", "title": "Hindi-state SIR rolls as Parquet (per state, roll and AC)", "task": "parquet-any",
+        "target": "eci-rolls-parquet", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 16, "items": [],
+    },
+    {
         "name": f"{FAMILY}-up-ocr", "title": "UP SIR rolls 2026: OCR (no LLM, 4 CPUs per runner)", "task": "ocr",
         "target": "eci-rolls-ocr", "env": {}, "probe": None,
         "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 256, "items": [],

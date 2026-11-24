@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 
 from scrape_hub_client import HubClient, stop_flag
@@ -47,14 +48,29 @@ def fetch_hub(hub, keys, dest):
     return got
 
 
+def _run(cmd, env, timeout=3600):
+    """-> (exit code, output, rusage of this eci_ocr run and its pool workers). os.wait4 gives the CPU of this child alone
+    (os.times() would also count other threads' children)."""
+    p = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    timer = threading.Timer(timeout, p.kill)
+    timer.start()
+    try:
+        text = p.stdout.read()
+        _, status, ru = os.wait4(p.pid, 0)
+    finally:
+        timer.cancel()
+        p.stdout.close()
+    p.returncode = os.waitstatus_to_exitcode(status)    # Popen must not wait for the pid again
+    return p.returncode, text, ru
+
+
 def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
     """pdfs: [(roll id, path)] in roll order -> (records, per-run summaries, CPU seconds of the eci_ocr processes)."""
     # only the set's decision switches: an ECI_* variable from the runner or pool env must not change the run behind the
     # provenance (ECI_OCR_WORKERS and ECI_TESS_CLI change speed / call path only)
     env = {k: v for k, v in os.environ.items() if not k.startswith("ECI_") or k in ("ECI_OCR_WORKERS", "ECI_TESS_CLI")}
     env.update(ms.get("env", {}))
-    recs, summs, prev = [], [], None
-    c0 = os.times()
+    recs, summs, prev, cpu = [], [], None, 0.0
     for i, (roll, pdf) in enumerate(pdfs):
         o1 = os.path.join(tmp, f"out{i}.jsonl")
         cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), pdf, "--out", o1, "--workers", str(WORKERS),
@@ -68,11 +84,12 @@ def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
         if i + 1 < len(pdfs):
             prev = os.path.join(tmp, f"cache{i}.pkl")
             cmd += ["--cache-out", prev]
-        r = subprocess.run(cmd, env=env, timeout=3600, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-        if r.returncode:
-            lines = [l.strip() for l in r.stdout.splitlines() if l.strip() and "_discovery.cc" not in l and "onnxruntime" not in l.lower()]
+        rc, text, ru = _run(cmd, env)
+        cpu += ru.ru_utime + ru.ru_stime
+        if rc:
+            lines = [l.strip() for l in text.splitlines() if l.strip() and "_discovery.cc" not in l and "onnxruntime" not in l.lower()]
             tb = [l for l in lines if "Error" in l or "error" in l or "Killed" in l or "Traceback" in l]
-            raise RuntimeError(f"eci_ocr exit {r.returncode} on {roll}: " + " | ".join((tb[-3:] or lines[-4:]))[-350:])
+            raise RuntimeError(f"eci_ocr exit {rc} on {roll}: " + " | ".join((tb[-3:] or lines[-4:]))[-350:])
         with open(o1, encoding="utf-8") as f:
             for line in f:
                 if line.strip():
@@ -83,8 +100,6 @@ def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
         s["roll"] = roll
         summs.append(s)
         os.remove(o1)
-    c1 = os.times()
-    cpu = (c1.children_user - c0.children_user) + (c1.children_system - c0.children_system)
     return recs, summs, cpu
 
 

@@ -13,6 +13,11 @@ EPIC_RE = re.compile(r'^([A-Z]{3}[0-9]{7}|[A-Z]{2}/[0-9]{2}/[0-9]{3}/[0-9]{6,7})
 # boxes in GE gold v3, all flagged before only for the format) and with backslashes (UP\\58\\283\\0723298: printed in 2 GE boxes)
 if os.environ.get('ECI_EPIC_FMT', '0') == '1':
     EPIC_RE = re.compile(r'^([A-Z]{3}[0-9]{7}|[A-Z]{2}/[0-9]{1,2}/[0-9]{3}/[0-9]{6,7}|[A-Z]{2}\\[0-9]{1,2}\\[0-9]{3}\\[0-9]{6,7})$')
+# ocrv5 2026-11-25 (ECI_EPIC_OLDFMT=1, default off): old-format EPICs of other states, 2 letters / 1-3 digits / 2-3 digits /
+# 6-7 digits (Haryana HR/01/01/0000369: 184 of 918 boxes of S07 AC 1 part 1, all flagged only for the format; Chhattisgarh
+# MP/021/163/642044). A superset of the UP old format; off in the adopted sets v4a and j2Ps (not gold-checked).
+if os.environ.get('ECI_EPIC_OLDFMT', '0') == '1':
+    EPIC_RE = re.compile(EPIC_RE.pattern[:-2] + r'|[A-Z]{2}/[0-9]{1,3}/[0-9]{2,3}/[0-9]{6,7})$')
 LABELS = {'पिता का नाम', 'पति का नाम', 'माता का नाम', 'अन्य'}
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 

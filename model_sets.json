@@ -2,24 +2,107 @@
   "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 = first 16 hex chars of crnn.onnx's sha256 (checked by the task before the first item).",
   "v4a": {
     "about": "Hindi SIR with 2027 SSR hints (owner plan 2026-11-25 03:49): v4a students (half-width CRNNs distilled from g8, all convs int8) + Hindi label-variant fix (branch hinvar 2bc0673). 5x less CPU than production c11q..c3q.",
-    "models": ["c11g9s", "c9g9s", "c4g9s", "c3g9s"],
-    "sha256_16": {"c11g9s": "0c4cf0ab04cb6b98", "c9g9s": "37df347aa2a5e1e6", "c4g9s": "1749043685aa2146", "c3g9s": "c9e0ebab641980c3"},
+    "models": [
+      "c11g9s",
+      "c9g9s",
+      "c4g9s",
+      "c3g9s"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "c9g9s": "37df347aa2a5e1e6",
+      "c4g9s": "1749043685aa2146",
+      "c3g9s": "c9e0ebab641980c3"
+    },
     "hints": "required",
     "stage1": 1,
-    "env": {"ECI_EPIC_PAIR": "1", "ECI_CODE_CRNN": "1", "ECI_EPIC_CONFIRM": "1", "ECI_EPIC_TESS_NOHINT": "1", "ECI_STAMP_TEMPLATE": "1",
-            "ECI_NOHINT_DIGITS": "0", "ECI_EPIC_PREFIX": "0", "ECI_EPIC_FMT": "0"},
-    "gold": {"g26_rec": 98.74, "g26_unflagged": 99.47, "g26_flag_pct": 3.42, "hc_rec": 98.01, "ge_rec": 97.56,
-             "source": "speed study 2026-11-24 (branch speed-students 41f1d10; Modal eci-eval s11h3x0 s9hx0 s4hx0 s3hx0)"}
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "0",
+      "ECI_EPIC_PREFIX": "0",
+      "ECI_EPIC_FMT": "0",
+      "ECI_EPIC_OLDFMT": "0"
+    },
+    "gold": {
+      "g26_rec": 98.74,
+      "g26_unflagged": 99.47,
+      "g26_flag_pct": 3.42,
+      "hc_rec": 98.01,
+      "ge_rec": 97.56,
+      "source": "speed study 2026-11-24 (branch speed-students 41f1d10; Modal eci-eval s11h3x0 s9hx0 s4hx0 s3hx0)"
+    }
   },
   "j2Ps": {
     "about": "Hindi SIR without 2027 hints (owner plan 2026-11-25 03:49): job2's best set: s11h3 (= c11g9s) + job2_r1_s9m + job2_r2_s4m + job2_r2_s3m (int8 x0), no-hint rules NOHINT_DIGITS + EPIC_PREFIX + EPIC_FMT, EPIC_PAIR 1 (job2 NOTES 03:10, queue job2_j2Ps). 3.3x less CPU than production.",
-    "models": ["c11g9s", "job2_r1_s9mx0", "job2_r2_s4mx0", "job2_r2_s3mx0"],
-    "sha256_16": {"c11g9s": "0c4cf0ab04cb6b98", "job2_r1_s9mx0": "fc0c19c4654453a2", "job2_r2_s4mx0": "0a385332a0bbed7d", "job2_r2_s3mx0": "18a33b47eff5a62d"},
+    "models": [
+      "c11g9s",
+      "job2_r1_s9mx0",
+      "job2_r2_s4mx0",
+      "job2_r2_s3mx0"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "job2_r1_s9mx0": "fc0c19c4654453a2",
+      "job2_r2_s4mx0": "0a385332a0bbed7d",
+      "job2_r2_s3mx0": "18a33b47eff5a62d"
+    },
     "hints": "none",
     "stage1": 1,
-    "env": {"ECI_EPIC_PAIR": "1", "ECI_CODE_CRNN": "1", "ECI_EPIC_CONFIRM": "1", "ECI_EPIC_TESS_NOHINT": "1", "ECI_STAMP_TEMPLATE": "1",
-            "ECI_NOHINT_DIGITS": "1", "ECI_EPIC_PREFIX": "1", "ECI_EPIC_FMT": "1"},
-    "gold": {"g26_rec": 98.26, "g26_unflagged": 99.79, "g26_flag_pct": 7.95, "hc_rec": 97.01, "hc_unflagged": 99.73,
-             "ge_rec": 97.27, "ge_unflagged": 99.26, "source": "job2 NOTES 2026-11-25 03:10 (real run j2Ps, branch job2 code without hinvar)"}
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "1",
+      "ECI_EPIC_PREFIX": "1",
+      "ECI_EPIC_FMT": "1",
+      "ECI_EPIC_OLDFMT": "0"
+    },
+    "gold": {
+      "g26_rec": 98.26,
+      "g26_unflagged": 99.79,
+      "g26_flag_pct": 7.95,
+      "hc_rec": 97.01,
+      "hc_unflagged": 99.73,
+      "ge_rec": 97.27,
+      "ge_unflagged": 99.26,
+      "source": "job2 NOTES 2026-11-25 03:10 (real run j2Ps, branch job2 code without hinvar)"
+    }
+  },
+  "j2Psf": {
+    "about": "j2Ps + ECI_EPIC_OLDFMT=1 (ocrv5 2026-11-25): old-format EPICs of other states (Haryana HR/01/01/0000369, 2 letters / 1-3 / 2-3 / 6-7 digits) count as valid, so they are not flagged for the format alone. Same models and other rules as j2Ps. NOT gold-run (the UP gold sets have no such EPICs); local test: see models2/ocrv5/README.md. For a hot swap of the no-hint states: hub setting ocr_model_set_map {\"j2Ps\": \"j2Psf\"}.",
+    "models": [
+      "c11g9s",
+      "job2_r1_s9mx0",
+      "job2_r2_s4mx0",
+      "job2_r2_s3mx0"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "job2_r1_s9mx0": "fc0c19c4654453a2",
+      "job2_r2_s4mx0": "0a385332a0bbed7d",
+      "job2_r2_s3mx0": "18a33b47eff5a62d"
+    },
+    "hints": "none",
+    "stage1": 1,
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "1",
+      "ECI_EPIC_PREFIX": "1",
+      "ECI_EPIC_FMT": "1",
+      "ECI_EPIC_OLDFMT": "1"
+    },
+    "gold": {
+      "note": "not gold-run; differs from j2Ps only in the EPIC format check (flags of old-format EPICs)"
+    }
   }
 }
