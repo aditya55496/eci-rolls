@@ -50,6 +50,9 @@ LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters o
 # 2026-11-25: almost all unflagged errors are boxes where one model reproduced the 2027 spelling of a value printed otherwise in 2026.
 HINT_CONF = float(os.environ.get('ECI_HINT_CONF') or 0)
 HINT_CONF_FIELDS = ('name', 'relation_name', 'house_no')
+# job1 (off by default): ECI_HINT_TOP=k: a 2027 match counts when one of the first k engines (c11, c9 roles) reads it, or when
+# two engines read it; a match by a later engine alone (c4, c3, Tesseract) is flagged with its value kept.
+HINT_TOP = int(os.environ.get('ECI_HINT_TOP') or 0)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
@@ -100,6 +103,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         if hint and f in HINT_FIELDS and hint.get(f):
             h = visual(hint[f])
             m = next((v for v, x in zip(vals, vis) if x == h), None)
+            if m is not None and HINT_TOP > 0 and f in HINT_CONF_FIELDS and names:
+                J = [i for i, x in enumerate(vis) if x == h]
+                if len(J) < 2 and J[0] >= HINT_TOP:
+                    out[f] = m; flags.append(f); keep.add(f); continue
             if m is not None and HINT_CONF > 0 and f in HINT_CONF_FIELDS and names and confs:
                 J = [i for i, x in enumerate(vis) if x == h]
                 strong = len(J) >= 2 or any(names[i].startswith('crnn') and (confs[i] or {}).get(LINE_OF[f], 1.0) >= HINT_CONF for i in J)
