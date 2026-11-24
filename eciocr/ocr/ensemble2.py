@@ -59,6 +59,10 @@ EPIC_FMT = os.environ.get('ECI_EPIC_FMT', '0') == '1'
 # disagrees when at least K CRNNs run and ALL of them read the same valid value (meant for K = 5 with an independent 5th CRNN;
 # with the 4 KD students the CRNN name errors are correlated: round 1 rule N, rejected).
 NOHINT_NAMES = int(os.environ.get('ECI_NOHINT_NAMES', '0') or 0)
+# job2 r3 2026-11-25 (ECI_NOHINT_CLOSED=1, default off): no 2027 roll: gender and relation_label (closed value sets) are not
+# flagged only because Tesseract disagrees when ALL CRNNs read the same valid value. Flag study of the no-hint runs: GE gold 267
+# gender + 183 relation_label flags were of this kind (Tesseract misreads the line). Checked first on the non-gold val set.
+NOHINT_CLOSED = os.environ.get('ECI_NOHINT_CLOSED', '0') != '0'
 _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
 
 
@@ -151,7 +155,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
-        if hint is None and NOHINT_DIGITS and f in ('house_no', 'age') and n < need:
+        if hint is None and ((NOHINT_DIGITS and f in ('house_no', 'age')) or (NOHINT_CLOSED and f in ('gender', 'relation_label'))) \
+                and n < need:
             v = _crnn_all_agree(f, vals, vis, names)
             if v is not None:
                 out[f] = v; continue
