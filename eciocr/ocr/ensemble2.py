@@ -12,7 +12,8 @@ Usage: ensemble2.py ENGINE1 ENGINE2 ... [--fallback claude-haiku-5-5]
 import collections, json, os, re, sys
 sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
-from ensemble import valid
+from ensemble import valid as valid_hin, EPIC_RE
+import parse_eng
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -44,6 +45,22 @@ EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 EPIC_PAIR = os.environ.get('ECI_EPIC_PAIR', '1') != '0'    # rule 1 (2026-11-23), see decide()
 CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
+# 2026-11-25 (engpipe): language of the roll being read. 'ENG': English validators (Latin names, Male/Female/Third Gender,
+# printed relative labels) and the relative label compared with the 2027 hint by kind (Father/Husband/Mother/Other), because the
+# 2027 roll of a state can print another form of the label ("Father's Name" vs 'Fathers Name'). Set by eci_ocr per page.
+LANG = 'HIN'
+
+
+def valid(f, v):
+    return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
+
+
+def hvis(f, v):
+    """visual form used to compare an engine value with the 2027 hint"""
+    if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
+    return visual(v)
+
+
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
@@ -91,8 +108,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             if f in CORE and (n < 2 or not valid(f, out[f])): flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):
-            h = visual(hint[f])
-            m = next((v for v, x in zip(vals, vis) if x == h), None)
+            h = hvis(f, hint[f])
+            m = next((v for v in vals if hvis(f, v) == h), None)
             if m is not None: out[f] = m; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
