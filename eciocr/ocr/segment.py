@@ -6,6 +6,7 @@ Box layout (SIR roll and supplement):
 We find the inner ruled cells from the line mask, then text lines by a
 horizontal ink profile. Works at any resolution.
 """
+import os
 import cv2
 import numpy as np
 
@@ -325,28 +326,53 @@ def line_bands(prof, P, max_lines=8):
     return out
 
 
-def segment_guj(gray, pitch=None):
-    """Gujarati box -> dict: serial (+ code), part, epic, line0..lineN (N = 3..7), each line from whole ink components."""
-    h, w = gray.shape
-    out, bw, top_bottom, xl, px = _top_cells(gray)
-    P = (pitch or GUJ_PITCH) * h
-    rules = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
-    rules = cv2.dilate(rules, np.ones((3, 1), np.uint8))
-    y_body = top_bottom + 2
-    body = cv2.subtract(bw, rules)[y_body: h - 3, xl:px]
-    if body.size == 0: return out
+GUJ_SEG = os.environ.get('ECI_GUJ_SEG', 'band')   # band (default since 2026-11-25 04:50) | comp (first version)
+GUJ_EXT = float(os.environ.get('ECI_GUJ_EXT', '0.45'))   # band mode: rows kept above / below the line core, x pitch
+
+
+def guj_lines(body, region, P, mode=None):
+    """Body ink mask (rules removed) + its grey region -> list of line crops (top to bottom). Used by segment_guj and by the
+    synthetic-line generator (train/synth_guj.py), so both cut lines the same way.
+    comp: every ink component goes to one line (core overlap, else centre); other lines' components whitened.
+    band: rows core-EXT*P .. core+EXT*P of the line; components that overlap ANOTHER line's core and not this one are whitened,
+          marks that touch no core (matras, anusvara, reph between two lines) are kept in both neighbours (the model learns
+          to ignore a stray mark at the edge; a lost mark cannot be read back)."""
+    mode = mode or GUJ_SEG
     prof = (body > 0).sum(1).astype(int)
     bands = line_bands(prof, P)
-    if not bands: return out
+    if not bands: return []
+    # the LAST band can hold only matras hanging below the last line (u / uu signs of પુરુષ): core (rows >= 50 % of its peak)
+    # thinner than 0.3 pitch -> not a line. (A short wrapped word such as 'ગોંધા' has a low peak but a normal core.)
+    if len(bands) > 1:
+        a, b = bands[-1]; seg = prof[a:b]; rows = np.where(seg >= 0.5 * seg.max())[0]
+        if rows[-1] - rows[0] + 1 < 0.3 * P: bands = bands[:-1]
     cores = []
     for a, b in bands:
         seg = prof[a:b]; m = seg.max()
         rows = np.where(seg >= 0.5 * m)[0]
         cores.append((a + rows[0], a + rows[-1] + 1))
-    # components: a component that overlaps the cores of two lines (marks of neighbouring lines touching) is split at the cut
-    # between the bands; every (piece of a) component then goes to the band that holds its vertical centre
-    cuts = [b for a, b in bands[:-1]]
     n, lab, st, _ = cv2.connectedComponentsWithStats(body, 8)
+    out = []
+    if mode == 'band':
+        H = body.shape[0]; e = int(round(GUJ_EXT * P))
+        ov = np.zeros((n, len(cores)), np.int32)
+        for j in range(1, n):
+            y, ch = st[j][1], st[j][3]
+            for k, (c0, c1) in enumerate(cores):
+                ov[j, k] = max(0, min(y + ch, c1) - max(y, c0))
+        for k, (c0, c1) in enumerate(cores):
+            r0, r1 = max(0, c0 - e), min(H, c1 + e)
+            if k > 0: r0 = max(r0, cores[k - 1][0])          # never above the previous line's core top
+            if k < len(cores) - 1: r1 = min(r1, cores[k + 1][1])
+            other = [j for j in range(1, n) if ov[j, k] == 0 and ov[j].sum() > 0]
+            sub = lab[r0:r1]
+            keep = (sub > 0) & ~np.isin(sub, other)
+            if not keep.any(): continue
+            keep = cv2.dilate(keep.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            crop_ = region[r0:r1].copy(); crop_[~keep] = 255
+            out.append(trim(crop_))
+        return out
+    cuts = [b for a, b in bands[:-1]]
     assign = np.full(lab.shape, -1, np.int16)
     for j in range(1, n):
         x, y, cw, ch, area = st[j]
@@ -361,9 +387,8 @@ def segment_guj(gray, pitch=None):
         else:
             yc = y + ch / 2.0
             k = next((i for i, c in enumerate(cuts) if yc < c), len(bands) - 1)
-            if ov[k] == 0 and max(ov) > 0: k = int(np.argmax(ov))   # centre in another band but only touches one core
+            if ov[k] == 0 and max(ov) > 0: k = int(np.argmax(ov))
             blk = assign[y:y + ch, x:x + cw]; blk[sub] = k
-    region = gray[y_body: h - 3, xl:px]
     for k in range(len(bands)):
         m = assign == k
         rows = np.where(m.any(1))[0]
@@ -372,5 +397,20 @@ def segment_guj(gray, pitch=None):
         keep = cv2.dilate(m[y0:y1].astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         crop_ = region[y0:y1].copy()
         crop_[~keep] = 255
-        out[f'line{k}'] = trim(crop_)
+        out.append(trim(crop_))
+    return out
+
+
+def segment_guj(gray, pitch=None, mode=None):
+    """Gujarati box -> dict: serial (+ code), part, epic, line0..lineN (N = 3..7) (guj_lines)."""
+    h, w = gray.shape
+    out, bw, top_bottom, xl, px = _top_cells(gray)
+    P = (pitch or GUJ_PITCH) * h
+    rules = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    rules = cv2.dilate(rules, np.ones((3, 1), np.uint8))
+    y_body = top_bottom + 2
+    body = cv2.subtract(bw, rules)[y_body: h - 3, xl:px]
+    if body.size == 0: return out
+    for k, im in enumerate(guj_lines(body, gray[y_body: h - 3, xl:px], P, mode)):
+        out[f'line{k}'] = im
     return out

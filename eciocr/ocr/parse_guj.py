@@ -91,8 +91,16 @@ def canonical(raw, roles):
         if r: cur = r
         if cur and t: texts[cur].append(t)
     for j, r in enumerate(ROLE_ORDER):
-        out[f'line{j}'] = ' '.join(texts[r])
+        out[f'line{j}'] = _join(texts[r])
     return out
+
+
+def _join(parts):
+    """wrapped lines joined with one space; no space after a trailing hyphen ('એન-' + '54' -> 'એન-54', gold convention)"""
+    s = ''
+    for p in parts:
+        s = (s + p) if s.endswith('-') else (s + ' ' + p if s else p)
+    return s
 
 
 def canonical_conf(conf, roles):
