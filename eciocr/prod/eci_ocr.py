@@ -442,6 +442,7 @@ def _valset(recs, segs_list):
                     if v: vs.append(v)
             if not vs: continue
             c = collections.Counter(visual(v) for v in vs); top, k = c.most_common(1)[0]
+            if f == 'house_no' and ensemble2.NOHINT_AMP and '&' in (r[f] or ''): continue   # the '&' choice of decide() stays
             if k * 2 > len(vs): r[f] = next(v for v in vs if visual(v) == top)
 
 

@@ -121,6 +121,18 @@ def _epic_bs(v):
 # these marks (Tesseract drops digits such as the 1 in 'बी.15' -> 'बी.5', but reads the marks).
 # job2 r3 (ECI_NOHINT_SLACK1=field,field, default empty): no 2027 roll: in these fields one dissenting CRNN is allowed when all
 # other engines (Tesseract included) read the same valid value (>= 5 engines).
+# job2 r3 (ECI_NOHINT_AMP=1, default off): no 2027 roll, flagged house_no: when Tesseract read an '&' and at least one CRNN read
+# a value with '&', the value is the most common CRNN reading with '&' (the CRNNs trained with hin_ms_2027 lines read the printed
+# '&' as '8': round 2 finding, GE '10190&' read '101908'). The field stays flagged.
+NOHINT_AMP = os.environ.get('ECI_NOHINT_AMP', '0') != '0'
+
+
+def amp_pick(vals, names):
+    if not names or not any('&' in (v or '') for v, nm in zip(vals, names) if not nm.startswith('crnn')): return None
+    amp = [v for v, nm in zip(vals, names) if nm.startswith('crnn') and '&' in (v or '')]
+    return collections.Counter(amp).most_common(1)[0][0] if amp else None
+
+
 SLACK1_F = set(filter(None, os.environ.get('ECI_NOHINT_SLACK1', '').split(',')))
 HOUSE_PUNCT = os.environ.get('ECI_NOHINT_HOUSE_PUNCT', '0') != '0'
 
@@ -242,6 +254,9 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others):
                 out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
+        if hint is None and NOHINT_AMP and f == 'house_no' and f in flags:
+            v = amp_pick(vals, names)
+            if v is not None: out[f] = v
     if LEX is not None:
         for f in flags:
             if f not in ('name', 'relation_name'): continue
