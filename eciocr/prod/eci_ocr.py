@@ -381,6 +381,8 @@ _OPT = {}
 
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)   # see ensemble2.agree_eng and sequence_confirm
+ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,line').split(',')))
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -460,8 +462,11 @@ def process_page(task):
         # cascade: stage 1 = first K CRNNs + Tesseract Latin fields; the rest only for boxes stage 1 cannot settle
         # ENG: the Tesseract text lines are read in stage 1 too (the English CRNNs are not yet trusted alone; the roles of
         # the wrap lines come from all engines)
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)),
-                              tess_groups={'num', 'epic', 'code'} | ({'line'} if lang == 'ENG' else set()), lang=lang)
+        # ENG_S1_TESS (job3, 2026-11-25): Tesseract groups of stage 1 for English rolls (env ECI_ENG_S1_TESS, comma list of
+        # num/epic/code/line; default all four = engpipe behaviour). With trusted English CRNNs, 'num,code' keeps Tesseract
+        # text lines (95 % of the Tesseract time) for the stage-2 boxes only.
+        s1t = ENG_S1_TESS if lang == 'ENG' else {'num', 'epic', 'code'}
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t, lang=lang)
         names1 = _E.names[:K] + _E.tnames
         need = []
         for i, r in enumerate(reads):
@@ -469,7 +474,7 @@ def process_page(task):
             if fl or not hinted: need.append(i)
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))),
-                                 tess_groups=set() if lang == 'ENG' else {'line'}, lang=lang)
+                                 tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang == 'ENG' else {'line'}, lang=lang)
             for i, r2 in zip(need, more):
                 for tn in _E.tnames:
                     t1 = reads[i][tn]; t2 = r2.pop(tn)
@@ -515,6 +520,12 @@ def sequence_confirm(recs):
         if 'serial_no' not in r['flags'] or s[i] is None: continue
         prev_ok = (s[i - 1] is not None and s[i - 1] + 1 == s[i]) if i > 0 else s[i] == 1
         next_ok = (s[i + 1] is not None and s[i + 1] - 1 == s[i]) if i + 1 < len(s) else prev_ok and i > 0
+        if (ENG_AGREE and r.get('lang') == 'ENG' and i + 2 < len(s) and (i == 0 or recs[i - 1]['page'] < r['page'] - 1)
+                and s[i + 1] is not None and s[i + 2] is not None and s[i + 1] - 1 == s[i] == s[i + 2] - 2
+                and recs[i + 2]['page'] == r['page']):
+            # job3 (2026-11-25, ECI_ENG_AGREE): first record after pages that were not read (--pages): the next two records
+            # of the same page confirm it (no previous neighbour exists)
+            prev_ok = next_ok = True
         if prev_ok and next_ok:
             r['flags'].remove('serial_no'); r['readings'].pop('serial_no', None)
             r['serial_by_sequence'] = True; n += 1

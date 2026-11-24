@@ -61,6 +61,30 @@ def hvis(f, v):
     return visual(v)
 
 
+# 2026-11-25 (job3): English rolls, hinted box, a hint field (or age) that no engine reads as in the 2027 roll: when every engine
+# reads the SAME valid value and the engines include at least one CRNN and Tesseract (independent readers), take it unflagged:
+# the print differs from 2027 (new spelling, house number, age) - the same evidence the no-hint rule accepts. ECI_ENG_AGREE=1.
+# ECI_ENG_AGREE=2 (held-out check with Opus reads, 12 non-gold S05/S14 parts): agreeing engines were wrong in 12 of 117 boxes, all
+# where the value is CLOSE to the 2027 value (1-2 letters: clipped descenders j/y/g -> i/v/q, I/l) or a truncated part of it
+# (a wrap line lost); ages and clearly different values were right (82 of 83). Mode 2 takes only ages and values whose
+# normalised edit distance to the 2027 value is >= 0.34 and that are not a prefix / suffix of it (or it of them).
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
+ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
+
+
+def agree_eng(f, vals, names, hv=''):
+    if not (ENG_AGREE and LANG == 'ENG' and names and len(vals) >= 2): return False
+    if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
+    v = [visual(x) for x in vals]
+    if not (v[0] and all(x == v[0] for x in v) and valid(f, vals[0])): return False
+    if ENG_AGREE >= 2 and f != 'age':
+        from rapidfuzz.distance import Levenshtein
+        a, b = v[0].lower(), visual(str(hv or '')).lower()
+        if not b or a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a): return False
+        if Levenshtein.normalized_distance(a, b) < 0.34: return False
+    return True
+
+
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
@@ -78,7 +102,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             # the field stays flagged. gold_v3 (GE 2024): 20 of 82 stamped boxes had S/E/R read as '#'. Only for boxes with a
             # DELETED stamp (stamp=True from segment.LAST_STAMP): on unstamped boxes the CRNN reads real '#' codes as R/E
             # (gold_v3 measured run: 4 such errors without this condition).
-            if CODE_CRNN and stamp and pix and all(t in ('', '#') for t in tv) and names:
+            # job3 (ECI_ENG_CODE=1): English rolls have no stamp test; when the pixel test says a code is printed and NO Tesseract
+            # reading gave anything (not even '#'), the first CRNN's letter code is taken (the field stays flagged)
+            eng_code = ENG_CODE and LANG == 'ENG' and pix and all(t == '' for t in tv)
+            if ((CODE_CRNN and stamp) or eng_code) and pix and all(t in ('', '#') for t in tv) and names:
                 j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
                 if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
                     out[f] = vals[j]
@@ -111,6 +138,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             h = hvis(f, hint[f])
             m = next((v for v in vals if hvis(f, v) == h), None)
             if m is not None: out[f] = m; continue
+            if agree_eng(f, vals, names, hint[f]): out[f] = vals[0]; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
                 for p in PREF.get(f, []):
@@ -120,6 +148,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         if hint and f == 'age' and hint.get('age', '').isdigit():
             ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
+            if agree_eng(f, vals, names, hint['age']): out[f] = vals[0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue
         c = collections.Counter(vis); top, n = c.most_common(1)[0]
@@ -145,6 +174,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
                 if not v: continue
+                if ENG_CODE and LANG == 'ENG' and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
                 w[visual(v)] += (cf.get(LINE_OF[f], CONFW) if nm.startswith('crnn') else CONFW)
             if w:
                 top = w.most_common(1)[0][0]
