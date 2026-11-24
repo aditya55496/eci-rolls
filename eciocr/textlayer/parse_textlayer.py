@@ -8,8 +8,8 @@ One JSON record per voter box. No OCR: every field comes from the PDF text layer
 
 How it works
 - Boxes come from the vector drawing: each voter box is a 186 x 75 pt rectangle; its top and
-  bottom edges are horizontal strokes. (Fallback when a page has no such strokes: anchor a
-  box on each EPIC word, as bench/hint_2027.py does.)
+  bottom edges are horizontal strokes (175-200 pt wide: one Kerala page has 193 pt columns). An EPIC word
+  that no such box holds gets a box anchored on it, as bench/hint_2027.py does (meta 'epic_anchored').
 - Characters come from page.get_text('rawdict') (logical order, from the PDF /ActualText).
   Each character goes to the box that contains its origin point. A character that overflows
   the box edge stays with the box of the preceding character in the same span.
@@ -23,7 +23,16 @@ How it works
   bleed into the house number.
 - Repairs of known pdfCalligraph /ActualText artifacts (each one counted per record):
     doubled_mark   'लिंंग' -> 'लिंग'   (a combining mark repeated)
-    space_before_mark  'भ ा' -> 'भा' (space before a vowel sign; drawn in the PDF, i.e. a source typo)
+    space_before_mark  'क ुशवाहा' -> 'कुशवाहा' (space before a vowel sign; drawn in the PDF, i.e. a source typo): the sign is
+                   joined to the left only when the part before the space is a fragment (at most 3 consonants, no vowel
+                   sign or anusvara: 'क', 'प्रस'),
+                   or when the sign ends a word after a consonant ('जानक ी देवी' -> 'जानकी देवी')
+    orphan_mark_dropped  'गिरीश ंसिंह' -> 'गिरीश सिंह', 'अस्मिता ुदेवी' -> 'अस्मिता देवी', 'ेदेवी' -> 'देवी': a stray sign after a word
+                   space (or at the start of a value) in front of a word; the sign is dropped and the space kept (2026-11-25:
+                   joining gave 'गिरीशंसिंह', 'अस्मिताुदेवी'). Always so for anusvara / candrabindu, and for a sign that repeats
+                   the sign of the next syllable ('ेदेवी')
+    visual_order   'बृजकिशोर िंसह' -> 'बृजकिशोर सिंह': a word that starts with the i-matra came in visual order (Bihar); the
+                   matra (with a following anusvara) is moved after the first consonant cluster
     phantom_space  'अश् विनी' -> 'अश्विनी' (a space char with no space glyph drawn there)
     zwj_repeat     'खन्‍नाना' -> 'खन्ना' (after virama+ZWJ the next syllable is repeated)
     zwj_removed    a virama+ZWJ without repetition: the ZWJ is removed ('स्‍वर्ण' -> 'स्वर्ण')
@@ -57,6 +66,66 @@ DOUBLE_RE = re.compile(r'([\u0900-\u0903\u093c-\u094d])\1+')
 RE_REPH_I = re.compile('\u0930\u094d(?:[\u0915-\u0939\u0958-\u095f]\u093c?\u094d)*[\u0915-\u0939\u0958-\u095f]\u093c?\u093f')
 
 
+CONS = '[\u0915-\u0939\u0958-\u095f\u0979-\u097f]'
+MARKS_RUN = re.compile('(^|[ :]+)(' + DEP_SIGNS + '+)')
+VOWEL_SIGN = re.compile('[\u093e-\u094c\u0962\u0963]')
+# a word in visual order: i-matra (and an anusvara drawn with it) before the first consonant cluster
+VISUAL_I = re.compile('(^|\\s)\u093f([\u0901\u0902]?)(' + CONS + '\u093c?(?:\u094d' + CONS + '\u093c?)*)')
+
+
+# frequent words of the names (2026-11-25 sample): a sign after a space in front of one of these is a stray ('ललन ुसाह')
+COMMON_WORDS = set('''देवी कुमार कुमारी प्रसाद सिंह राम साह लाल राय यादव दास महतो मंडल मांझी पासवान चौधरी शर्मा मिश्र मिश्रा ठाकुर
+खातुन खातून आलम अंसारी शेख कामत सहनी तांती बैठा गिरी पाण्डेय पांडेय हजरा मेहता गुप्ता पटेल वर्मा भगत मियां चंद चन्द नाथ नारायण
+शंकर बेगम खान रजक पंडित झा तिवारी चौहान ठाकुर महतो साव रविदास मुखिया पासी गोप'''.split())
+
+
+def space_marks(s):
+    """Vowel signs / anusvara after a space or at the start of s: joined to the left or dropped (rule in the module text).
+    An i-matra right before a consonant is left for VISUAL_I (in the glyph trace, which is in visual order, it is normal
+    there). The same function runs on the glyph trace for the cross-check. Returns (text, joined, dropped)."""
+    joined = dropped = 0
+    out, pos = [], 0
+    for m in MARKS_RUN.finditer(s):
+        sp, run = m.group(1), m.group(2)
+        a, b = m.start(), m.end()
+        nxt = s[b:b + 1]
+        tail = ''
+        ti = re.search('\u093f[\u0901\u0902]?$', run)
+        if ti and re.match(CONS, nxt):
+            tail, run = run[ti.start():], run[:ti.start()]
+        if not run:
+            continue
+        left = '' if (a == 0 or ':' in sp) else s[:a].rsplit(' ', 1)[-1]
+        last = left[-1:]
+        word_follows = bool(tail) or bool(re.match(CONS + '|[\u0904-\u0914]', nxt))
+        rest = re.match('\\S*', s[b:]).group(0)            # the word right of the sign
+        if not re.match('[\u0900-\u097f]', last):
+            join = False                       # start of a value / after a colon or a digit: nothing to join to
+        elif word_follows:
+            dup = bool(re.match(CONS + '\u093c?' + re.escape(run[0]), s[b:b + 3]))   # 'ेदेवी': the sign of the next syllable
+            if run[0] in '\u0901\u0902' or dup or tail or rest in COMMON_WORDS:
+                join = False
+            elif len(re.findall(CONS, rest)) <= 1:
+                join = True                    # the right part is no word: 'प्रस ाद', 'विक्र ांत', 'ओमप्रक ाश'
+            else:                              # a fragment on the left: 'क ुशवाहा', 'क ामिनी' (not a word: 'शंकर ॉसिंह')
+                join = (not re.search('[\u093e-\u094c\u0962\u0963\u0901\u0902]', left)
+                        and len(re.findall(CONS, left)) <= 3)
+        else:                                  # the sign ends a word: 'जानक ी देवी', 'मुस्तफ ा' (a stray: 'परसराम े')
+            join = ((run[0] in '\u093e\u0940\u094b\u094c\u0948' and bool(re.match(CONS + '|\u093c', last)))
+                    or (run[0] in '\u0901\u0902' and bool(VOWEL_SIGN.match(last))))
+        out.append(s[pos:a])
+        if join:
+            out.append(sp.rstrip(' ') + run + tail); joined += 1
+        else:
+            out.append(sp + tail); dropped += 1
+        pos = b
+    if not joined and not dropped:
+        return s, 0, 0
+    out.append(s[pos:])
+    return re.sub(' +', ' ', ''.join(out)), joined, dropped
+
+
+
 # --------------------------------------------------------------------------- repairs
 
 def repair(s, counts):
@@ -65,9 +134,13 @@ def repair(s, counts):
     t = DOUBLE_RE.sub(r'\1', s)
     if t != s: counts['doubled_mark'] += 1
     s = unicodedata.normalize('NFC', t)
-    t = re.sub(' +(?=' + DEP_SIGNS + ')', '', s)
-    if t != s: counts['space_before_mark'] += 1
-    s = t
+    s, nj, nd = space_marks(s)
+    if nj: counts['space_before_mark'] += 1
+    if nd: counts['orphan_mark_dropped'] += 1
+    t = VISUAL_I.sub(lambda m: m.group(1) + m.group(3) + '\u093f' + m.group(2), s)
+    if t != s:
+        counts['visual_order'] += 1
+        s = unicodedata.normalize('NFC', DOUBLE_RE.sub(r'\1', unicodedata.normalize('NFD', t)))
     if VIRAMA + ZWJ in s:
         out, i, rep = [], 0, False
         while i < len(s):
@@ -151,12 +224,19 @@ def glyph_fixes(trace, rev):
 
 # --------------------------------------------------------------------------- page geometry
 
-def find_boxes(page, drawings):
-    """Voter boxes from the drawing: pairs of 180-192 pt horizontal strokes 60-90 pt apart."""
+# width of a voter-box edge stroke: 186 pt in most files; one Kerala file (2026-11-25, S11 AC 81 part 277 page 11) has columns
+# of 183 / 193 / 183 pt on one page, so the range is wide; the 60-90 pt pairing keeps other strokes out
+BOX_W = (175, 200)
+
+
+def find_boxes(page, drawings, stats=None):
+    """Voter boxes from the drawing: pairs of 175-200 pt horizontal strokes 60-90 pt apart. An EPIC word that no such box
+    holds gets a box anchored on it (EPIC at the top-right of the box), on a page with stroke boxes too (a column with an
+    edge width out of range) and on a page without them. stats (Counter): 'epic_anchored' += boxes made so."""
     cols = collections.defaultdict(list)
     for d in drawings:
         r = d['rect']
-        if r.height < 1.5 and 180 <= r.width <= 192:
+        if r.height < 1.5 and BOX_W[0] <= r.width <= BOX_W[1]:
             cols[(round(r.x0), round(r.x1))].append(r.y0)
     boxes = []
     for (x0, x1), ys in cols.items():
@@ -167,11 +247,28 @@ def find_boxes(page, drawings):
                 boxes.append(pymupdf.Rect(x0, ys[i], x1, ys[i + 1])); i += 2
             else:
                 i += 1
-    if not boxes:  # fallback: EPIC anchor (EPIC at the top-right of the box)
-        for x0, y0, x1, y1, w, *_ in page.get_text('words'):
-            if EPIC_ANY.match(w):
-                boxes.append(pymupdf.Rect(x1 - 188, y0 - 4, x1 + 3, y0 + 72))
-    return sorted(boxes, key=lambda r: (round(r.y0 / 10), r.x0))
+    anchored = []
+    for x0, y0, x1, y1, w, *_ in page.get_text('words'):
+        if not EPIC_ANY.match(w):
+            continue
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if any(b.x0 <= cx <= b.x1 and b.y0 <= cy <= b.y1 for b in boxes):
+            continue
+        r = pymupdf.Rect(x1 - 188, y0 - 4, x1 + 3, y0 + 72)
+        # no box over a stroke box (it would take that box's characters): at most 10 % of its area may overlap
+        if any((r & b).get_area() > 0.1 * r.get_area() for b in boxes + anchored):
+            continue
+        anchored.append(r)
+    if anchored and stats is not None:
+        stats['epic_anchored'] += len(anchored)
+    # reading order: rows of boxes (top edges within 8 pt: an anchored box sits a few pt off the stroke boxes), left to right
+    rows = []
+    for r in sorted(boxes + anchored, key=lambda r: r.y0):
+        if rows and r.y0 - rows[-1][0].y0 <= 8:
+            rows[-1].append(r)
+        else:
+            rows.append([r])
+    return [r for row in rows for r in sorted(row, key=lambda r: r.x0)]
 
 
 def box_marks(page, boxes, drawings):
@@ -181,7 +278,7 @@ def box_marks(page, boxes, drawings):
     for d in drawings:
         r = d['rect']
         w, h = r.width, r.height
-        normal = ((h < 1.5 and (180 <= w <= 192 or 40 <= w <= 65)) or
+        normal = ((h < 1.5 and (BOX_W[0] <= w <= BOX_W[1] or 40 <= w <= 65)) or
                   (w < 1.5 and (10 <= h <= 14 or 50 <= h <= 80)))
         if normal:
             continue
@@ -451,10 +548,10 @@ def parse_box(box, chars, tchars, fixes):
         if DOUBLE_RE.search(gl):  # the source itself has a repeated mark (e.g. 'काॅॅजी'): kept collapsed
             warn.append('source_double_mark:' + lab)
             gl = DOUBLE_RE.sub(r'\1', gl)
-        g2 = re.sub(' +(?=' + DEP_SIGNS_NO_I + ')', '', gl)  # texttrace is visual: ि may follow a space
-        if g2 != gl:  # the PDF draws a space before a vowel sign ('भ ा'): a source typo; the space is removed
+        g2 = space_marks(unicodedata.normalize('NFC', gl))[0]   # texttrace is visual: ि may follow a space (kept)
+        if unicodedata.normalize('NFD', g2) != gl:   # the PDF draws a space before a vowel sign: a source typo
             warn.append('source_space_before_mark:' + lab)
-            gl = g2
+            gl = unicodedata.normalize('NFD', g2)
         a, b = letters(t), letters(gl)
         if a != b:
             plus, minus = a - b, b - a
@@ -492,6 +589,7 @@ def texttrace_chars(trace, fixes):
 def parse_pdf(path):
     t0 = time.time()
     doc = pymupdf.open(path)
+    anch = collections.Counter()   # boxes anchored on an EPIC word (find_boxes)
     rev = font_reverse_cmaps(doc)
     fn = os.path.basename(path)
     m = re.search(r'S(\d+)-(\d+)-.*-(\d+)-WI\.pdf$', fn)
@@ -511,7 +609,7 @@ def parse_pdf(path):
     section = (None, None)
     for pno, page in enumerate(doc):
         drawings = page.get_drawings()
-        boxes = find_boxes(page, drawings)
+        boxes = find_boxes(page, drawings, anch)
         if not boxes:
             continue
         chars, plines = page_chars(page)
@@ -563,6 +661,7 @@ def parse_pdf(path):
             for k in rep:
                 repairs[k] += 1
             records.append(out)
+    if anch: meta['epic_anchored'] = anch['epic_anchored']
     meta['pages'] = len(doc)
     if printed_pages:
         meta['printed_pages'] = collections.Counter(printed_pages).most_common(1)[0][0]

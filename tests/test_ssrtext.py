@@ -214,14 +214,100 @@ def test_normalise_hindi_and_english_records():
     r = S.normalise({"ac": 64, "part": 5, "relation_type": "पति", "gender": "महिला", "epic": "ABC1234567", "serial_no": 3},
                     item, 5, {"parser": "hin"}, False)
     assert r["ac"] == 12 and r["ac_in_pdf"] == 64 and r["relation_label"] == "पति का नाम" and r["gender_std"] == "F"
-    assert r["relation_std"] == "Husband" and r["state"] == "S04" and "extra_part" not in r
+    assert r["relation_type"] == "Husband" and r["relation_type_printed"] == "पति" and r["state"] == "S04" and "extra_part" not in r
     h = S.hint(r, "hin")
     assert h["relation_label"] == "पति का नाम" and h["ac"] == "12" and h["state"] == "S04"
     item["payload"].update(state="S22", lang="ENG")
     r = S.normalise({"ac": 12, "part": 9, "relation_type": "Father", "relation_label": "Fathers Name", "gender": "Male",
                      "epic": "abc1234567", "serial_no": 1, "state": "S22"}, item, 9, {"parser": "eng"}, True)
-    assert r["gender_std"] == "M" and r["relation_std"] == "Father" and r["extra_part"] is True
+    assert r["gender_std"] == "M" and r["relation_type"] == "Father" and r["extra_part"] is True
     assert S.hint(r, "eng")["epic"] == "ABC1234567"
+    r = S.normalise({"ac": 12, "part": 9, "relation_type": "Other", "relation_label": "Other", "gender": "Male",
+                     "epic": "ABC1234567", "serial_no": 2}, item, 9, {"parser": "eng"}, False)
+    assert r["relation_type"] == "Others" and r["relation_type_printed"] == "Other"   # one vocabulary for all languages
+
+
+def test_hint_missing_age_is_null():
+    r = {"epic": "PUV0815399", "name": "X", "relation_label": "Fathers Name", "relation_name": "Y", "gender": None,
+         "serial_no": 554, "state": "U06", "ac": 1, "part": 3}
+    assert S.hint(r, "eng")["age"] is None and S.hint(r, "any")["age"] is None and S.hint(r, "eng")["serial_no"] == "554"
+    r.update(relation_type="Father", relation_label="पिता का नाम")
+    assert S.hint(r, "hin")["age"] is None and S.hint(r, "hin")["relation_label"] == "पिता का नाम"
+
+
+# --------------------------------------------------------------------------- 2026-11-25 verifier findings
+
+def test_hindi_space_before_mark():
+    import parse_textlayer as H
+    c = A.collections.Counter()
+    assert H.repair("गिरीश ंिसंह", c) == "गिरीश सिंह" and c["orphan_mark_dropped"] and c["visual_order"]
+    assert H.repair("संगीता ंकंवर चौहान", c) == "संगीता कंवर चौहान"
+    assert H.repair("अस्मिता ुदेवी", c) == "अस्मिता देवी"
+    assert H.repair("सुनीता ेदेवी", c) == "सुनीता देवी"                 # the sign of the next syllable
+    assert H.repair("ललन ुसाह", c) == "ललन साह"                       # a frequent word on the right
+    assert H.repair("उमा शंकर ॉसिंह", c) == "उमा शंकर सिंह"
+    assert H.repair(" ुदुरपती देबी", c) == "दुरपती देबी"               # start of the value
+    assert H.repair("बृजकिशोर िंसह", c) == "बृजकिशोर सिंह"             # visual order (Bihar)
+    assert H.repair("मंजु िंसंह", c) == "मंजु सिंह"
+    c = A.collections.Counter()
+    assert H.repair("कृष्णा क ुशवाहा", c) == "कृष्णा कुशवाहा" and c["space_before_mark"] and not c["orphan_mark_dropped"]
+    assert H.repair("भगत प्रस ाद", c) == "भगत प्रसाद"                 # fragments: joined
+    assert H.repair("विक्र ांत कुमार", c) == "विक्रांत कुमार"
+    assert H.repair("जानक ी देवी", c) == "जानकी देवी"
+    assert H.repair("परसराम े", c) == "परसराम"                       # a stray sign at the end of a word
+    assert H.repair("राम सिंह", c) == "राम सिंह" and H.repair("सिंह", c) == "सिंह"
+
+
+def test_bengali_wa_khanda_ba_phala():
+    assert A.repair("পোরোমেশ্ৱর", "BEN") == "পোরোমেশ্বর"
+    assert A.repair("পোরোমেশ্ৱর", "ASM") == "পোরোমেশ্ৱর"           # Assamese wa kept
+    assert A.repair("ৰাজিয়া", "BEN") == "ৰাজিয়া"                   # ৰ has its own glyph: kept
+    # glyph trace of 'নীলোৎপল' (khanda ta glyph = ত + virama) and of 'উদ্বব শিল' (ব-phala conjunct, then ব)
+    tl = [(c, x, 0, g) for c, x, g in [("ন", 1, 358), ("ী", 2, 374), ("ে", 3, 379), ("ল", 4, 366), ("া", 5, 372),
+                                         ("ত", 6, 714), ("্", 6, -1), ("প", 7, 359), ("ল", 8, 366)]]
+    assert A.bengali_trace_fixes("নীলোত্পল", tl) == ("নীলোৎপল", ["khanda_ta"])
+    assert A.letters("নীলোৎপল", "BEN") == A.letters("নীলোত্পল", "BEN", trace=True)
+    tl = [(c, x, 0, g) for c, x, g in [("উ", 1, 331), ("দ", 2, 570), ("ব", 2, -1), ("্", 2, -1), ("ব", 3, 361),
+                                         (" ", 4, 3), ("ি", 5, 373), ("শ", 6, 367), ("ল", 7, 366)]]
+    assert A.bengali_trace_fixes("উদ্ব শিল", tl) == ("উদ্বব শিল", ["ba_after_ba_phala"])
+    tl = [(c, x, 0, g) for c, x, g in [("শ", 1, 634), ("ব", 1, -1), ("্", 1, -1), ("ব", 2, 365), ("়", 2, -1)]]
+    assert A.bengali_trace_fixes("শ্বর", tl) == ("শ্বর", [])              # ব-phala + র: nothing to add
+
+
+def test_lam_alef_order():
+    # rawdict: ' ' 'ا' 'ل' 'ل' (alef before lam); glyph trace: ligature lam (gid) + alef (gid -1) at x 255.9, then lam
+    chars = [(" ", 260.0, 100.0, 7, "", None), ("ا", 260.0, 100.0, 7, "", None), ("ل", 255.9, 100.0, 7, "", None),
+             ("ل", 251.6, 100.0, 7, "", None)]
+    tch = [("ل", 251.6, 100.0, 149), ("ل", 255.9, 100.0, 227), ("ا", 255.9, 100.0, -1)]
+    out, n = A.lam_alef_fix(chars, tch)
+    assert n == 1 and "".join(c[0] for c in out) == " لال"
+    tch = [("ا", 260.0, 100.0, 12), ("ل", 255.9, 100.0, 40)]                # 'ال' as two glyphs ('الطاف'): kept
+    assert A.lam_alef_fix(chars, tch)[1] == 0
+
+
+def test_box_edge_widths_and_epic_anchor():
+    import parse_textlayer as H
+    doc = pymupdf.open()
+    pg = doc.new_page(width=595, height=842)
+    for x0, x1 in ((14, 197.1), (201.1, 394.5), (398.5, 581)):            # 183 / 193 / 183 pt columns (S11 AC 81 part 277)
+        for y in (30, 105):
+            pg.draw_line((x0, y), (x1, y))
+        pg.insert_text((x1 - 70, 42), "ABC%07d" % int(x0), fontsize=9)
+    boxes = H.find_boxes(pg, pg.get_drawings())
+    assert len(boxes) == 3 and [round(b.width) for b in boxes] == [183, 193, 183]
+    H.BOX_W, old = (180, 192), H.BOX_W                                   # the 193 pt column out of range: anchored on its EPIC
+    try:
+        st = A.collections.Counter()
+        boxes = H.find_boxes(pg, pg.get_drawings(), st)
+        assert len(boxes) == 3 and st["epic_anchored"] == 1 and 185 < boxes[1].x0 < 205 and boxes[0].x0 < 20
+    finally:
+        H.BOX_W = old
+
+
+def test_english_section_without_colon():
+    import parse_textlayer_eng as E
+    assert E.SECTION_RE.search("Section No and Name  1-Pudhur (R.V)").groups() == ("1", "Pudhur (R.V)")
+    assert E.SECTION_RE.search("Section No and Name : 2-Block 2").groups() == ("2", "Block 2")
 
 
 def test_plan_items():
@@ -237,3 +323,11 @@ def test_plan_items():
     p = items[0]["payload"]
     assert items[0]["key"] == "S19-2027-DR/21" and p["lang"] == "PAN" and p["src_project"] == "eci-rolls-all-cdn"
     assert [S.part_of(x) for x in p["keys"]] == [2, 10, 12] and p["extra_parts"] == [12] and p["roll"] == {"id": "S19-2027-DR", "year": 2027}
+
+
+def test_ba_after_ba_phala_kept_only_when_trace_agrees():
+    # 'দ্বিব' is drawn ি, দ্ব, ব: the ব after the ব-phala glyph is the next syllable, nothing is missing
+    tl = [(c, x, 0, g) for c, x, g in [("ি", 1, 373), ("দ", 2, 570), ("ব", 2, -1), ("্", 2, -1), ("ব", 3, 361)]]
+    v, kinds = A.bengali_trace_fixes("দ্বিব", tl)
+    assert kinds == ["ba_after_ba_phala"] and A.letters(v, "BEN") != A.letters("িদব্ব", "BEN", trace=True)
+    assert A.bengali_trace_fixes("দ্বিব", tl, ba=False) == ("দ্বিব", [])

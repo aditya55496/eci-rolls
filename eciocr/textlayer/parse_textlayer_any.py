@@ -29,6 +29,12 @@ text: it uses the box layout, which is the same in every state (checked on the s
                        else differs (kept as a warning)
     visual_order       an i-matra at the start of a word ('ਿਪਤਾ'): the row came in visual order (Urdu names in Punjabi rolls);
                        the matra is moved after the consonant ('ਪਿਤਾ')
+    bengali_wa         Bengali rolls: ৱ (drawn as ব) -> ব ('পোরোমেশ্ৱর' -> 'পোরোমেশ্বর'); ৰ is kept (own glyph)
+    khanda_ta          Bengali-script rolls: 'ত্প' -> 'ৎপ' where the glyph trace has the khanda-ta glyph ('নীলোৎপল')
+    ba_after_ba_phala  Bengali-script rolls: a ব after a ব-phala is lost in the text ('উদ্ব' for the printed 'উদ্বব'); put back
+                       from the glyph trace
+    lam_alef_order     Urdu text in Punjabi rolls: the lam-alef ligature comes as alef + lam ('الل' for 'لال'); swapped where the
+                       glyph trace has the ligature
     chillu_atomic      Malayalam: chillu written as consonant + virama + ZWJ ('ബാലന്‍') -> the atomic chillu ('ബാലൻ'); the
                        same file prints both forms
 - Cross-check: per field, the multiset of letters (NFD, after the same repairs) against the glyph-level text of
@@ -47,7 +53,7 @@ import argparse, collections, json, os, re, sys, time, unicodedata
 import pymupdf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from parse_textlayer import (find_boxes, page_chars, assign, rows_of, row_text,   # noqa: E402
+from parse_textlayer import (find_boxes, page_chars, assign, rows_of, row_text, BOX_W,   # noqa: E402
                              EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_ODD)
 
 EPIC_LOOSE = re.compile(r'^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9/]{8,}$')
@@ -119,6 +125,10 @@ def repair(s, lang, counts=None):
     t = VISUAL_I.sub(r'\1\3\2', s)
     if t != s:
         s = t; counts['visual_order'] += 1
+    if lang == 'BEN' and '\u09f1' in s:
+        # Bengali has no ৱ: the text layer gives it where the font draws ব ('পোরোমেশ্ৱর', print ব-phala; no ৱ glyph in the
+        # glyph trace of the Bengali samples). ৰ is kept: the font draws it with its own glyph (Assamese names)
+        s = s.replace('\u09f1', '\u09ac'); counts['bengali_wa'] += 1
     if lang in RA and '\u09ac\u09bc' in s:
         # after a virama the glyph trace shows ব-phala + র ('ঈশ্ব়' is 'ঈশ্বর': 43 of 44 sample cases); elsewhere ব় is র
         s = s.replace('\u09cd\u09ac\u09bc', '\u09cd\u09ac' + RA[lang]).replace('\u09ac\u09bc', RA[lang])
@@ -129,7 +139,9 @@ def repair(s, lang, counts=None):
 
 
 # glyph-trace letters that the Bengali-script fonts draw with one glyph: the trace can not tell them apart (ৰ / র, ৱ / ব)
-FOLD = {'ASM': str.maketrans('\u09f0\u09f1', '\u09b0\u09ac'), 'BEN': str.maketrans('\u09f0\u09f1', '\u09b0\u09ac')}
+# khanda ta ৎ: the glyph trace has ত + virama
+FOLD = {'ASM': str.maketrans({'\u09f0': '\u09b0', '\u09f1': '\u09ac', '\u09ce': '\u09a4\u09cd'}),
+        'BEN': str.maketrans({'\u09f0': '\u09b0', '\u09f1': '\u09ac', '\u09ce': '\u09a4\u09cd'})}
 
 
 def letters(s, lang, trace=False):
@@ -253,6 +265,69 @@ def is_age_row(t):
     return bool(m and toint(m.group(2)) is not None and m.group(3))
 
 
+BN_CONS = '[\u0995-\u09b9\u09dc-\u09df\u09f0\u09f1]'
+# ত + virama before a consonant it does not join with (ত্ত ত্থ ত্ন ত্ব ত্ম ত্য ত্র are conjuncts), or at the end of a word
+KHANDA_RE = re.compile('\u09a4\u09cd(?=[\u0995-\u09a3\u09a6\u09a7\u09aa-\u09ad\u09b2-\u09b9\u09dc-\u09df]|\\s|$)')
+ALEFS = '\u0627\u0622\u0623\u0625'
+
+
+def trace_clusters(tl):
+    """Glyph-trace chars (ch, ox, oy, gid) -> clusters: one glyph and the chars of its ToUnicode string (gid -1, same
+    origin), in drawing order: [(codes, x)]."""
+    out = []
+    for c in tl:
+        if out and c[3] == -1 and abs(c[1] - out[-1][1]) < 0.05:
+            out[-1][0].append(c[0])
+        else:
+            out.append(([c[0]], c[1]))
+    return [(''.join(cs), x) for cs, x in out]
+
+
+def bengali_trace_fixes(v, tl, ba=True):
+    """Repairs of a Bengali-script value from the glyph trace of its row. Returns (value, [repair kinds]).
+    khanda_ta: the font draws ত + virama as one glyph (khanda ta; the print shows 'নীলোৎপল'), the text has 'ত্প' -> ৎ, when
+      the trace has as many such glyphs as the text has candidates.
+    ba_after_ba_phala: a ব right after a ব-phala conjunct is missing in the text ('উদ্ব শিল', print and trace 'উদ্বব শিল');
+      put back after the same ব-phala (the n-th ব-phala of the text = the n-th ব-phala glyph of the trace). The caller keeps
+      it only when the text letters then equal the glyph trace ('দ্বিব' is drawn ি দ্ব ব: no ব is missing there)."""
+    kinds = []
+    cl = trace_clusters(tl)
+    k = sum(1 for i, (c, _) in enumerate(cl) if c == '\u09a4\u09cd' and not (i + 1 < len(cl) and cl[i + 1][0] == ZWJ))
+    cand = KHANDA_RE.findall(v)
+    if k and len(cand) == k:
+        v = KHANDA_RE.sub('\u09ce', v); kinds.append('khanda_ta')
+    phala = [i for i, (c, _) in enumerate(cl) if len(c) >= 3 and c[1:3] == '\u09ac\u09cd' and re.match(BN_CONS, c[0])]
+    follow = [bool(i + 1 < len(cl) and cl[i + 1][0] == '\u09ac') for i in phala]
+    if ba and any(follow):
+        pos = [m.end() for m in re.finditer('\u09cd\u09ac', v)]
+        if len(pos) == len(phala):
+            add = [p for p, f in zip(pos, follow) if f and v[p:p + 1] != '\u09ac']
+            for p in reversed(add):
+                v = v[:p] + '\u09ac' + v[p:]
+            if add: kinds.append('ba_after_ba_phala')
+    return v, kinds
+
+
+def lam_alef_fix(chars, tchars):
+    """Urdu text (Punjabi rolls): the lam-alef ligature comes out of the text layer as alef + lam ('ترسیم الل' for 'ترسیم لال').
+    The glyph trace has the ligature as lam (gid) + alef (gid -1) at one origin: swap the two text chars whose lam has that
+    origin. Returns (chars, number of swaps)."""
+    lig = set()
+    for i in range(len(tchars) - 1):
+        a, b = tchars[i], tchars[i + 1]
+        if a[0] == '\u0644' and b[0] in ALEFS and b[3] == -1 and abs(a[1] - b[1]) < 0.05:
+            lig.add((round(a[1], 1), round(a[2], 1)))
+    if not lig:
+        return chars, 0
+    chars, n = list(chars), 0
+    for j in range(len(chars) - 1):
+        a, b = chars[j], chars[j + 1]
+        if a[0] in ALEFS and b[0] == '\u0644' and a[3] == b[3] and (round(b[1], 1), round(b[2], 1)) in lig:
+            chars[j], chars[j + 1] = (b[0],) + a[1:], (a[0],) + b[1:]
+            n += 1
+    return chars, n
+
+
 def parse_box(box, chars, tchars, lang, photo_texts):
     rep, warn, rec = collections.Counter(), [], {}
     rx = box.x0 + 0.72 * box.width
@@ -267,6 +342,8 @@ def parse_box(box, chars, tchars, lang, photo_texts):
             else:
                 warn.append('right_span')
     chars = [c for c in chars if c[3] not in drop]
+    chars, nla = lam_alef_fix(chars, tchars)
+    if nla: rep['lam_alef_order'] += 1
     rows = rows_of(chars, key_y=lambda c: c[2])
     top_y = box.y0 + 0.25 * box.height
     raw_lines, body = [], []
@@ -352,9 +429,20 @@ def parse_box(box, chars, tchars, lang, photo_texts):
             continue
         ys = [c[2] for c in cs]; xs = [c[1] for c in cs]
         lo, hi = min(ys) - 2.5, max(ys) + 2.5
-        gl = ''.join(tc[0] for tc in tchars if lo <= tc[2] <= hi and min(xs) - 2 <= tc[1] <= max(xs) + 8)
-        a, b = letters(t, lang), letters(gl, lang, trace=True)
+        tl = [tc for tc in tchars if lo <= tc[2] <= hi and min(xs) - 2 <= tc[1] <= max(xs) + 8]
+        gl = ''.join(tc[0] for tc in tl)
         fk = {'name': 'name', 'rel': 'relation_name', 'house': 'house_no'}.get(k)
+        b = letters(gl, lang, trace=True)
+        if lang in RA and fk and rec.get(fk):
+            nv, kinds = bengali_trace_fixes(rec[fk], tl)
+            if 'ba_after_ba_phala' in kinds and letters(t.replace(rec[fk], nv), lang) != b:
+                nv, kinds = bengali_trace_fixes(rec[fk], tl, ba=False)
+            if kinds:
+                t = t.replace(rec[fk], nv) if rec[fk] in t else t
+                rec[fk] = nv
+                for kd in kinds:
+                    rep[kd] += 1
+        a = letters(t, lang)
         if a != b and lang in RA and fk:
             # the text layer drops the ra-phala of some conjuncts ('শুক্া' for 'শুক্রা', 'মেক্ী' for 'মেক্ৰী'): restored when the
             # glyph trace has exactly one more র per virama-before-vowel-sign and nothing else differs
@@ -381,7 +469,7 @@ def box_marks(page, boxes, drawings):
     for d in drawings:
         r = d['rect']
         w, h = r.width, r.height
-        if (h < 1.5 and (180 <= w <= 192 or 30 <= w <= 75)) or (w < 1.5 and (8 <= h <= 16 or 50 <= h <= 80)):
+        if (h < 1.5 and (BOX_W[0] <= w <= BOX_W[1] or 30 <= w <= 75)) or (w < 1.5 and (8 <= h <= 16 or 50 <= h <= 80)):
             continue
         for i, b in enumerate(boxes):
             if b.contains(r.tl) and b.contains(r.br):
@@ -411,6 +499,7 @@ def photo_texts_of(page, boxes, per_box):
 def parse_pdf(path, lang=None):
     t0 = time.time()
     doc = pymupdf.open(path)
+    anch = collections.Counter()   # boxes anchored on an EPIC word (find_boxes)
     fn = os.path.basename(path)
     m = FILE_RE.search(fn)
     st_f, ac_f, lang_f, part_f = (m.group(2), int(m.group(3)), m.group(4), int(m.group(5))) if m else (None, None, None, None)
@@ -430,7 +519,7 @@ def parse_pdf(path, lang=None):
     for pno, page in enumerate(doc):
         chars, plines = page_chars(page)
         drawings = page.get_drawings()
-        boxes = find_boxes(page, drawings)
+        boxes = find_boxes(page, drawings, anch)
         lines = merged_lines(plines, boxes)
         for y, x, t in lines:
             if y > page.rect.height - 40:
@@ -480,6 +569,7 @@ def parse_pdf(path, lang=None):
             if warn: out['text_warnings'] = warn
             for k in rep: repairs[k] += 1
             records.append(out)
+    if anch: meta['epic_anchored'] = anch['epic_anchored']
     if footers: meta['printed_pages'] = collections.Counter(footers).most_common(1)[0][0]
     if parts_hdr: meta['part_no'] = collections.Counter(parts_hdr).most_common(1)[0][0]
     if acs_hdr: meta['ac_no'] = collections.Counter(acs_hdr).most_common(1)[0][0]
@@ -524,11 +614,16 @@ def validate(records, meta):
     return v
 
 
+def _s(v):
+    """str for the hint; a missing value stays None (not the string 'None')."""
+    return None if v is None else str(v)
+
+
 def hint_of_any(r):
     """A record of this parser -> the --hint-2027 record form (as hint_of_eng: relation_label = printed label)."""
     return {"epic": r["epic"].upper(), "name": r.get("name"), "relation_label": r.get("relation_label"),
-            "relation_name": r.get("relation_name"), "house_no": r.get("house_no"), "age": str(r.get("age")),
-            "gender": r.get("gender"), "serial_no": str(r.get("serial_no")), "state": r.get("state"), "ac": str(r["ac"]),
+            "relation_name": r.get("relation_name"), "house_no": r.get("house_no"), "age": _s(r.get("age")),
+            "gender": r.get("gender"), "serial_no": _s(r.get("serial_no")), "state": r.get("state"), "ac": str(r["ac"]),
             "part": str(r["part"]), **({"epic_printed": r["epic"]} if r["epic"] != r["epic"].upper() else {})}
 
 

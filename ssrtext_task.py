@@ -6,7 +6,9 @@ part list, optional]} (items from plan_ssrtext.py). The PDFs are downloaded thro
 Parser by language: HIN eciocr/textlayer/parse_textlayer.py (all Hindi states), ENG parse_textlayer_eng.py, any other
 (ASM, BEN, MAL, KAN, PAN, ...) parse_textlayer_any.py (box layout and line position; no label text needed).
 Output in the bucket of this project:
-  text/<roll id>/<ac>.jsonl.gz           every voter record (all fields, repairs, warnings, raw_lines = the box rows as printed)
+  text/<roll id>/<ac>.jsonl.gz           every voter record (all fields, repairs, warnings, raw_lines = the box rows as printed,
+                                         without the photo placeholder); relation_type in one vocabulary for all languages
+                                         (Father / Husband / Mother / Wife / Others / Guardian), the word read in relation_type_printed
   hints/<roll id>/<ac>.jsonl.gz          the --hint-2027 form eci_ocr uses (one per record with an EPIC)
   text/<roll id>/<ac>.summary.json       per PDF: records, printed totals (cover, summary page, page count), match, validation
   parquet/<roll id>/ac_<ac>/data.parquet the records in the TEXT_SCHEMA of parquet_task.py (other keys in the JSON column 'extra')
@@ -46,9 +48,21 @@ def parser_of(lang):
     return "hin" if lang == "HIN" else "eng" if lang == "ENG" else "any"
 
 
-def raw_lines_of(path):
+ENG_PHOTO = ("Photo", "Available", "Photo Available", "Photo Not Available")
+
+
+def photo_span(c, box, parser):
+    """The photo placeholder span of a box ('फोटो उपलब्ध', 'Photo' / 'Available'), as the parsers drop it."""
+    t = c[4].strip()
+    if parser == "eng" and t in ENG_PHOTO:
+        return True
+    word = TH.PHOTO_TEXT if parser == "hin" else TE.PHOTO_TEXT
+    return t.startswith(word) and c[1] > box.x0 + 0.55 * box.width
+
+
+def raw_lines_of(path, parser="hin"):
     """{(page, serial_no or EPIC): [row texts of the box, top row first]} for the Hindi and English parsers, which do not
-    keep them (same box finder, character assignment and rows as the parsers)."""
+    keep them (same box finder, character assignment and rows as the parsers; the photo placeholder spans left out)."""
     import pymupdf
     out = {}
     doc = pymupdf.open(path)
@@ -60,13 +74,13 @@ def raw_lines_of(path):
         own = TH.assign([(c[1], c[2], c[3]) for c in chars], boxes)
         per = collections.defaultdict(list)
         for c, k in zip(chars, own):
-            if k is not None:
+            if k is not None and not photo_span(c, boxes[k], parser):
                 per[k].append(c)
         for i in range(len(boxes)):
-            rows = [TH.row_text(r["c"]) for r in TH.rows_of(per[i], key_y=lambda c: c[2])]
+            rws = TH.rows_of(per[i], key_y=lambda c: c[2])
+            rows = [TH.row_text(r["c"]) for r in rws]
             if rows:
-                top = TH.row_text(TH.rows_of(per[i], key_y=lambda c: c[2])[0]["c"], gap=0.5).split()
-                for tok in top:
+                for tok in TH.row_text(rws[0]["c"], gap=0.5).split():
                     out.setdefault((pno + 1, tok), rows)
     return out
 
@@ -90,7 +104,7 @@ def parse_one(path, lang):
             val["pages_match"] = meta["printed_pages"] == meta.get("pages")
             val["ok"] = bool(val["ok"] and val["pages_match"])
     if p != "any":
-        raw = raw_lines_of(path)
+        raw = raw_lines_of(path, p)
         for r in recs:
             rl = raw.get((r["page"], str(r.get("serial_no")))) or raw.get((r["page"], r.get("epic")))
             if rl:
@@ -118,8 +132,12 @@ def normalise(r, item, part, meta, extra_part):
         out["relation_label"] = (rt + " का नाम") if rt and rt != "अन्य" else rt
     if "gender_std" not in out:
         out["gender_std"] = GENDER_STD.get(r.get("gender"))
-    if "relation_std" not in out:
-        out["relation_std"] = REL_STD.get(r.get("relation_type"))
+    # relation_type: one vocabulary for all languages (Father / Husband / Mother / Wife / Others / Guardian, None when the
+    # printed word is unknown); the word as the parser read it ('पिता', 'Other') is relation_type_printed, the printed label
+    # relation_label
+    if r.get("relation_type") is not None:
+        out["relation_type_printed"] = r["relation_type"]
+    out["relation_type"] = REL_STD.get(r.get("relation_type"))
     if extra_part:
         out["extra_part"] = True
     return out
@@ -127,8 +145,12 @@ def normalise(r, item, part, meta, extra_part):
 
 def hint(r, parser):
     if parser == "hin":
-        h = hint_of(r)
+        h = hint_of(r)   # its relation_label comes from relation_type, which is now the common vocabulary
+        h["relation_label"] = r.get("relation_label")
         h["state"] = r.get("state")
+        for k in ("age", "serial_no"):
+            if r.get(k) is None:
+                h[k] = None
         return h
     return TE.hint_of_eng(r) if parser == "eng" else TA.hint_of_any(r)
 

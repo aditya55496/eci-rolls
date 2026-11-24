@@ -42,7 +42,8 @@ REL_RE = re.compile(r"^(?:([A-Za-z][A-Za-z'’]*)\s+Name|(Others?))\s*:\s*(.*)$"
 HOUSE_RE = re.compile(r'^House\s+(?:Number|No\.?)\s*:\s*(.*)$')
 AGE_RE = re.compile(r'^Age\s*:\s*(\S*)\s*Gender\s*:\s*(.*)$')
 EPIC_LOOSE = re.compile(r'^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9/]{8,}$')   # printed so: 'A140254078', 'FQ11664630', 'gdw0042770'
-SECTION_RE = re.compile(r'Section No\.? and Name\s*:\s*(\d+)\s*-\s*(.*)')
+# 'Section No and Name : 1-X' (S03, S14) or without the colon: 'Section No and Name  1-X' (S05, S22, U01, U06, U07)
+SECTION_RE = re.compile(r'Section No\.? and Name\s*:?\s*(\d+)\s*-\s*(.*)')
 
 
 def clean(s):
@@ -169,6 +170,7 @@ def parse_box(box, chars, tchars):
 def parse_pdf(path):
     t0 = time.time()
     doc = pymupdf.open(path)
+    anch = collections.Counter()   # boxes anchored on an EPIC word (find_boxes)
     fn = os.path.basename(path)
     m = re.search(r'-([SU]\d+)-(\d+)-.*-(\d+)-WI\.pdf$', fn)
     st_f, ac_f, part_f = (m.group(1), int(m.group(2)), int(m.group(3))) if m else (None, None, None)
@@ -185,7 +187,7 @@ def parse_pdf(path):
     records, section = [], (None, None)
     for pno, page in enumerate(doc):
         drawings = page.get_drawings()
-        boxes = find_boxes(page, drawings)
+        boxes = find_boxes(page, drawings, anch)
         if not boxes: continue
         chars, plines = page_chars(page)
         sec_marks = []
@@ -217,6 +219,7 @@ def parse_pdf(path):
                 if k in rec: out[k] = rec[k]
             if warn: out['text_warnings'] = warn
             records.append(out)
+    if anch: meta['epic_anchored'] = anch['epic_anchored']
     meta['pages'] = len(doc)
     meta['seconds'] = round(time.time() - t0, 3)
     return records, meta
@@ -257,8 +260,9 @@ def validate(records, meta):
 
 def hint_of_eng(r):
     """A parse_textlayer_eng record -> the --hint-2027 record eci_ocr expects (relation_label = printed label)."""
+    s = lambda v: None if v is None else str(v)   # noqa: E731  a missing value stays None (not 'None')
     return {"epic": r["epic"].upper(), "name": r.get("name"), "relation_label": r.get("relation_label"), "relation_name": r.get("relation_name"),
-            "house_no": r.get("house_no"), "age": str(r.get("age")), "gender": r.get("gender"), "serial_no": str(r.get("serial_no")),
+            "house_no": r.get("house_no"), "age": s(r.get("age")), "gender": r.get("gender"), "serial_no": s(r.get("serial_no")),
             "state": r.get("state"), "ac": str(r["ac"]), "part": str(r["part"]), **({"epic_printed": r["epic"]} if r["epic"] != r["epic"].upper() else {})}
 
 
