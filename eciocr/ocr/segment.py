@@ -237,10 +237,17 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
     return band[m:]
 
 
-def segment_eng(gray):
-    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom)."""
+def segment_eng(gray, top_cells=None, pitch=None):
+    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
+    top_cells (lang-ben, 2026-11-25, Bengali rolls): keep only small cells that start in the top top_cells x box height. The
+    Bengali headline (matra) plus the vertical strokes of a name form cell-like rectangles at 0.23 h; cells() took them as the
+    part cell ('part' = the name, line0 = the relative line). The serial cell starts at ~0.05 h.
+    pitch (lang-ben): line pitch / box height. The Bengali WB print has 0.1086 (median of 132 gold boxes with 4 clean ink runs);
+    with the English 0.1035 the grid drifts ~5 px by the 4th line and cut the lower half of the age/gender line."""
     h, w = gray.shape
     bw, photo, small = cells(gray)
+    if top_cells:
+        small = [c for c in small if c[1] < top_cells * h]
     out = {}
     top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
     for i, (x, y, cw, ch) in enumerate(small[:2]):
@@ -269,7 +276,7 @@ def segment_eng(gray):
     body = cv2.subtract(bw, lines)[y_body: h - 3, xl:px]
     prof = (body > 0).sum(1).astype(int)
     if not len(prof): return out
-    P = ENG_PITCH * h
+    P = (pitch or ENG_PITCH) * h
     thr = max(2, int(0.01 * body.shape[1]))
     ink = np.where(prof > thr)[0]
     if not len(ink): return out

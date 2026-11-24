@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
 from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
+import parse_ben
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -52,12 +53,14 @@ LANG = 'HIN'
 
 
 def valid(f, v):
+    if LANG == 'BEN': return parse_ben.valid_ben(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
 def hvis(f, v):
     """visual form used to compare an engine value with the 2027 hint"""
     if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
+    if LANG == 'BEN' and f == 'relation_label': return parse_ben.rel_canon(v)
     return visual(v)
 
 
@@ -229,7 +232,12 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
             ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
         if not ok and f in CORE: flags.append(f)
     lab = (out.get('relation_label') or '').lower()
-    if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female'):
+    if LANG == 'BEN':   # lang-ben: Bengali labels / genders -> the English words of the rule
+        lab = parse_ben.rel_canon(out.get('relation_label') or '')
+        g = {'পুরুষ': 'Male', 'মহিলা': 'Female'}.get(out.get('gender'), '')
+    else:
+        g = out.get('gender')
+    if (lab.startswith('husband') and g == 'Male') or (lab.startswith('wife') and g == 'Female'):
         if 'gender' not in flags: flags.append('gender')
     if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags

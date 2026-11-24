@@ -34,6 +34,7 @@ from segment import segment, segment_eng, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
+import parse_ben                                    # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -262,7 +263,7 @@ class Engines:
                 f[k] = txt; cf[k] = round(c, 4)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
-        groups = {'line': ('eng' if lang == 'ENG' else 'hin', 7, None), 'num': ('eng', 7, '0123456789'),
+        groups = {'line': ({'ENG': 'eng', 'BEN': 'ben'}.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
                   'epic': ('eng', 7, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/'), 'code': ('eng', 7, '#SERMQ0123456789')}
         gk = {g: [] for g in groups}
         for b, k in keys:
@@ -289,6 +290,11 @@ class Engines:
         return res
 
 
+LATIN_TEMPLATE = ('ENG', 'BEN')   # lang-ben: rolls printed in the English template (segment_eng, parse by line roles)
+BEN_TOP_CELLS = float(os.environ.get('ECI_BEN_TOP_CELLS', '0.15') or 0)
+BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # segment_eng line pitch for Bengali boxes
+
+
 def code_pixel(box_gray, lang='HIN'):
     """Printed status code present: inner left 40% of the serial cell has > 15 ink pixels (bench code_pixel.json).
     ENG (2026-11-25): English SIR pages have ~2x the resolution, and the cell's left rule is wider than the 3 px margin
@@ -298,7 +304,7 @@ def code_pixel(box_gray, lang='HIN'):
     if not small: return False
     x, y, cw, ch = small[0]
     m = _mask(box_gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
-    if lang == 'ENG' and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
+    if lang in LATIN_TEMPLATE and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
         n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
         H, W = m.shape
         for j in range(1, n):
@@ -413,17 +419,18 @@ CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
-    if lang == 'ENG':
-        # English: line roles voted over all engines, then every engine parsed with the same roles (parse_eng)
+    if lang in LATIN_TEMPLATE:
+        # English / Bengali: line roles voted over all engines, then every engine parsed with the same roles (parse_eng / parse_ben)
+        P = parse_ben if lang == 'BEN' else parse_eng
         nl = max([int(k[4:]) + 1 for n in names for k in per_engine[n][0] if k.startswith('line')], default=0)
-        roles = parse_eng.box_roles([per_engine[n][0] for n in names], nl)
-        per_engine = {n: (parse_eng.canonical(per_engine[n][0], roles), parse_eng.canonical_conf(per_engine[n][1], roles)) for n in names}
-        cands = [parse_eng.from_lines_eng(per_engine[n][0]) for n in names]
+        roles = P.box_roles([per_engine[n][0] for n in names], nl)
+        per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
+        cands = [(P.from_lines_ben if lang == 'BEN' else P.from_lines_eng)(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
-    if lang == 'ENG' and ENG_NOHINT and hint is None:
+    if lang in LATIN_TEMPLATE and ENG_NOHINT and hint is None:
         out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
@@ -451,15 +458,16 @@ def process_page(task):
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang == 'ENG':
-            segs_list.append({k: im for k, im in segment_eng(g).items() if im.size}); stamps.append(False)
+        if lang in LATIN_TEMPLATE:
+            segs_list.append({k: im for k, im in (segment_eng(g, BEN_TOP_CELLS, BEN_PITCH) if lang == 'BEN' else segment_eng(g)).items() if im.size})
+            stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
     tm['segment'] = round(time.time() - t, 3)
     t = time.time()
     heads = []
-    for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
+    for y, band in ([] if lang == 'BEN' else heading_strips(gray, boxes)):  # section headings (BEN: not read yet): CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
         if lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
@@ -468,7 +476,7 @@ def process_page(task):
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
-    if lang == 'ENG' and ENG_NOHINT and not _OPT['hints'] and K >= 2:
+    if lang in LATIN_TEMPLATE and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
@@ -619,13 +627,14 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:HIN|ENG)-(\d+)-', b)
+    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:[A-Z]{3})-(\d+)-', b)
     return dict(state=f'{m.group(1)}{m.group(2)}', ac=int(m.group(3)), roll_part=int(m.group(4))) if m else {}
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG'): return opt.upper()
-    return 'ENG' if '-ENG-' in os.path.basename(path).upper() else 'HIN'
+    if opt and opt.upper() in ('HIN', 'ENG', 'BEN'): return opt.upper()
+    b = os.path.basename(path).upper()
+    return 'ENG' if '-ENG-' in b else 'BEN' if '-BEN-' in b else 'HIN'
 
 
 def parse_pages(spec, n):
