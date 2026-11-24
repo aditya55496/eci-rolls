@@ -545,7 +545,10 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
         if f == 'code':
             tv = [vals[i] for i in ti] or vals
             out[f] = (next((v for v in tv if v), '#') if pix else '')
-            if pix and not any(tv): flags.append(f)
+            cc = {vals[i] for i in ci}
+            if pix and not any(tv):   # Tesseract read nothing: the CRNNs' code when they all read the same valid code
+                if len(cc) == 1 and re.fullmatch(r'[#SERMQ][0-9]?', next(iter(cc)) or ''): out[f] = next(iter(cc))
+                else: flags.append(f)
             continue
         cv = [visual(vals[i]) for i in ci]; tvv = [visual(vals[i]) for i in ti]
         allc = collections.Counter(v for v in cv + tvv if v)
