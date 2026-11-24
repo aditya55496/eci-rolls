@@ -260,7 +260,8 @@ class Engines:
         gk = {g: [] for g in groups}
         for b, k in keys:
             g = 'line' if k.startswith('line') else 'num' if k in ('serial', 'part') else k
-            gk[g].append((b, k))
+            if self.digit is not None and k in ('line2', 'line3'): g = 'digit'   # read by the digit CRNN, not Tesseract
+            gk.setdefault(g, []).append((b, k))
         for b in range(n): res[b]['tess'] = ({}, {})
         for g, (lang, psm, wl) in groups.items():
             if not gk[g] or (tess_groups is not None and g not in tess_groups): continue
@@ -276,7 +277,7 @@ class Engines:
                 txts = self.tess_many([self.tess_prep(segs_list[b][k]) for b, k in gk[g]], lang, psm, wl, tmp)
             for (b, k), txt in zip(gk[g], txts): res[b]['tess'][0][k] = txt
         if self.digit is not None and (tess_groups is None or 'line' in tess_groups):
-            dk = [(b, k) for b, k in gk['line'] if k in ('line2', 'line3')]
+            dk = gk.get('digit', [])
             for (b, k), (txt, c) in zip(dk, self.crnn_read(self.digit, [segs_list[b][k] for b, k in dk])):
                 res[b]['tess'][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
