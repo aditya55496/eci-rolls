@@ -9,6 +9,7 @@ Rule: a record whose EPIC is not in the AC's 2027 roll gets the 2027 EPIC with t
 2027 record has the same name or relative's name (visual comparison as in the benchmark). The OCR value is kept in
 'epic_ocr' and the record gets 'epic_from_2027': true. Nothing else changes.
 """
+import collections
 import re
 import unicodedata
 
@@ -153,3 +154,30 @@ def serial_gaps(recs):
                 have.add(int(s))
                 n += 1
     return n
+
+
+PFX_RE = re.compile(r'^([A-Z]{3})([0-9]{7})$')
+
+
+def prefix_check(recs, min_frequent=10, max_rare=2):
+    """No 2027 roll (job2, 2026-11-25): EPIC prefixes of one roll come from a few series. An EPIC whose prefix is rare in this
+    PDF (<= max_rare boxes) and one letter away from a frequent prefix (>= max(min_frequent, 2 % of boxes)) is suspect
+    (NQU4279394 read for NOU4279394). If an engine read the frequent-prefix form (flagged boxes keep readings), take it; the
+    field is flagged either way. Returns (taken, flagged)."""
+    C = collections.Counter(m.group(1) for r in recs for m in [PFX_RE.match(r.get('epic') or '')] if m)
+    freq = {p for p, n in C.items() if n >= max(min_frequent, 0.02 * len(recs))}
+    max_rare = max(max_rare, int(0.005 * len(recs)))
+    taken = flagged = 0
+    for r in recs:
+        m = PFX_RE.match(r.get('epic') or '')
+        if not m or m.group(1) in freq or C[m.group(1)] > max_rare: continue
+        near = [p for p in freq if sum(a != b for a, b in zip(p, m.group(1))) == 1]
+        if not near: continue
+        rd = (r.get('readings') or {}).get('epic') or {}
+        alt = [v for k, v in rd.items() if isinstance(v, str) and (PFX_RE.match(v) or [None])[0] and v[:3] in near and v[3:] == m.group(2)]
+        if alt:
+            r['epic'] = alt[0]; taken += 1; r['epic_by_prefix'] = True
+        if 'epic' not in r['flags']:
+            r['flags'].append('epic'); flagged += 1
+            r.setdefault('readings', {}).setdefault('epic', {})['prefix_check'] = m.group(1)
+    return taken, flagged
