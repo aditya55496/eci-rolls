@@ -150,13 +150,24 @@ def from_lines_ben(f, pp=True):
     if pp:
         for k in ('serial_no', 'part_no', 'age'):
             out[k] = re.sub(r'[^0-9]', '', out[k].translate(BEN_DIG).translate(str.maketrans('OoIlSB', '001158')))
-        out['epic'] = parse_eng.fix_epic(out['epic'])
+        out['epic'] = fix_epic_ben(out['epic'])
         if out['gender']: out['gender'] = snap(out['gender'], GENDERS)
         if out['relation_label']: out['relation_label'] = snap(out['relation_label'], LABELS, 70)
         for k in ('name', 'relation_name'):
             out[k] = re.sub(r'^[\s:;ঃ.,|]+', '', out[k]).strip(' :;,_|')
         out['house_no'] = re.sub(r'^[:;ঃ|]+\s*', '', out['house_no']).strip(' ;_|')
     return out
+
+
+def fix_epic_ben(e):
+    """parse_eng.fix_epic, but old-style EPICs keep their letter prefix: parse_eng maps B -> 8 in the WHOLE string when it has a
+    '/', so 'WB/24/161/375538' became 'W8/24/161/375538' (Tesseract baseline on the BEN gold: 105 of 106 EPIC errors)."""
+    import parse_eng
+    e = re.sub(r'\s+', '', (e or '').upper())
+    m = re.match(r'^([A-Z0-9]{2})(/.*)$', e)
+    if m and e.count('/') == 3:
+        return m.group(1).translate(str.maketrans('80152', 'BOISZ')) + m.group(2).translate(str.maketrans('OIlSBZ', '011582'))
+    return parse_eng.fix_epic(e)
 
 
 def rel_canon(v):
