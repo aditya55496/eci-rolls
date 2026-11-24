@@ -237,8 +237,10 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
     return band[m:]
 
 
-def segment_eng(gray):
-    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom)."""
+def segment_eng(gray, dash=False):
+    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
+    dash=True (lang-tam 2026-11-25, Tamil rolls): a band with only a short flat mark right after the name or relative line is
+    kept as a line (the SIR print wraps the ' -' after a long name to its own line; the band test below dropped it)."""
     h, w = gray.shape
     bw, photo, small = cells(gray)
     out = {}
@@ -287,6 +289,14 @@ def segment_eng(gray):
         band = prof[a:b]
         # a text line: enough ink rows (>= 30 % of the pitch) - stamps and stray marks in the empty lower part are thinner
         if (band > thr).sum() < 0.3 * P:
+            if dash and k in (1, 2) and (band > thr).sum() >= 1:
+                sub = body[a:b]
+                ys, xs = np.where(sub > 0)
+                if len(xs) and ys.max() - ys.min() <= 0.3 * P and xs.max() - xs.min() <= 0.8 * P and xs.min() < 0.5 * sub.shape[1]:
+                    y0, y1 = y_body + a, y_body + min(b, len(prof))
+                    out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
+                    k += 1
+                    continue
             if k >= 4: break     # empty band after >= 4 lines: end of the text block
             continue
         y0, y1 = y_body + a, y_body + min(b, len(prof))
