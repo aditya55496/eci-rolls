@@ -102,7 +102,7 @@
       "ECI_EPIC_OLDFMT": "1"
     },
     "gold": {
-      "note": "not gold-run; differs from j2Ps only in the EPIC format check (flags of old-format EPICs)"
+      "note": "not gold-run; differs from j2Ps only in the EPIC format check. Local test 2026-11-25 (S07 AC 1 parts 1+10): flags 21.72 -> 3.61 %, values identical to j2Ps in 1,911 boxes, 360 EPIC flags removed, Tesseract agrees in 360 of 360"
     }
   }
 }

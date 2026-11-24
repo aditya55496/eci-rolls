@@ -21,6 +21,7 @@ provenance. No LLM, no network other than the hub and the bucket links.
 import gzip
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -117,6 +118,8 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     ms = H.MODEL_SETS[name]
     dirs = H.model_dirs(name)
     want_hints = bool(p.get("hints")) and ms.get("hints") != "none"
+    if ms.get("hints") == "required" and not want_hints:
+        raise RuntimeError(f"model set {name} needs hints; the item has none")
     rolls = H.roll_order(keys)
     years = {H.roll_year(r) for r in rolls}
     if len(years) != 1:
@@ -214,7 +217,7 @@ def main():
                     hub.failure("missing-roll", it["key"], "a PDF named in the item was not in the bucket", rolls=rec["missing_rolls"])
                 hub.metric("voter_pages", rec["voter_pages"])
                 hub.metric("ocr_cpu_s", rec["cpu_s"])
-                hub.metric(f"set_{rec['ocr_model_set']}")
+                hub.metric("set_" + re.sub(r"[^a-z0-9_-]", "_", rec["ocr_model_set"].lower()))   # metric names: a-z 0-9 - _
                 hub.complete([it["key"]], "done", fetched=rec["records"])
             except H.UnknownModelSet as e:
                 hub.complete([it["key"]], "failed", error=f"model set {e} not in this checkout")
