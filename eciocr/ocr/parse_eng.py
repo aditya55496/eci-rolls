@@ -192,7 +192,7 @@ def rel_canon(v):
 
 GENDER_SET = set(GENDERS)
 LABEL_SET = set(LABELS)
-NAME_RE = re.compile(r"^[A-Za-z][A-Za-z .'()\-]*$")
+NAME_RE = re.compile(r"^(\([A-Za-z]{1,3}\)\.? ?)?[A-Za-z][A-Za-z .'()\-]*$")   # job4: '(L) Amuthoi' (late) is a printed form
 
 
 def valid_eng(f, v, epic_re=None):
