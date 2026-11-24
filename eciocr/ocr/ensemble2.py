@@ -57,6 +57,10 @@ AGE_HINT_MAJ = os.environ.get('ECI_AGE_HINT_MAJ', '0') == '1'   # 2026-11-25 ocr
 # (b) the majority EPIC is not valid but the two first CRNNs agree on a valid one -> take it (field flagged). With the relaxed
 # EPIC_RE of ensemble.py. Found on GE gold v3 (3 EPIC errors, all flagged); no EPIC error of the 2026 gold / HC is of these kinds.
 EPIC_FMT = os.environ.get('ECI_EPIC_FMT', '0') == '1'
+# job2 2026-11-25 (ECI_NOHINT_NAMES=K, default 0 = off): no 2027 roll: name / relation_name not flagged only because Tesseract
+# disagrees when at least K CRNNs run and ALL of them read the same valid value (meant for K = 5 with an independent 5th CRNN;
+# with the 4 KD students the CRNN name errors are correlated: round 1 rule N, rejected).
+NOHINT_NAMES = int(os.environ.get('ECI_NOHINT_NAMES', '0') or 0)
 _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
 
 
@@ -175,6 +179,11 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 if j is not None and vals[j]: out[f] = vals[j]; break
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
         if hint is None and NOHINT_DIGITS and f in ('house_no', 'age') and n < need:
+            v = _crnn_all_agree(f, vals, vis, names)
+            if v is not None:
+                out[f] = v; continue
+        if hint is None and NOHINT_NAMES and f in ('name', 'relation_name') and n < need \
+                and sum(nm.startswith('crnn') for nm in (names or [])) >= NOHINT_NAMES:
             v = _crnn_all_agree(f, vals, vis, names)
             if v is not None:
                 out[f] = v; continue
