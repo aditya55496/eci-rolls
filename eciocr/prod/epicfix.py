@@ -91,14 +91,16 @@ _DIGITS = str.maketrans({'I': '1', 'l': '1', 'O': '0', 'o': '0'})
 DRAFT_FIELDS = ('epic', 'name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
 
 
-def final_deleted(recs):
+def final_deleted(recs, engines=None):
     """SIR final roll (2026-11-23): voters deleted after the draft keep their box in the final roll, with status code Q and a
     "DELETED" stamp across the text. The SIR models never saw the stamp: they misread the box, it gets >= 6 flags and the
     not_voter_box rule takes it for page noise, so it falls out of the counts (AC 37 part 344: 30 of 727 voters).
     The same voter, same serial, is in the draft roll of the part without a stamp. A final-roll record marked not_voter_box
     whose serial is a draft voter's serial AND whose EPIC ends in the same 6 digits (misread I/O mapped to 1/0) becomes a voter
     record with the draft's fields: 'deleted_in_final': True, 'from_draft': True, the final roll's own readings in 'final_ocr'.
-    recs: all records of one part file (draft and final). Returns the number of records changed."""
+    recs: all records of one part file (draft and final). engines: the reading names of the first two CRNNs (default the
+    production SIR set's crnn_c11q, crnn_c9q; other model sets pass theirs, e.g. ['crnn_c11g9s', 'crnn_c9g9s']).
+    Returns the number of records changed."""
     draft = {}
     for r in recs:
         if 'DraftRoll' in (r.get('source') or '') and not r.get('not_voter_box') and str(r.get('serial_no') or '').isdigit():
@@ -118,7 +120,8 @@ def final_deleted(recs):
         # the status code (deletion reason, e.g. Q / S / E) is only in the final roll; under the stamp the vote is often
         # undecided ('#'): take the letter when c11 and c9 agree (as CODE_CRNN for GE 2024), the field stays flagged
         rc = (r.get('readings') or {}).get('code') or {}
-        a, b = rc.get('crnn_c11q'), rc.get('crnn_c9q')
+        e1, e2 = (engines or ('crnn_c11q', 'crnn_c9q'))[:2]
+        a, b = rc.get(e1), rc.get(e2)
         if r.get('code') in ('#', '', None) and a and a == b and a.isalpha():
             r['code'] = a
             r['flags'].append('code')
