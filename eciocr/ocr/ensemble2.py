@@ -72,7 +72,7 @@ ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
 ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
 
 
-def agree_eng(f, vals, names, hv=''):
+def agree_eng(f, vals, names, hv='', full=False):
     if not (ENG_AGREE and LANG == 'ENG' and names and len(vals) >= 2): return False
     if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
     v = [visual(x) for x in vals]
@@ -80,8 +80,42 @@ def agree_eng(f, vals, names, hv=''):
     if ENG_AGREE >= 2 and f != 'age':
         from rapidfuzz.distance import Levenshtein
         a, b = v[0].lower(), visual(str(hv or '')).lower()
-        if not b or a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a): return False
-        if Levenshtein.normalized_distance(a, b) < 0.34: return False
+        if not b: return False
+        far = not (a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a)) and Levenshtein.normalized_distance(a, b) >= 0.34
+        if far: return True
+        # ECI_ENG_AGREE=3 (job3 round 2, 2026-11-25): a CLOSE value (or one that contains / is contained in the 2027 value) is
+        # taken only when at least TWO CRNNs and Tesseract read it the same (in the cascade the 2nd CRNN reads only the boxes
+        # stage 1 flagged), and the reading is not a shorter part of the 2027 value (a lost wrap line or cut word).
+        # Round-1 errors of the plain rule: 7 clipped descenders (now fixed by ECI_ENG_DESC), 3 I/l, 2 lost wrap lines.
+        if ENG_AGREE < 3 or sum(n.startswith('crnn') for n in names) < 2: return False
+        if len(a) < len(b) and (b.startswith(a) or b.endswith(a)):
+            # ECI_ENG_AGREE=4 (job3 round 2): the reading is the 2027 value without whole leading / trailing words or tokens
+            # ('Soibam Punyakumari' / 2027 'SOIBAM PUNYAKUMARI DEVI', '180/2' / 'H.No-180/2') and the box is complete (every
+            # engine read a valid age and gender: the two lost wrap lines of round 1 had lost the age line too)
+            cut = b[len(a)] if b.startswith(a) else b[len(b) - len(a) - 1]
+            if not (ENG_AGREE >= 4 and full and cut in ' -/,.'): return False
+        # I / l / 1 / | look the same in the roll font: a reading that differs from 2027 only there is not evidence (round 2
+        # held-out Opus check: 'Flat no. 1/El-2' read by all three engines, 2027 and Opus 'EI-2')
+        x, y = v[0], visual(str(hv or ''))
+        if any(op == 'replace' and x[i] in 'Il1|' and y[j] in 'Il1|' for op, i, j in Levenshtein.editops(x, y)): return False
+    return True
+
+
+# ECI_ENG_TIL=1 (job3 round 2, 2026-11-25): English field without 2027 confirmation: >= 2 CRNNs read the same value and every
+# Tesseract reading differs from it only in I / l / 1 / | (substituted, added or dropped): Tesseract eng reads a capital I as l
+# ('lrungbam', 'MaqbooI', 'Alli' for Ali) - the CRNNs agreeing is the evidence.
+ENG_TIL = os.environ.get('ECI_ENG_TIL', '0') != '0'
+
+
+def til_ok(vals, names):
+    from rapidfuzz.distance import Levenshtein
+    cr = [visual(v) for v, nm in zip(vals, names) if nm.startswith('crnn')]
+    ts = [visual(v) for v, nm in zip(vals, names) if not nm.startswith('crnn')]
+    if len(cr) < 2 or not cr[0] or any(c != cr[0] for c in cr) or not ts: return False
+    for t in ts:
+        for op, i, j in Levenshtein.editops(cr[0], t):
+            ch = (cr[0][i] if op != 'insert' else '') + (t[j] if op != 'delete' else '')
+            if not ch or any(c not in 'Il1|' for c in ch): return False
     return True
 
 
@@ -90,6 +124,7 @@ NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.
 
 def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     out, flags = {}, []
+    full = LANG == 'ENG' and all(valid('age', c['age']) and valid('gender', c['gender']) for c in cands)
     for f in FIELDS:
         vals = [c[f] for c in cands]
         vis = [visual(v) for v in vals]
@@ -138,7 +173,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             h = hvis(f, hint[f])
             m = next((v for v in vals if hvis(f, v) == h), None)
             if m is not None: out[f] = m; continue
-            if agree_eng(f, vals, names, hint[f]): out[f] = vals[0]; continue
+            if agree_eng(f, vals, names, hint[f], full): out[f] = vals[0]; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
                 for p in PREF.get(f, []):
@@ -159,6 +194,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
+        if f in CORE and n < need and ENG_TIL and LANG == 'ENG' and names and til_ok(vals, names):
+            out[f] = vals[next(i for i, nm in enumerate(names) if nm.startswith('crnn'))]; n = need
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:
         for f in flags:
