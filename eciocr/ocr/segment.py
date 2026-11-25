@@ -237,24 +237,33 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
     return band[m:]
 
 
+BEN_COMP_CUT = float(os.environ.get('ECI_BEN_COMP_CUT', '0.25'))  # > 0: touching lines split at headline - CUT x P (0: narrowest row)
+BEN_COMP_ZONE = float(os.environ.get('ECI_BEN_COMP_ZONE', '0.22'))  # line zone centre = headline + ZONE x P (marks go to the nearest)
+BEN_COMP_DARK = int(os.environ.get('ECI_BEN_COMP_DARK', '0'))   # ink threshold of the component labels (antialias edges touch)
+
+
 def _assign_lines(gray, body, bands, y_body, x0, P):
     """lang-ben round 2: one crop per text band; every ink component goes to a line: a component that holds a headline row
     (densest row of a band) to that line; a mark without one to the line whose zone centre (headline + 0.22 P) is nearest.
     So a u-kar hook below line k stays with line k, and i-kar tops, reph and chandrabindu above line k+1 go to line k+1.
     P = median headline distance (small-print pages have a smaller pitch than the box grid). Two lines that touch (one
     component with both headlines, or a line's component that reaches the next headline) are split at the narrowest row of
-    the gap. Components taller than 1.3 P otherwise (stamps, frame) are kept clipped to the band, as the row cut did.
+    the gap (row headline - 0.25 P; gold r2 models: 0.2 / 0.25 / 0.3 / narrowest row = 89.24 / 89.24 / 89.39 / 88.23 % record;
+    labels on dark pixels only (ECI_BEN_COMP_DARK 150) gave 87.06 %). Components taller than 1.3 P otherwise (stamps, frame) are kept clipped to the band, as the row cut did.
     Other components are whitened (with a 1 px grey edge)."""
     H = body.shape[0]
     prof = (body > 0).sum(1)
     heads = [a + int(np.argmax(prof[a:b])) for a, b in bands]
     if len(heads) >= 3: P = float(np.median(np.diff(heads)))   # the real pitch (small-print pages: smaller than the box grid)
-    n, lab, st, _ = cv2.connectedComponentsWithStats(body, 8)
+    W = body.shape[1]
+    dark = ((gray[y_body: y_body + H, x0: x0 + W] < BEN_COMP_DARK) & (body > 0)).astype(np.uint8) if BEN_COMP_DARK > 0 else body
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
     owner = np.full(n, -1, int); tall = np.zeros(n, bool); split = []
     def cut_row(j, k):   # the narrowest row of component j in the gap above line k + 1 (where two lines' marks touch)
         r0 = max(0, int(round(heads[k + 1] - 0.33 * P))); r1 = max(r0 + 1, int(round(heads[k + 1] - 0.1 * P)) + 1)
         x, y, w, h, _a = st[j]
         cnt = [(int((lab[r, x:x + w] == j).sum()), abs(r - (heads[k + 1] - 0.22 * P)), r) for r in range(r0, min(r1, H))]
+        if BEN_COMP_CUT > 0: return int(round(heads[k + 1] - BEN_COMP_CUT * P))
         return min(cnt)[2] if cnt else int(heads[k + 1] - 0.22 * P)
 
     for j in range(1, n):
@@ -268,7 +277,7 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
                 split.append((j, cut_row(j, k), k))
             continue
         c = y + h / 2.0                          # a mark (reph, chandrabindu, i-kar top, u-kar hook): nearest line zone
-        d = [abs(c - (hd + 0.22 * P)) for hd in heads]
+        d = [abs(c - (hd + BEN_COMP_ZONE * P)) for hd in heads]
         k = int(np.argmin(d))
         if d[k] >= 0.8 * P: continue
         owner[j] = k
@@ -277,7 +286,6 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
             if y < sp - 1 and y + h > sp + 1 and h > 0.3 * P:
                 split.append((j, int(round(sp)), k2))
     out = []
-    W = body.shape[1]
     for k, (a, b) in enumerate(bands):
         sel = owner == k
         rows = [(st[j][1], st[j][1] + st[j][3]) for j in np.where(sel)[0]]
