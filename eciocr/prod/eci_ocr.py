@@ -438,6 +438,9 @@ DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
 ORI_TESS_NUM = os.environ.get('ECI_ORI_TESS_NUM', '1') == '1'   # lang-ori: serial / EPIC from Tesseract only (see decide_box)
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+ORI_DIGITS = os.environ.get('ECI_ORI_DIGITS', '1') == '1'   # lang-ori r2: house / age in Latin characters by CRNN unanimity
+_ORI_HOUSE_ASCII = re.compile(r'^[0-9A-Za-z][0-9A-Za-z/.\- ]{0,11}$')
+_ORI_AGE = re.compile(r'^(1[89]|[2-9][0-9]|1[01][0-9])$')
 
 
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
@@ -467,6 +470,15 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if lang == 'ORI' and ORI_DIGITS and flags:
+        # lang-ori r2: Tesseract ori misreads the Latin digits of the Odia lines (and reads stray marks of the next line as
+        # Odia digits: '27 ୪'); a house number / age in Latin characters only that ALL CRNNs read the same is accepted
+        # (gold r3: house 4/4 unanimous ASCII values 316 right / 0 wrong, age 55 / 0)
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f, rx in (('house_no', _ORI_HOUSE_ASCII), ('age', _ORI_AGE)):
+            if f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and rx.match(cn[0].get(f) or '') \
+                    and out.get(f) == cn[0].get(f):
+                flags = [x for x in flags if x != f]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
