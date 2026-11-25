@@ -431,7 +431,8 @@ def test_model_sets_review3_switches_and_charset_sha():
         assert set(ms["charset_sha256_16"]) == set(ms["models"]) | aux_dirs, name
         for k in ("ECI_CODE_VALID", "ECI_PARTNO_LIST", "ECI_RESCALE_H", "ECI_DIGIT_CRNN"):
             assert k in ms["env"], (name, k)
-        assert ms["env"]["ECI_CODE_VALID"] == "1" and ms["env"]["ECI_PARTNO_LIST"] == "1" and ms["env"]["ECI_DIGIT_CRNN"] == ""
+        if H.set_lang(ms) == "HIN":     # engocr: the English / Tamil sets keep them off (their job evaluations ran without them)
+            assert ms["env"]["ECI_CODE_VALID"] == "1" and ms["env"]["ECI_PARTNO_LIST"] == "1" and ms["env"]["ECI_DIGIT_CRNN"] == ""
     sets = dict(H.MODEL_SETS, badcs=dict(H.MODEL_SETS["j2Ps"], charset_sha256_16=dict(H.MODEL_SETS["j2Ps"]["charset_sha256_16"], c11g9s="0" * 16)))
     with pytest.raises(H.ModelSetIncomplete, match="charset.json"):
         H.model_dirs("badcs", sets)
@@ -442,7 +443,7 @@ def test_payload_version_and_missing_roll(monkeypatch):
     monkeypatch.setattr(O, "run_eci", _fake_run_eci([]))
     monkeypatch.setattr(H, "code_commit", lambda: H.CODE)
     it = _fake_item("j2Ps", hints=False)
-    it["payload"]["v"] = 3      # formocr: v 2 = form-route items (roll_group)
+    it["payload"]["v"] = 4      # formocr: v 2 = form-route items (roll_group); engocr: v 3 = lang items
     with pytest.raises(H.UnknownPayloadVersion):
         O.do_item(None, it, settings={}, fetch=_fake_fetch, upload=lambda files: None)
     it["payload"]["v"] = 1

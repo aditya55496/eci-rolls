@@ -7,6 +7,13 @@ Queue item (project eci-rolls-hi-ocr, items from plan_hi_ocr.py): key "<state>/<
 Form-route items (formocr, plan_form_ocr.py, payload v 2): key "<state>/<roll group>/<ac>/<part>", payload as above + "roll_group"
   (GE: the roll id, e.g. "S12-2024-GEN-FIR"; SSR: "<state>-<year>-SSR" with the draft and/or final roll of that year in "keys");
   output ocr/<state>/<roll group>/<ac>/<part>.jsonl.gz (+ .summary.json), hub record id = item key, + "roll_group".
+English / Tamil SIR items (engocr, plan_lang_ocr.py, payload v 3; project eci-rolls-all-ocr): key "<state>/<lang>/<ac>/<part>"
+  (lang ENG or TAM: never the same as a Hindi key, and West Bengal's English ACs stay apart from its other ACs), payload as the SIR
+  payload with "lang" ENG / TAM and a set of that language; output ocr/<state>/<lang>/<ac>/<part>.jsonl.gz (+ .summary.json).
+  eci_ocr gets --lang, the set's extra arguments (job4 set: --tess2) and its --stage1 also without hints (sets with
+  "stage1_nohint"); with "draft_records" the final roll's run reads the draft roll's records of the same item (--draft-records:
+  flagged fields of a final record take the unflagged draft value of the same EPIC; job4, West Bengal 'UNDER ADJUDICATION' stamps).
+  Tamil needs Tesseract's tam traineddata (scrape.json setup installs it; a worker without it installs it or gives the item back).
 Keys and the hints key start with the project that stored them; each file is read through that project's links.
 Model set: model_sets.json (CRNN dirs, eci_ocr env switches, hints mode, stage1). The hub settings of this project can swap the
 set of every pending item at once (hi_common.choose_set): "ocr_model_set_map" {"j2Ps": "newset"} or "ocr_model_set" "newset".
@@ -49,14 +56,30 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", H.OCR_HI_PROJECT)
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~1-4 min; keep 10 min spare
 CPUS = len(os.sched_getaffinity(0))
-_TOOLS = None
+_TOOLS = {}
+TESSDATA = "/usr/share/tesseract-ocr/5/tessdata"     # = eci_ocr.STD_TESSDATA
+TESS_LANG = {"HIN": (), "ENG": ("eng",), "TAM": ("eng", "tam")}   # traineddata per item language besides hin (eng: numbers, EPIC)
 
 
-def tools():
-    global _TOOLS
-    if _TOOLS is None:
-        _TOOLS = H.tool_versions()
-    return _TOOLS
+def tools(lang="HIN"):
+    if lang not in _TOOLS:
+        _TOOLS[lang] = H.tool_versions(TESS_LANG.get(lang, ()))
+    return _TOOLS[lang]
+
+
+class MissingTool(Exception):
+    """Tesseract's traineddata of the item's language is not on this runner (a job whose setup ran before scrape.json named it):
+    the item goes back untried and the worker exits 2 (a new job runs the setup)."""
+
+
+def ensure_tessdata(lang):
+    need = [t for t in TESS_LANG.get(lang, ()) if not os.path.exists(os.path.join(TESSDATA, f"{t}.traineddata"))]
+    if need:     # GitHub runners: passwordless sudo, as the setup step
+        subprocess.run(["sudo", "-n", "apt-get", "install", "-y", "-qq"] + [f"tesseract-ocr-{t}" for t in need],
+                       capture_output=True, timeout=900)
+        need = [t for t in need if not os.path.exists(os.path.join(TESSDATA, f"{t}.traineddata"))]
+    if need:
+        raise MissingTool(f"Tesseract traineddata {need} missing in {TESSDATA}")
 WORKERS = int(os.environ.get("ECI_OCR_WORKERS") or max(1, CPUS // 2))   # 2 worker processes per 4-CPU runner job, 2 OCR processes each
 
 
@@ -85,18 +108,27 @@ def _run(cmd, env, timeout=3600):
 
 
 def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
-    """pdfs: [(roll id, path)] in roll order -> (records, per-run summaries, CPU seconds of the eci_ocr processes)."""
+    """pdfs: [(roll id, path)] in roll order -> (records, per-run summaries, CPU seconds of the eci_ocr processes).
+    engocr sets (lang ENG / TAM): + --lang, the set's extra arguments, --stage1 also without hints (stage1_nohint), and with
+    draft_records the final roll's run gets the draft roll's output of this item as --draft-records."""
     # only the set's decision switches: an ECI_* variable from the runner or pool env must not change the run behind the
     # provenance (ECI_OCR_WORKERS and ECI_TESS_CLI change speed / call path only)
     env = {k: v for k, v in os.environ.items() if not k.startswith("ECI_") or k in ("ECI_OCR_WORKERS", "ECI_TESS_CLI")}
     env.update(H.set_env(ms))       # '<models>' paths (VALSET CRNNs, lexicons) -> this checkout's models/
-    recs, summs, prev, cpu = [], [], None, 0.0
+    lang = H.set_lang(ms)
+    recs, summs, prev, cpu, draft_out = [], [], None, 0.0, None
     for i, (roll, pdf) in enumerate(pdfs):
         o1 = os.path.join(tmp, f"out{i}.jsonl")
         cmd = [sys.executable, os.path.join(HERE, "eciocr", "prod", "eci_ocr.py"), pdf, "--out", o1, "--workers", str(WORKERS),
                "--ort-threads", "1", "--quiet", "--roll-year", str(year)]
         if hints_path:
-            cmd += ["--hint-2027", hints_path, "--stage1", str(int(ms.get("stage1", 0)))]
+            cmd += ["--hint-2027", hints_path, "--stage1", str(H.set_stage1(ms, True))]
+        elif H.set_stage1(ms, False):
+            cmd += ["--stage1", str(H.set_stage1(ms, False))]
+        if lang != "HIN":
+            cmd += ["--lang", lang] + H.set_args(ms)
+            if ms.get("draft_records") and draft_out and not H.is_draft(roll):
+                cmd += ["--draft-records", draft_out]
         for d in dirs:
             cmd += ["--crnn", d]
         if prev:
@@ -119,7 +151,10 @@ def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
         s = json.load(open(o1 + ".summary.json", encoding="utf-8"))
         s["roll"] = roll
         summs.append(s)
-        os.remove(o1)
+        if lang != "HIN" and ms.get("draft_records") and H.is_draft(roll):
+            draft_out = o1      # read by the final roll's run (--draft-records); removed with tmp
+        else:
+            os.remove(o1)
     return recs, summs, cpu
 
 
@@ -132,15 +167,18 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     H.payload_version(p)        # raises UnknownPayloadVersion for a newer payload format
     state, ac, part = str(p["state"]), int(p["ac"]), int(p["part"])
     group = p.get("roll_group")        # form-route items (payload v 2): GE / SSR roll family, own output path
-    base = H.ocr_base(state, ac, group)
-    if (p.get("lang") or "HIN") != "HIN":
-        raise RuntimeError(f"lang {p.get('lang')} not supported (eci_ocr reads Hindi SIR rolls)")
+    lang = p.get("lang") or "HIN"      # engocr (payload v 3): ENG / TAM SIR rolls, output ocr/<state>/<lang>/<ac>
+    if lang not in H.LANGS:
+        raise RuntimeError(f"lang {lang} not supported (eci_ocr reads {', '.join(H.LANGS)})")
+    base = H.ocr_base(state, ac, group, lang)
     keys = {r: k for r, k in (p.get("keys") or {}).items() if k}
     if not keys:
         raise RuntimeError("payload has no PDF keys")
     name, set_src = H.choose_set(p, settings if settings is not None else getattr(hub, "settings", {}))
     ms = H.MODEL_SETS[name]
     dirs = H.model_dirs(name)
+    if lang != "HIN":
+        ensure_tessdata(lang)
     want_hints = bool(p.get("hints")) and ms.get("hints") != "none"
     if ms.get("hints") == "required" and not want_hints:
         raise RuntimeError(f"model set {name} needs hints; the item has none")
@@ -221,9 +259,10 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
         b["records"] += 1
         b["flagged"] += bool(r.get("flags"))
     vp = sum(s["voter_pages"] for s in summs)
-    summ = {"item": item["key"], "state": state, "ac": ac, "part": part, **({"roll_group": group} if group is not None else {}), **prov, "model_set_source": set_src,
+    summ = {"item": item["key"], "state": state, "ac": ac, "part": part, **({"roll_group": group} if group is not None else {}),
+            **({"lang": lang} if lang != "HIN" else {}), **prov, "model_set_source": set_src,
             "model_sha256_16": ms.get("sha256_16"), "hints_key": p.get("hints") if want_hints else None, "hints_records": nh,
-            "hints_sha256": hsha, "ocr_tools": tools(),
+            "hints_sha256": hsha, "ocr_tools": tools(lang),
             "epic_fix2_refused": sum(1 for r in voters if "fix2_candidate" in (((r.get("readings") or {}).get("epic")) or {})),
             "rolls": rolls, "missing_rolls": missing, "records": len(voters), "not_voter_boxes": len(recs) - len(voters),
             "flagged_records": nfl, "flag_rate": round(nfl / max(1, len(voters)), 4), "by_roll": by_roll, "repairs": repairs,
@@ -243,8 +282,11 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     rec["additions_without_list_section"] = sum(no_list.values())
     if group is not None:
         rec["roll_group"] = group
+    if lang != "HIN":
+        rec["lang"] = lang
     rec["pdfs"] = [{k: d.get(k) for k in ("roll", "pdf", "kind", "records", "flag_rate", "hint_matched", "epic_from_2027", "serial_check",
-                                          "serial_check_ocr", "post_rules", "additions_without_list_section", "worker_s_total")}
+                                          "serial_check_ocr", "post_rules", "additions_without_list_section", "worker_s_total")
+                    + (("draft_fill", "epic_by_prefix") if lang != "HIN" else ())}
                    for d in summ["pdfs"]]
     return rec
 
@@ -294,6 +336,11 @@ def main():
                 hub.metric("ocr_cpu_s", rec["cpu_s"])
                 hub.metric("set_" + re.sub(r"[^a-z0-9_-]", "_", rec["ocr_model_set"].lower()))   # metric names: a-z 0-9 - _
                 hub.complete([it["key"]], "done", fetched=rec["records"])
+            except MissingTool as e:     # this runner lacks the language's traineddata: a later job (new setup) takes it
+                hub.complete([it["key"]], "pending", error=f"{e} ({H.CODE})"[:400])
+                hub.metric("tool_missing")
+                code = 2
+                break
             except H.NeedsNewerCode as e:
                 # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete).
                 # UnknownModelSet, ModelSetIncomplete (model files missing / wrong sha256), UnknownPayloadVersion, CodeChanged

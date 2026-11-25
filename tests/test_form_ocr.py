@@ -59,7 +59,7 @@ def test_ocr_base_and_payload_versions():
     with pytest.raises(RuntimeError, match="planner error"):
         H.payload_version({"v": 1, "roll_group": "S08-2025-SSR"})
     with pytest.raises(H.UnknownPayloadVersion):
-        H.payload_version({"v": 3})
+        H.payload_version({"v": 4})
 
 
 def test_do_item_form_route_paths_env_and_order(monkeypatch):
