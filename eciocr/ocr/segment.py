@@ -351,18 +351,34 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
         # a u-sign of the upper line touching the i-hook of the lower line is ONE component: split it at its thinnest row in
         # the gap between the two cores (the upper part stays, the lower part gets a new label)
         bigset = {d[0] for (t, b, g) in cores for d in g}
-        nxt = int(lab.max()) + 1; extra = []
+        nxt = int(lab.max()) + 1; extra = []; force = {}; force_both = []
         for c in list(comps):
             j, x, y, w_, h_, a = c
             for k in range(len(cores) - 1):
                 bu, tl = cores[k][1], cores[k + 1][0]
                 # a letter / mark of line k that reaches into line k+1's top zone (or a mark of k+1 that reaches up into k),
                 # but not a component that covers both cores (stamp)
-                if j in bigset and not (y < bu and y + h_ > tl - 0.1 * P and y + h_ < cores[k + 1][0] + 0.5 * (cores[k + 1][1] - cores[k + 1][0])):
+                # round 5 (ECI_ORI_SPLIT2): a NARROW letter body of line k merged with a whole letter of line k+1 (u-sign of କୁ
+                # touching the reph of ର୍ମ: ଧର୍ମାନନ୍ଦ lost its ମ to the name line above) covers both cores: split it too
+                both = (ORI_SPLIT2 and j in bigset and y <= cores[k][0] + 0.25 * P and y < bu
+                        and y + h_ >= cores[k + 1][1] - 0.25 * P and y + h_ <= cores[k + 1][1] + 0.25 * P and w_ <= 1.3 * P)
+                if j in bigset and not both and not (y < bu and y + h_ > tl - 0.1 * P and y + h_ < cores[k + 1][0] + 0.5 * (cores[k + 1][1] - cores[k + 1][0])):
                     continue
-                if y <= bu + 0.15 * P and y + h_ >= tl - 0.15 * P and y + h_ <= cores[k + 1][1] and y >= cores[k][0] - 0.5 * P:
+                if y <= bu + 0.15 * P and y + h_ >= tl - 0.15 * P and (y + h_ <= cores[k + 1][1] or both) and y >= cores[k][0] - 0.5 * P:
                     r0, r1 = int(max(y, bu)), int(min(y + h_, tl))
                     if r1 - r0 < 2: break
+                    if both:
+                        # rows above line k's core bottom -> line k; the gap rows -> BOTH lines (u-sign of k, reph / i-hook of
+                        # k+1); rows from line k+1's core top -> line k+1
+                        mid = np.zeros_like(lab, dtype=bool); mid[r0:r1, x:x + w_] = lab[r0:r1, x:x + w_] == j
+                        low = np.zeros_like(lab, dtype=bool); low[r1:y + h_, x:x + w_] = lab[r1:y + h_, x:x + w_] == j
+                        if mid.sum() and low.sum() and (lab[y:r0, x:x + w_] == j).sum():
+                            for msk, kk in ((mid, k), (low, k + 1)):
+                                lab[msk] = nxt; ys_, xs_ = np.where(msk); force[nxt] = kk
+                                extra.append((nxt, int(xs_.min()), int(ys_.min()), int(xs_.max() - xs_.min() + 1), int(ys_.max() - ys_.min() + 1), int(msk.sum())))
+                                nxt += 1
+                            force[j] = k; force_both.append((nxt - 2, k + 1))
+                        break
                     sub = lab[r0:r1, x:x + w_] == j
                     cnt = sub.sum(1)
                     cut = r0 + int(np.argmin(cnt))
@@ -375,6 +391,7 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
         comps = comps + extra
     assign = {}; extra_both = []
     line_of = {d[0]: k for k, (t, b, g) in enumerate(cores) for d in g}
+    if ORI_SPLIT and len(cores) >= 2: line_of.update(force); extra_both += force_both
     # letter bodies clipped to their line's core band (a ସୁ / କୁ body reaches down to the next line's i-hooks)
     bigs = [(d[0], d[1], max(d[2], int(t)), d[3], max(1, min(d[2] + d[4], int(b)) - max(d[2], int(t)))) for (t, b, g) in cores for d in g]
     for c in comps:
@@ -430,6 +447,7 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
 ORI_NEAREST = os.environ.get('ECI_ORI_NEAREST', '1') == '1'   # marks between lines -> line of the nearest letter body (core band)
 ORI_SPLIT = os.environ.get('ECI_ORI_SPLIT', '1') == '1'       # split a component that joins two lines at its thinnest gap row
 ORI_BOTH = os.environ.get('ECI_ORI_BOTH', '1') == '1'         # a mark between two lines (touching no core) goes to both
+ORI_SPLIT2 = os.environ.get('ECI_ORI_SPLIT2', '1') == '1'     # round 5: also split a narrow letter body that covers both cores
 ORI_SLICE = os.environ.get('ECI_ORI_SLICE', '1') == '1'       # round 2: line k-1 ink just above line k's core also goes to line k
 ORI_SLICE_Z = float(os.environ.get('ECI_ORI_SLICE_Z', '0.2'))  # zone height / pitch
 ORI_PITCH = 0.115   # line pitch / box height (Odia SIR, measured 2026-11-25 on S18 pages: overwritten by the line clusters)
