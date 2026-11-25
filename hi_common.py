@@ -318,6 +318,13 @@ CODE_RE = re.compile(r"(?:#|[SERQM])[0-9]?")    # = eci_ocr.CODE_RE (ECI_CODE_VA
 LISTS = ("परिवर्धन की सूची", "विलोपन की सूची", "संशोधन की सूची")   # = eci_ocr.LISTS (supplement list sections)
 
 
+def repair_engines(ms):
+    """Reading names of the CRNNs whose agreeing code letter the final_deleted repair takes (the first two of the set; a set
+    can name others in 'repair_engines', e.g. when its first model is a stage-1 screening model that does not read stage-2
+    boxes: job1 speed set, ECI_S1_SCREEN)."""
+    return list(ms.get("repair_engines") or ["crnn_" + m for m in ms["models"]])
+
+
 def repair_part(recs, engines, rules=None):
     """Repairs of one part file (draft + final records), as repair_task.py did for UP, in place:
     final_deleted (final-roll voters deleted after the draft that read as page noise get the draft's fields) and serial_gaps

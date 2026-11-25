@@ -15,6 +15,10 @@ import pytest  # noqa: E402
 NEW = ("engD", "engJ", "engK11", "tamH2", "tamN2")
 # eci_ocr switches that are no decision (call path, debug default, model path when no --crnn is given)
 PASS = {"ECI_OCR_WORKERS", "ECI_TESS_CLI", "ECI_CRNN"}
+# job1 speed switches (2026-11-25): added after the engocr sets were deployed (a deployed entry is frozen); their defaults
+# keep every older set's behaviour (batch 64, no lazy Tesseract / hints, no stamp set, no screening, headings by CRNN 0)
+PASS |= {"ECI_CRNN_BATCH", "ECI_NOTRIM_PAD", "ECI_TESS_LAZY", "ECI_HINTS_LAZY", "ECI_STAMP_SET", "ECI_S1_SCREEN", "ECI_HEAD_CRNN",
+         "ECI_NOHINT_EARLY", "ECI_NOHINT_EARLY_CONF", "ECI_EARLY_DUMP"}
 
 
 def _code_switches():

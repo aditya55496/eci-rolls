@@ -87,7 +87,7 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
                 unknown = sorted({str(r.get("ocr_model_set")) for r in recs if r.get("ocr_model_set") not in H.MODEL_SETS})
                 if unknown:
                     raise H.UnknownModelSet(", ".join(unknown))
-                c = H.repair_part(recs, lambda r: ["crnn_" + m for m in H.MODEL_SETS[r["ocr_model_set"]]["models"]], rules=None)
+                c = H.repair_part(recs, lambda r: H.repair_engines(H.MODEL_SETS[r["ocr_model_set"]]), rules=None)
             else:
                 voters = [r for r in recs if not r.get("not_voter_box")]
                 by_roll = {}

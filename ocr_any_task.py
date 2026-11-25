@@ -227,7 +227,7 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     now = H.code_commit()
     if now != H.CODE:     # eci_ocr runs from the checkout for each PDF: the output may mix code; the item is done again
         raise H.CodeChanged(f"family checkout moved {H.CODE} -> {now or '?'} during the item")
-    engines = ["crnn_" + m for m in ms["models"]]
+    engines = H.repair_engines(ms)
     repairs = H.repair_part(recs, engines, rules=ms.get("env", {}))
     # serial checks again after the repairs (the hub record's pdfs[].serial_check; eci_ocr's own is serial_check_ocr)
     by_src = {}
