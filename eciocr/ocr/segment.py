@@ -347,9 +347,39 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
     for g in groups:
         tops = sorted(d[2] for d in g); bots = sorted(d[2] + d[4] for d in g)
         cores.append([float(np.median(tops)), float(np.median(bots)), g])
-    assign = {}
+    if ORI_SPLIT and len(cores) >= 2:
+        # a u-sign of the upper line touching the i-hook of the lower line is ONE component: split it at its thinnest row in
+        # the gap between the two cores (the upper part stays, the lower part gets a new label)
+        bigset = {d[0] for (t, b, g) in cores for d in g}
+        nxt = int(lab.max()) + 1; extra = []
+        for c in list(comps):
+            j, x, y, w_, h_, a = c
+            for k in range(len(cores) - 1):
+                bu, tl = cores[k][1], cores[k + 1][0]
+                # a letter / mark of line k that reaches into line k+1's top zone (or a mark of k+1 that reaches up into k),
+                # but not a component that covers both cores (stamp)
+                if j in bigset and not (y < bu and y + h_ > tl - 0.1 * P and y + h_ < cores[k + 1][0] + 0.5 * (cores[k + 1][1] - cores[k + 1][0])):
+                    continue
+                if y <= bu + 0.15 * P and y + h_ >= tl - 0.15 * P and y + h_ <= cores[k + 1][1] and y >= cores[k][0] - 0.5 * P:
+                    r0, r1 = int(max(y, bu)), int(min(y + h_, tl))
+                    if r1 - r0 < 2: break
+                    sub = lab[r0:r1, x:x + w_] == j
+                    cnt = sub.sum(1)
+                    cut = r0 + int(np.argmin(cnt))
+                    low = np.zeros_like(lab, dtype=bool); low[cut:y + h_, x:x + w_] = lab[cut:y + h_, x:x + w_] == j
+                    if low.sum() and (lab[y:cut, x:x + w_] == j).sum():
+                        lab[low] = nxt; ys_, xs_ = np.where(low)
+                        extra.append((nxt, int(xs_.min()), int(ys_.min()), int(xs_.max() - xs_.min() + 1), int(ys_.max() - ys_.min() + 1), int(low.sum())))
+                        nxt += 1
+                    break
+        comps = comps + extra
+    assign = {}; extra_both = []
+    line_of = {d[0]: k for k, (t, b, g) in enumerate(cores) for d in g}
+    # letter bodies clipped to their line's core band (a ସୁ / କୁ body reaches down to the next line's i-hooks)
+    bigs = [(d[0], d[1], max(d[2], int(t)), d[3], max(1, min(d[2] + d[4], int(b)) - max(d[2], int(t)))) for (t, b, g) in cores for d in g]
     for c in comps:
         j, x, y, w_, h_, a = c
+        if j in line_of: assign[j] = line_of[j]; continue
         best, bd = None, None
         for k, (t, b, g) in enumerate(cores):
             if y + h_ < t: d = t - (y + h_)
@@ -357,10 +387,28 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
             else:   # overlap: prefer the core with most overlap
                 d = -min(y + h_, b) + max(y, t)
             if bd is None or d < bd: best, bd = k, d
-        if best is not None and bd <= 0.9 * P: assign[j] = best
+        if best is None or bd > 0.9 * P: continue
+        if ORI_BOTH and bd > 0:
+            # a mark that touches no core and lies between two lines goes to BOTH lines (lang-guj rule): a lost mark cannot be
+            # read back, a stray one the CRNN learns to ignore (the synthetic boxes are cut by this same code)
+            ks = [k for k, (t, b, g) in enumerate(cores) if (y >= b - 1 and k + 1 < len(cores) and y + h_ <= cores[k + 1][0] + 1)
+                  or (y + h_ <= t + 1 and k > 0 and y >= cores[k - 1][1] - 1)]
+            if ks:
+                k0 = ks[0] if y >= cores[ks[0]][1] - 1 else ks[0] - 1
+                assign[j] = k0; extra_both.append((j, k0 + 1)); continue
+        if ORI_NEAREST and bd > 0:
+            # a mark between two lines (i-hook / chandrabindu above the lower line, u-sign / subjoined letter below the upper
+            # line): it belongs to the letter body it is closest to (bounding-box gap), not to the nearest core band
+            # (2026-11-25: the i-hook of ଜୟକିଶୋର went to the name line above; gold r1: many dropped ି)
+            def gap(e):
+                dx = max(0, e[1] - (x + w_), x - (e[1] + e[3])); dy = max(0, e[2] - (y + h_), y - (e[2] + e[4]))
+                return dx * dx + dy * dy
+            e = min(bigs, key=gap)
+            best = line_of[e[0]]
+        assign[j] = best
     out = []
     for k in range(len(cores)):
-        js = [j for j, kk in assign.items() if kk == k]
+        js = [j for j, kk in assign.items() if kk == k] + [j for j, kk in extra_both if kk == k]
         if not js: continue
         m = np.isin(lab, js)
         ys, xs = np.where(m)
@@ -370,6 +418,9 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
     return out
 
 
+ORI_NEAREST = os.environ.get('ECI_ORI_NEAREST', '1') == '1'   # marks between lines -> line of the nearest letter body (core band)
+ORI_SPLIT = os.environ.get('ECI_ORI_SPLIT', '1') == '1'       # split a component that joins two lines at its thinnest gap row
+ORI_BOTH = os.environ.get('ECI_ORI_BOTH', '1') == '1'         # a mark between two lines (touching no core) goes to both
 ORI_PITCH = 0.115   # line pitch / box height (Odia SIR, measured 2026-11-25 on S18 pages: overwritten by the line clusters)
 
 
@@ -377,6 +428,7 @@ def segment_ori(gray, margin=4):
     """Odia box -> dict: serial (+ code), epic, line0..lineN (top to bottom), cut by connected components."""
     h, w = gray.shape
     out = segment_eng_top(gray)
+    if 'epic' in out and out['epic'].size: out['epic'] = _clean_rules(out['epic'])   # lang-ori: the EPIC crop keeps the photo cell's corner
     bw, photo, small = cells(gray)
     top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
     px = photo[0] - 3 if photo else int(0.72 * w)
@@ -438,3 +490,22 @@ def _drop_rule_slivers(cell):
         edge = x0 <= 1 or y0 <= 1 or x0 + w0 >= W - 1 or y0 + h0 >= H - 1
         if (edge and (w0 <= 4 or h0 <= 4)) or _a <= 2: out[lab == j] = 255
     return out
+
+
+def _clean_rules(im, margin=4):
+    """lang-ori: whiten long horizontal / vertical rules (cell borders) inside a field crop, then cut to the ink again."""
+    if im.size == 0: return im
+    bw = _mask(im)
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, im.shape[1] // 3), 1)))
+    lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(6, int(im.shape[0] * 0.85)))))
+    lines = cv2.dilate(lines, np.ones((3, 3), np.uint8))
+    out = im.copy(); out[lines > 0] = 255
+    ink = _mask(out); ink[lines > 0] = 0
+    n, lab, st, _ = cv2.connectedComponentsWithStats(ink, 8)
+    for j in range(1, n):
+        if st[j][4] <= 2: out[lab == j] = 255; ink[lab == j] = 0
+    rows = np.where(ink.sum(1) > 0)[0]; cols = np.where(ink.sum(0) > 0)[0]
+    if not len(rows): return out
+    y0, y1 = max(0, rows[0] - margin), min(out.shape[0], rows[-1] + 1 + margin)
+    x0, x1 = max(0, cols[0] - margin), min(out.shape[1], cols[-1] + 1 + margin)
+    return np.ascontiguousarray(out[y0:y1, x0:x1])
