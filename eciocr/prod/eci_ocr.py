@@ -436,6 +436,7 @@ def load_hints(path):
 DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 # job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
+ORI_TESS_NUM = os.environ.get('ECI_ORI_TESS_NUM', '1') == '1'   # lang-ori: serial / EPIC from Tesseract only (see decide_box)
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 
 
@@ -449,6 +450,15 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         roles = P.box_roles([per_engine[n][0] for n in names], nl)
         per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
         cands = [from_l(per_engine[n][0]) for n in names]
+        if lang == 'ORI' and ORI_TESS_NUM:
+            # lang-ori r1-r3: the print's Latin digits (serial cell, EPIC) are drawn by a font the synthetic sets do not have
+            # (the CRNNs read its 3 as 8 on 270 gold serials); Tesseract eng reads them (EPIC 100 % on gold): the CRNN
+            # candidates take Tesseract's serial / EPIC (tess, else tess2), so these two fields are voted by Tesseract alone
+            tv = [c for n, c in zip(names, cands) if n.startswith('tess')]
+            if tv:
+                for n, c in zip(names, cands):
+                    if not n.startswith('tess'):
+                        c['serial_no'] = tv[0]['serial_no']; c['epic'] = tv[0]['epic']
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
