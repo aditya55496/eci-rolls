@@ -204,7 +204,7 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims, xst=1.0, trim=True):
+    def _crnn_batch(sess, inp, CH, ims, xst=1.0, trim=True, Wmin=0):
         H = sess.get_inputs()[0].shape[2]   # job2: the model's input height (48 for every production model; 32 px students)
         H = H if isinstance(H, int) and H > 0 else 48; xs = []
         for im in ims:
@@ -213,7 +213,7 @@ class Engines:
             xs.append((255 - cv2.resize(im, (w, H), interpolation=cv2.INTER_CUBIC)).astype(np.float32) / 255.0)
         # job1 speed: notrim models (trim=False) emit the last character late, inside the padding: every crop gets at least
         # NOTRIM_PAD px of blank on the right (else a batch without padding, e.g. a small ECI_CRNN_BATCH, drops it)
-        W = (max(x.shape[1] for x in xs) + (0 if trim else NOTRIM_PAD) + 3) // 4 * 4
+        W = max(Wmin, (max(x.shape[1] for x in xs) + (0 if trim else NOTRIM_PAD) + 3) // 4 * 4)
         X = np.zeros((len(xs), 1, H, W), np.float32)
         for i, x in enumerate(xs): X[i, 0, :, :x.shape[1]] = x
         Y = sess.run(None, {inp: X})[0]
@@ -229,18 +229,34 @@ class Engines:
             out.append((''.join(s), conf))
         return out
 
-    def crnn_read(self, eng, ims):
+    @staticmethod
+    def _batch_w(sess, ims, xst, trim):
+        """The padded width _crnn_batch gives a batch of these crops (same arithmetic, no resize)."""
+        H = sess.get_inputs()[0].shape[2]; H = H if isinstance(H, int) and H > 0 else 48
+        w = max(min(int(800 * xst), max(8, int((im.shape[1] + 10) * H / (im.shape[0] + 10) * xst))) for im in ims)
+        return (w + (0 if trim else NOTRIM_PAD) + 3) // 4 * 4
+
+    def crnn_read(self, eng, ims, keep=None):
+        """keep (job1 speed, list of bools): read only these crops, each padded to the width of the batch it has when ALL crops
+        are read, so its reading equals the all-crops run (every sample of a batch is computed on its own padded input)."""
         _, sess, inp, CH = eng
         xs = self.xs.get(eng[0], 1.0)
         if not ims: return []
         tr = eng[0] not in getattr(self, 'notrim', ())
         if not self.crnn_sort or len(ims) == 1:
-            return self._crnn_batch(sess, inp, CH, ims, xs, tr)
-        order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
+            batches = [list(range(len(ims)))]
+        else:
+            order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
+            batches = [order[j:j + CRNN_BATCH] for j in range(0, len(order), CRNN_BATCH)]
         out = [None] * len(ims)
-        for j in range(0, len(order), CRNN_BATCH):
-            idx = order[j:j + CRNN_BATCH]
-            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr)): out[i] = r
+        for idx in batches:
+            if keep is None:
+                for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr)): out[i] = r
+                continue
+            sub = [i for i in idx if keep[i]]
+            if not sub: continue
+            Wb = self._batch_w(sess, [ims[i] for i in idx], xs, tr)
+            for i, r in zip(sub, self._crnn_batch(sess, inp, CH, [ims[i] for i in sub], xs, tr, Wb)): out[i] = r
         return out
 
     def read_proxy(self, segs_list, reads, timing):
@@ -289,7 +305,7 @@ class Engines:
         finally:
             shutil.rmtree(d, ignore_errors=True)
 
-    def read_boxes(self, segs_list, tmp=None, timing=None, crnn_idx=None, tess_groups=None, lang='HIN'):
+    def read_boxes(self, segs_list, tmp=None, timing=None, crnn_idx=None, tess_groups=None, lang='HIN', only=None):
         """segs_list: per box {field: crop}. Returns per box {engine_name: (raw_fields, conf_fields)}.
         crnn_idx: which CRNN models to run (default all); tess_groups: which Tesseract groups (line/num/epic/code)."""
         timing = timing if timing is not None else {}
@@ -307,10 +323,15 @@ class Engines:
             outs = [self.cache_in.get((eng[0], hs[i])) for i in range(len(ims))] if use_cache else [None] * len(ims)
             for j in range(0, n, 32):  # bench: 32 boxes per batch (BOXB)
                 sel = [i for i, (b, _) in enumerate(keys) if j <= b < j + 32 and outs[i] is None]
-                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel])):
+                if only is not None and not any(keys[i][0] in only for i in sel): continue
+                kp = [keys[i][0] in only for i in sel] if only is not None else None
+                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel], kp)):
+                    if r is None: continue
                     outs[i] = r
                     if self.collect: self.cache_out[(eng[0], hs[i])] = r
-            for (b, k), (txt, c) in zip(keys, outs):
+            for (b, k), o in zip(keys, outs):
+                if o is None or (only is not None and b not in only): continue
+                txt, c = o
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
@@ -980,10 +1001,9 @@ def process_page(task):
         s1c = [_s1_conf(r, s1nm) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
-            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang)
-            for i, r2 in zip(need, more):
-                for tn in _E.tnames: r2.pop(tn, None)
-                reads[i].update(r2)
+            more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang, only=set(need))
+            for i in need:
+                reads[i].update({n: v for n, v in more[i].items() if n not in _E.tnames})
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
     elif NOHINT_EARLY and not _OPT['hints'] and lang not in LATIN_TPL and len(_E.crnn) > NOHINT_EARLY and TESS_SKIP:
@@ -1016,10 +1036,9 @@ def process_page(task):
         s1c = [_s1_conf(r, s1nm) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
-            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set())
-            for i, r2 in zip(need, more):
-                for tn in _E.tnames: r2.pop(tn, None)
-                reads[i].update(r2)
+            more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), only=set(need))
+            for i in need:
+                reads[i].update({n: v for n, v in more[i].items() if n not in _E.tnames})
             crn = [n for n in _E.names if n.startswith('crnn')]
             nread += _tess_lines(need, [{k for k in sk1[i] if k in segs_list[i]} - _skips(reads[i], crn) for i in need])
         tm['tess_lines_skipped'] = sum(sum(k.startswith('line') for k in sg) for sg in segs_list) - nread
