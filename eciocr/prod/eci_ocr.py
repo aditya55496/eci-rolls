@@ -1060,7 +1060,7 @@ def process_page(task):
             nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
         else:
-            nm = stamp_nm.get(i) or (((s1nm or _E.names[:K]) + _E.tnames) if i in stage1_only else (_E.names[K:] if S1_SCREEN and K > 0 and _OPT['hints'] else _E.names))
+            nm = stamp_nm.get(i) or (((s1nm + [e[0] for e in _E.pcrnn] if s1nm else _E.names[:K]) + _E.tnames) if i in stage1_only else (_E.names[K:] if S1_SCREEN and K > 0 and _OPT['hints'] else _E.names))
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
         if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
             readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
