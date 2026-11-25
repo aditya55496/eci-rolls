@@ -18,7 +18,7 @@ SSR_TEXT_PROJECT = "eci-rolls-ssr-text"      # 2027 SSR hints of any state: hint
 # engocr (2026-11-25): SIR rolls in English and Tamil (eci-rolls-all-cdn), the same task ocr-any in their own projects
 OCR_ALL_PROJECT = "eci-rolls-all-ocr"        # ocr/<state>/<lang>/<ac>/<part>.jsonl.gz (+ .summary.json)
 PARQUET_ALL_PROJECT = "eci-rolls-all-parquet"  # parquet/<state>/<roll id>/<lang>/ac_<ac>/data.parquet
-LANGS = ("HIN", "ENG", "TAM", "MAL")                # eci_ocr --lang; HIN = the Hindi-state items (no lang segment in key and path)
+LANGS = ("HIN", "ENG", "TAM", "MAL", "TEL", "PAN", "BEN", "ORI", "GUJ")   # eci_ocr --lang; HIN = the Hindi-state items (no lang segment in key and path)
 PROVENANCE_KEYS = ("ocr_model_set", "ocr_models", "ocr_code", "ocr_rules", "hints_used")
 
 

@@ -276,9 +276,13 @@ def test_plan_lang_ocr(monkeypatch):
     assert by["S22/TAM/80/40"]["payload"]["model_set"] == "tamN2" and by["S22/TAM/80/40"]["payload"]["lang"] == "TAM"
     assert all(i["payload"]["v"] == 3 for i in items)
     assert by["S10/ENG/60/1"]["partition_id"] == L.RANK["S10"] * 1_000_000 + 60 * 1000 + 1
-    assert summ["S25"]["held_state"] and summ["S25"]["items"] == 1 and summ["S25"]["acs_other_lang"] == {"6": "BEN"}
+    # lang-ben (2026-11-26): BEN is now a planned lang; S25 AC 6 (BEN) plans with lbR5 but S25 stays HELD
+    assert summ["S25"]["held_state"] and summ["S25"]["items"] == 2 and summ["S25"]["acs_other_lang"] == {}
     items, summ = L.plan({"S25"}, release={"S25"})
-    assert [i["key"] for i in items] == ["S25/ENG/5/1"]
+    assert sorted(i["key"] for i in items) == ["S25/BEN/6/1", "S25/ENG/5/1"]
+    by25 = {i["key"]: i for i in items}
+    assert by25["S25/BEN/6/1"]["payload"]["model_set"] == "lbR5" and by25["S25/BEN/6/1"]["payload"]["lang"] == "BEN"
+    assert by25["S25/BEN/6/1"]["payload"]["hints"] is None
     items, _ = L.plan({"S05"}, wait_hints=True)
     assert sorted(i["key"] for i in items) == ["S05/ENG/12/1", "S05/ENG/12/2"]
     items, _ = L.plan({"S10"}, include_partial=True)
