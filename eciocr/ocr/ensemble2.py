@@ -61,9 +61,11 @@ def valid(f, v):
 def hvis(f, v):
     """visual form used to compare an engine value with the 2027 hint"""
     if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
+    if LANG == 'PAN' and PAN_CANON: return parse_pan.canon(v)   # lang-pan r2
     return visual(v)
 
 
+PAN_CANON = os.environ.get('ECI_PAN_CANON', '1') != '0'   # lang-pan r2: hint comparison in the Punjabi canonical form
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else int(os.environ.get('ECI_NOHINT_SLACK', '0'))   # env: lang-pan 2026-11-25
 
 

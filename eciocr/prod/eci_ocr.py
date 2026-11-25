@@ -37,6 +37,7 @@ import parse_eng                                    # noqa: E402
 from parse_pan import from_lines_pan, parse_heading_pan   # noqa: E402  (lang-pan)
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
+import ctchint_pan                                  # noqa: E402  (lang-pan r2)
 sys.argv = _argv
 from ensemble2 import decide                        # noqa: E402
 from score import FIELDS, visual                    # noqa: E402
@@ -96,6 +97,11 @@ def page_gray(pdf, pno):
 
 
 # ---------------------------------------------------------------- engines (same preprocessing as ocr/engines.py)
+
+# lang-pan r2 (2026-11-25): CTC fit of the 2027 hint value (ctchint_pan); threshold in log units (e.g. -4), unset = off
+PAN_HINTCTC = float(os.environ['ECI_PAN_HINTCTC']) if os.environ.get('ECI_PAN_HINTCTC') else None
+PAN_HINTCTC_UNFLAG = os.environ.get('ECI_PAN_HINTCTC_UNFLAG', '0') == '1'
+PAN_HINTCTC_AGG = os.environ.get('ECI_PAN_HINTCTC_AGG', 'mean')   # 'mean' or 'min' of the CRNN margins
 
 class TessAPI:
     """Minimal ctypes binding of the libtesseract C API (libtesseract.so.5, Tesseract 5.x)."""
@@ -168,7 +174,7 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims):
+    def _crnn_batch(sess, inp, CH, ims, keep_p=False):
         H = 48; xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
@@ -186,19 +192,19 @@ class Engines:
             for t, k in enumerate(seq):
                 if k != prev and k != 0: s.append(CH[k - 1]); conf = min(conf, float(P[t, k]))
                 prev = k
-            out.append((''.join(s), conf))
+            out.append((''.join(s), conf, (P.astype(np.float32), CH)) if keep_p else (''.join(s), conf))
         return out
 
-    def crnn_read(self, eng, ims):
+    def crnn_read(self, eng, ims, keep_p=False):
         _, sess, inp, CH = eng
         if not ims: return []
         if not self.crnn_sort or len(ims) == 1:
-            return self._crnn_batch(sess, inp, CH, ims)
+            return self._crnn_batch(sess, inp, CH, ims, keep_p)
         order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
         out = [None] * len(ims)
         for j in range(0, len(order), 64):
             idx = order[j:j + 64]
-            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx])): out[i] = r
+            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], keep_p)): out[i] = r
         return out
 
     @staticmethod
@@ -255,12 +261,14 @@ class Engines:
             outs = [self.cache_in.get((eng[0], hs[i])) for i in range(len(ims))] if use_cache else [None] * len(ims)
             for j in range(0, n, 32):  # bench: 32 boxes per batch (BOXB)
                 sel = [i for i, (b, _) in enumerate(keys) if j <= b < j + 32 and outs[i] is None]
-                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel])):
+                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel], keep_p=PAN_HINTCTC is not None and lang == 'PAN')):
                     outs[i] = r
-                    if self.collect: self.cache_out[(eng[0], hs[i])] = r
-            for (b, k), (txt, c) in zip(keys, outs):
+                    if self.collect: self.cache_out[(eng[0], hs[i])] = r[:2]
+            for (b, k), r in zip(keys, outs):
+                txt, c = r[0], r[1]
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
+                if len(r) > 2 and k in ('line0', 'line1', 'line2'): res[b].setdefault('_P', {})[(eng[0], k)] = r[2]
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
         groups = {'line': ({'ENG': 'eng', 'PAN': 'pan'}.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
@@ -420,12 +428,30 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
     out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    hctc = {}
+    if lang == 'PAN' and PAN_HINTCTC is not None and hint and '_P' in per_engine:
+        # lang-pan r2: a flagged hint field takes the 2027 value when every CRNN's line output fits it within PAN_HINTCTC
+        # log units of its own reading (ctchint_pan.margin); the field stays flagged unless ECI_PAN_HINTCTC_UNFLAG=1
+        for f in [f for f in flags if f in ('name', 'relation_name', 'house_no')]:
+            h = ctchint_pan.gur_norm(hint.get(f) or '')
+            if not h: continue
+            ms = []
+            for n, c in zip(names, cands):
+                pc = per_engine['_P'].get((n, SRC[f]))
+                if pc is None: continue
+                ms.append(ctchint_pan.margin(pc[0], pc[1], per_engine[n][0].get(SRC[f], ''), c[f], h))
+            ok = len(ms) >= 2 and all(m is not None for m in ms) and (sum(ms) / len(ms) if PAN_HINTCTC_AGG == 'mean' else min(ms)) >= PAN_HINTCTC
+            hctc[f] = [None if m is None else round(m, 2) for m in ms]
+            if ok:
+                out[f] = h
+                if PAN_HINTCTC_UNFLAG: flags = [g for g in flags if g != f]
     readings = {}
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
         conf = {n: per_engine[n][1].get(SRC[f]) for n in names if n.startswith('crnn') and SRC[f] in per_engine[n][1]}
         if conf: readings[f]['crnn_conf'] = conf
+        if f in hctc: readings[f]['hint_ctc'] = hctc[f]
     return out, flags, readings, hint is not None, cands
 
 
@@ -482,6 +508,7 @@ def process_page(task):
                 for tn in _E.tnames:
                     t1 = reads[i][tn]; t2 = r2.pop(tn)
                     t1[0].update(t2[0])
+                if '_P' in r2: reads[i].setdefault('_P', {}).update(r2.pop('_P'))
                 reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)

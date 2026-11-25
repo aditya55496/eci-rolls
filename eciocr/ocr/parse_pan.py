@@ -123,3 +123,17 @@ def parse_heading_pan(t):
     """'ਸੈਕਸ਼ਨ ਨੰ. ਅਤੇ ਨਾਮ 1-ਮਾਂਝੀ' -> '1-ਮਾਂਝੀ' (None if the line is not a section heading)."""
     m = SECTION_RE.search(unicodedata.normalize('NFC', t or ''))
     return f'{m.group(1)}-{m.group(2).strip()}' if m else None
+
+
+_GUR_CONS = '\u0a15-\u0a2e\u0a32\u0a33\u0a36\u0a38\u0a59-\u0a5e'   # consonants except YA RA VA HA (their subjoined forms show)
+
+
+def canon(v):
+    """lang-pan r2: Punjabi canonical form = models2/lang-pan/gold/score_pan.py norm (NFC, ZWJ/ZWNJ out, doubled marks collapsed,
+    tippi -> bindi, invisible halant after RA before a consonant dropped, whitespace collapsed). Used to compare an engine value
+    with the 2027 hint (ensemble2.hvis): the 2027 text layer writes 'ਫਰ੍ਸ੍ਟ' / 'ਹਰੇੰਦ੍ਰ' where the print shows 'ਫਰਸ੍ਟ' / 'ਹਰੇਂਦ੍ਰ'."""
+    import unicodedata
+    v = unicodedata.normalize('NFC', '' if v is None else str(v)).replace('\u200d', '').replace('\u200c', '')
+    v = re.sub(r'([\u0a01-\u0a03\u0a3c-\u0a4d\u0a70\u0a71])\1+', r'\1', v).replace('\u0a70', '\u0a02')
+    v = re.sub('\u0a30\u0a4d(?=[' + _GUR_CONS + '])', '\u0a30', v)
+    return re.sub(r'\s+', ' ', unicodedata.normalize('NFC', v)).strip()
