@@ -892,5 +892,113 @@
    "note": "record / unflagged / flag % / silent",
    "source": "models2/job4/NOTES.md round 3 (10:20 K11) and models/adopted_r3_K11/README.md"
   }
+ },
+ "j2X4ft": {
+  "about": "j2X4 (job2 round-4 best) + j2Psf's main switches + ECI_TOFU=1, for S07 Haryana SIR (owner swap 2026-11-25 ~14:10: better than j2Psft on GE/HC/G26 gold incl. unflagged, -10 % CPU on GE gold, -15 % on S07; val silent 1 vs 0 = the j2X4 reference record). Models job2_r4_ibx0 / iax0 / r2_indbx0 from models2/job2/models/j2X4/.",
+  "models": [
+   "c11g9s",
+   "job2_r1_s9mx0",
+   "job2_r2_s4mx0",
+   "job2_r4_ibx0"
+  ],
+  "sha256_16": {
+   "job2_r1_s9mx0": "fc0c19c4654453a2",
+   "job2_r2_s4mx0": "0a385332a0bbed7d",
+   "job2_r4_ibx0": "70d73c4a5bbf6417",
+   "job2_boost_softx0": "37dc0ad65d3b4a1b",
+   "job2_boost_hmsx0": "ff5deec19589baad",
+   "job2_boost_softgrux0": "066ff8868cc06b1e",
+   "job2_r4_iax0": "72f7b176b698ea00",
+   "job2_r2_indbx0": "904a9f03f4a73122",
+   "c11g9s": "0c4cf0ab04cb6b98",
+   "job2_lex4.npz": "76d0ee597eb2a937"
+  },
+  "charset_sha256_16": {
+   "job2_r1_s9mx0": "f022b1ee76aacbfb",
+   "job2_r2_s4mx0": "28b7fa05b3bd0679",
+   "job2_r4_ibx0": "f022b1ee76aacbfb",
+   "job2_boost_softx0": "f022b1ee76aacbfb",
+   "job2_boost_hmsx0": "f022b1ee76aacbfb",
+   "job2_boost_softgrux0": "f022b1ee76aacbfb",
+   "job2_r4_iax0": "f022b1ee76aacbfb",
+   "job2_r2_indbx0": "f022b1ee76aacbfb",
+   "c11g9s": "f022b1ee76aacbfb"
+  },
+  "hints": "none",
+  "stage1": 1,
+  "env": {
+   "ECI_AGE_HINT_MAJ": "1",
+   "ECI_CODE_CRNN": "1",
+   "ECI_CODE_VALID": "1",
+   "ECI_CONFW_SKIP": "house_no",
+   "ECI_DIGIT_CRNN": "",
+   "ECI_EPICFIX2_GUARD": "1",
+   "ECI_EPICFIX2_MIN": "70",
+   "ECI_EPIC_CONFIRM": "1",
+   "ECI_EPIC_FMT": "1",
+   "ECI_EPIC_OLDFMT": "1",
+   "ECI_EPIC_PAIR": "1",
+   "ECI_EPIC_PREFIX": "1",
+   "ECI_EPIC_TESS_NOHINT": "1",
+   "ECI_NOHINT_AMP": "1",
+   "ECI_NOHINT_CLOSED": "1",
+   "ECI_NOHINT_DIGITS": "1",
+   "ECI_NOHINT_HOUSE_PUNCT": "1",
+   "ECI_NOHINT_LEX": "<models>/job2_lex4.npz",
+   "ECI_NOHINT_LEXG": "2",
+   "ECI_NOHINT_NUNF": "1000",
+   "ECI_NOHINT_TESSCLEAN": "7",
+   "ECI_NOHINT_TESS_SKIP": "1",
+   "ECI_NOHINT_VALKEEP": "crnn_job2_r4_ibx0",
+   "ECI_NOHINT_VALSET": "<models>/job2_boost_softx0,<models>/job2_boost_hmsx0,<models>/job2_boost_softgrux0,<models>/job2_r4_iax0,<models>/job2_r2_indbx0",
+   "ECI_PARTNO_LIST": "1",
+   "ECI_RESCALE_H": "1679",
+   "ECI_STAMP_TEMPLATE": "1",
+   "ECI_TOFU": "1"
+  },
+  "gold": {
+   "source": "paired Modal run g1 (glyph/q/g1.txt, one container per PDF for gX / gXf / gXfT / gP / gPT, ISA 194 avx2 / 85 vnni, 60,550 OCR CPU-s), scored with eval_report.py + job2 tools/table.py / score_val.py; glyph/rep/",
+   "ge_rec": 98.1,
+   "ge_unflagged": 99.67,
+   "ge_flag_pct": 13.8,
+   "ge_cpu_s": 3847,
+   "hc_rec": 98.01,
+   "hc_unflagged": 100.0,
+   "hc_flag_pct_all": 10.3,
+   "g26_rec": 98.59,
+   "g26_unflagged": 99.87,
+   "g26_flag_pct": 7.8,
+   "g26_wrong": {
+    "house_no": 25,
+    "name": 20,
+    "relation_name": 13,
+    "code": 1
+   },
+   "val_rec": 99.84,
+   "val_unflagged": 99.991,
+   "val_flag_pct": 4.0,
+   "val_silent": 1,
+   "vs": "j2X4 as adopted (r8X, old job2 code): GE 98.10 / 99.51 / 12.4 %, HC 98.01 / 100 / 8.5 %, G26 98.64 / 99.84 / 7.41 %, val 99.85 / 99.991 / 3.98 % (silent 1). Same run, j2X4 env on the merged code (gX): GE 98.10 / 99.53 / 13.7 %, HC 98.01 / 100 / 10.2 %, G26 98.59 / 99.84 / 7.78 %. The +1.4 pt GE / +1.7 pt HC flags come from main's EPIC_TESS_NOHINT (default on in main; 824 vs 14 GE EPIC flags), not from ECI_TOFU: gXf vs gXfT = 0 changed records on GE / HC / G26 / val."
+  },
+  "s07": {
+   "source": "S07 check: part 10 of all 90 Haryana ACs (80,178 records, non-gold, Modal, family branch job2 4edebe2 code = main 7b4f214 + job2 rules + ECI_TOFU; glyph/q/s07.txt)",
+   "flag_pct_all_acs": 7.36,
+   "flag_pct_without_tofu": 15.41,
+   "flag_pct_affected_acs": 7.47,
+   "flag_pct_affected_acs_without_tofu": 42.53,
+   "flag_pct_clean_acs": 7.33,
+   "cpu_s_per_record_affected": 0.198,
+   "cpu_s_per_record_affected_without_tofu": 0.321,
+   "cpu_s_per_record_clean": 0.19,
+   "check_set_4_parts": "28/58 88/43 87/10 78/126 (3,711 records, local): flags 48.67 % (j2X4f) -> 7.81 %; eye check 120 boxes (4 pages) + 60 random newly unflagged fields: 0 wrong unflagged values; 3 silent errors of j2X4f without TOFU fixed (संत read संता, सुनीता read सनीता, name taken from the relative line नारायण सिंह for नरेश कुमार)"
+  },
+  "aux": [
+   "job2_boost_softx0",
+   "job2_boost_hmsx0",
+   "job2_boost_softgrux0",
+   "job2_r4_iax0",
+   "job2_r2_indbx0",
+   "job2_lex4.npz"
+  ]
  }
 }
