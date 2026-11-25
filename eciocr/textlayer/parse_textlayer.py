@@ -48,6 +48,20 @@ How it works
     glyph_fix      the character code disagrees with the embedded font's own cmap for that glyph.
                    In these files this is glyph uni090B (ऋ), which the text layer maps to 'र'
                    ('रषभ' -> 'ऋषभ'). Found from page.get_texttrace() glyph ids.
+    glyph_fix_vocalic_r  (2026-11-25, owner order "fix bihar parser") some PDFs (Bihar 6,000+ parts, MP 6) have a ToUnicode
+                   CMap that maps glyph uni0943 (the vowel sign ृ; the embedded font's own cmap says U+0943) to 'र्' (the text
+                   of the reph glyph): the page shows 'कृष्ण', 'गृह', 'तृतीय', the text layer gave 'कर्ष्ण', 'गर्ह', 'तर्तीय' with no
+                   warning (the glyph trace had the same error). Exact rule: only a glyph whose own cmap code is U+0943 and whose
+                   text is 'र्' is changed, in the boxes and in the lines outside them (section names). Other PDFs: no change.
+    visual_row     (2026-11-25) a box row with Arabic-script characters can come in visual order: the label 'निर्वाचक का नाम'
+                   as 'िनवार्चक का नाम' (the name was lost), 'पति का नाम' as 'पित का नाम' (relation_type 'पित'). Only a row that
+                   starts with such a visual label is changed: every i-matra goes after its consonant cluster, every reph
+                   ('र्' after a cluster and its signs, before a consonant) before the cluster ('मो۰सािबर' -> 'मो۰साबिर').
+                   The row keeps warning 'visual_row'.
+- EPIC printed in an odd form with non-ASCII characters or no letters ('MGच2486231', 'BR/12/015Ü201135', '8607269969'): when no
+  EPIC form matches, one remaining serial-row word of 6+ characters is the EPIC (warning 'epic_nonstandard'; before 2026-11-25
+  it was in status_code and epic was empty).
+- Cover totals: when page 1 has no totals table (Bihar AC 181 part 173 prints it on page 2), page 2 is read.
 - Cross-check: for every field, the multiset of letters after repair is compared with the
   glyph-level text from page.get_texttrace() (which has none of the /ActualText artifacts but
   is in visual order). A difference is reported in 'text_warnings'.
@@ -72,6 +86,7 @@ EPIC_ODD = re.compile(r'^[A-Z]{2,3}[A-Z0-9/]*[0-9][A-Z0-9/]*$')
 EPIC_PRINTED = re.compile(r'^(?=.*[A-Za-z])(?=.*[0-9])[!-~]{8,}$')
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 VIRAMA, ZWJ, ZWNJ = '्', '‍', '‌'
+VOCALIC_R_SIGN, RA_VIRAMA = '\u0943', '\u0930\u094d'
 DEP_SIGNS = '[ा-ौॢॣँ-ः]'   # matras, candrabindu, anusvara, visarga
 PHOTO_TEXT = 'फोटो'
 DEP_SIGNS_NO_I = '[\u093e\u0940-\u094c\u0962\u0963\u0901-\u0903]'
@@ -84,6 +99,21 @@ MARKS_RUN = re.compile('(^|[ :]+)(' + DEP_SIGNS + '+)')
 VOWEL_SIGN = re.compile('[\u093e-\u094c\u0962\u0963]')
 # a word in visual order: i-matra (and an anusvara drawn with it) before the first consonant cluster
 VISUAL_I = re.compile('(^|\\s)\u093f([\u0901\u0902]?)(' + CONS + '\u093c?(?:\u094d' + CONS + '\u093c?)*)')
+
+
+# a box row in visual order (2026-11-25, rows with Arabic-script characters): it starts with a label in visual order
+VISUAL_LABEL = re.compile('^\\s*(?:\u093fनवार्चक|पित|\u093fपता)\\s+का\\s+नाम')
+CLUSTER = CONS + '\u093c?(?:\u094d' + CONS + '\u093c?)*'
+VIS_I = re.compile('\u093f([\u0901\u0902]?)(' + CLUSTER + ')')
+VIS_REPH = re.compile('(' + CLUSTER + ')([\u093e-\u094c\u0901\u0902]*)\u0930\u094d')
+
+
+def visual_to_logical(s):
+    """A row in visual order -> logical order: an i-matra (with an anusvara drawn with it) goes after the consonant cluster
+    that follows it ('िनवा' -> 'निवा', 'सािबर' -> 'साबिर', 'पित' -> 'पति'); then a reph ('र्' after a cluster and its signs) goes in
+    front of that cluster ('निवार्चक' -> 'निर्वाचक'). Only for a row that VISUAL_LABEL marks."""
+    s = VIS_I.sub(lambda m: m.group(2) + '\u093f' + m.group(1), s)
+    return VIS_REPH.sub(lambda m: '\u0930\u094d' + m.group(1) + m.group(2), s)
 
 
 # frequent words of the names (2026-11-25 sample): a sign after a space in front of one of these is a stray ('ललन ुसाह')
@@ -257,6 +287,12 @@ def glyph_fixes(trace, rev):
                 continue
             right = chr(next(iter(cps)))
             nxt = chr(ch[i + 1][0]) if i + 1 < len(ch) else ''
+            if right == VOCALIC_R_SIGN:
+                # ToUnicode gives 'र्' for glyph uni0943: the trace has 'र' with the glyph id, then '्' with id -1 at the same origin
+                if (chr(cp) == '\u0930' and nxt == VIRAMA and ch[i + 1][1] < 0 and tuple(ch[i + 1][2]) == tuple(org)
+                        and not (i + 2 < len(ch) and ch[i + 2][1] < 0 and tuple(ch[i + 2][2]) == tuple(org))):
+                    fixes[(round(org[0], 1), round(org[1], 1))] = (RA_VIRAMA, VOCALIC_R_SIGN)
+                continue
             if unicodedata.normalize('NFD', right) == chr(cp) + '़' and nxt == '़':
                 continue
             if unicodedata.category(right)[0] != 'L':
@@ -336,21 +372,47 @@ def box_marks(page, boxes, drawings):
     return marks
 
 
-def page_chars(page):
+def page_chars(page, fixes=None):
     """rawdict chars as (char, ox, oy, span_id, span_text, bbox) in stream order, plus the lines
-    as (y0, x0, x1, text)."""
+    as (y0, x0, x1, text). fixes (glyph_fixes): only the multi-character ones (glyph uni0943 given as 'र्') are applied
+    here, to the chars and the line texts: 'र' + '्' at the glyph's origin -> 'ृ'. The one-character fixes (ऋ) stay in
+    parse_box, as before."""
     out, lines, sid = [], [], 0
+    mfix = {k: v for k, v in (fixes or {}).items() if len(v[0]) > 1}
     for b in page.get_text('rawdict')['blocks']:
         for l in b.get('lines', []):
             lt = ''
             for s in l['spans']:
                 sid += 1
+                chs = s['chars']
+                if mfix:
+                    chs = apply_multi_fixes(chs, mfix)
                 txt = ''.join(c['c'] for c in s['chars'])
-                lt += txt
-                for c in s['chars']:
+                lt += ''.join(c['c'] for c in chs)
+                for c in chs:
                     out.append((c['c'], c['origin'][0], c['origin'][1], sid, txt, c['bbox']))
             lines.append((l['bbox'][1], l['bbox'][0], lt))
     return out, lines
+
+
+def apply_multi_fixes(chs, mfix):
+    """rawdict chars of one span: a run equal to a fix's wrong text whose chars all sit at the fixed glyph's origin is
+    replaced by one char (the right text), with the origin and bbox of the run's first char."""
+    res, i = [], 0
+    while i < len(chs):
+        c = chs[i]
+        o = (round(c['origin'][0], 1), round(c['origin'][1], 1))
+        f = mfix.get(o)
+        if f and c['c'] == f[0][0]:
+            run = chs[i:i + len(f[0])]
+            if (''.join(x['c'] for x in run) == f[0]
+                    and all((round(x['origin'][0], 1), round(x['origin'][1], 1)) == o for x in run)):
+                res.append(dict(c, c=f[1]))
+                i += len(f[0])
+                continue
+        res.append(c)
+        i += 1
+    return res
 
 
 def assign(points, boxes, tol=1.0):
@@ -533,6 +595,8 @@ def parse_box(box, chars, tchars, fixes):
         if f and c[0] == f[0]:
             c = (f[1],) + c[1:]
             rep['glyph_fix'] += 1
+        elif f and len(f[0]) > 1 and c[0] == f[1]:     # applied in page_chars (glyph uni0943 given as 'र्')
+            rep['glyph_fix_vocalic_r'] += 1
         fixed.append(c)
     chars = fixed
     # phantom spaces: a space character with no space glyph drawn at that point ('अश्| |विनी')
@@ -551,6 +615,10 @@ def parse_box(box, chars, tchars, fixes):
     last_label = None
     for r in rows:
         raw = row_text(r['c'])
+        if r['y'] >= top_y and VISUAL_LABEL.match(raw):
+            raw = visual_to_logical(raw)
+            rep['visual_row'] += 1
+            warn.append('visual_row')
         if r['y'] < top_y:  # serial / EPIC cell row: separate spans, so split on span as well
             toks, lab = top_tokens(r['c'])
             if lab:
@@ -586,6 +654,13 @@ def parse_box(box, chars, tchars, fixes):
             t = t.split(':', 1)[0] + ': ' + repair(v, rep)
         fields[lab] = (t, r['c'])
         last_label = lab
+    if 'epic' not in rec:
+        # an EPIC printed with non-ASCII characters or without letters ('MGच2486231', 'BR/12/015Ü201135', '8607269969'): the
+        # one remaining serial-row word of 6+ characters (stamps such as 'D' are short)
+        long = [i for i, (w, tok) in enumerate(extra) if w == 'top' and len(tok) >= 6]
+        if len(long) == 1:
+            rec['epic'] = extra.pop(long[0])[1]
+            warn.append('epic_nonstandard')
     labs = []
     if 'name' in fields:
         m = NAME_RE.match(fields['name'][0])
@@ -653,18 +728,25 @@ def parse_box(box, chars, tchars, fixes):
 def texttrace_chars(trace, fixes):
     out = []
     for sp in trace:
+        skip = 0
         for cp, gid, org, bb in sp['chars']:
+            if skip:            # the '्' (glyph id -1) of a glyph uni0943 given as 'र्'
+                skip -= 1
+                continue
             ch = chr(cp)
             f = fixes.get((round(org[0], 1), round(org[1], 1)))
             if f and ch == f[0]:
                 ch = f[1]
+            elif f and len(f[0]) > 1 and ch == f[0][0] and gid >= 0:
+                ch, skip = f[1], len(f[0]) - 1
             out.append((ch, org[0], org[1], gid))
     return out
 
 
 # --------------------------------------------------------------------------- document
 
-def parse_pdf(path):
+def parse_pdf(path, mfix_pages=None):
+    """mfix_pages (dict, optional): gets {page index: fixes} of the pages with a wrong ToUnicode for glyph uni0943."""
     t0 = time.time()
     doc = pymupdf.open(path)
     anch = collections.Counter()   # boxes anchored on an EPIC word (find_boxes)
@@ -673,6 +755,11 @@ def parse_pdf(path):
     m = re.search(r'S(\d+)-(\d+)-.*-(\d+)-WI\.pdf$', fn)
     ac_f, part_f = (int(m.group(2)), int(m.group(3))) if m else (None, None)
     meta = parse_cover(doc[0])
+    if 'cover' not in meta and len(doc) > 1 and not find_boxes(doc[1], doc[1].get_drawings()):
+        # the totals table on page 2 (Bihar AC 181 part 173: page 1 has no room for it)
+        c2 = parse_cover(doc[1]).get('cover')
+        if c2:
+            meta['cover'], meta['cover_page'] = c2, 2
     meta['file'] = fn
     summ = None
     for pg in range(len(doc) - 1, max(0, len(doc) - 4), -1):   # last page; some Rajasthan files put a section list after it
@@ -690,7 +777,12 @@ def parse_pdf(path):
         boxes = find_boxes(page, drawings, anch)
         if not boxes:
             continue
-        chars, plines = page_chars(page)
+        trace = page.get_texttrace()
+        fixes = glyph_fixes(trace, rev)
+        chars, plines = page_chars(page, fixes)
+        mf = {k: v for k, v in fixes.items() if len(v[0]) > 1}
+        if mf and mfix_pages is not None:
+            mfix_pages[pno] = mf     # for raw_lines (ssrtext_task.raw_lines_of)
         lines = page_lines(plines, boxes)
         sec_marks = []
         for y, x, t in lines:
@@ -701,8 +793,6 @@ def parse_pdf(path):
             if sm:
                 rr = collections.Counter()
                 sec_marks.append((y, int(sm.group(1)), repair(sm.group(2), rr)))
-        trace = page.get_texttrace()
-        fixes = glyph_fixes(trace, rev)
         own = assign([(c[1], c[2], c[3]) for c in chars], boxes)
         tch = texttrace_chars(trace, fixes)
         town = assign([(c[1], c[2], -1 - i) for i, c in enumerate(tch)], boxes)

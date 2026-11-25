@@ -62,9 +62,11 @@ def photo_span(c, box, parser):
     return t.startswith(word) and c[1] > box.x0 + 0.55 * box.width
 
 
-def raw_lines_of(path, parser="hin"):
+def raw_lines_of(path, parser="hin", mfix_pages=None):
     """{(page, serial_no or EPIC): [row texts of the box, top row first]} for the Hindi and English parsers, which do not
-    keep them (same box finder, character assignment and rows as the parsers; the photo placeholder spans left out)."""
+    keep them (same box finder, character assignment and rows as the parsers; the photo placeholder spans left out).
+    mfix_pages {page index: fixes}: the Hindi parser's fixes of a wrong ToUnicode (glyph uni0943 given as 'र्', 2026-11-25),
+    so that the rows show the printed 'ृ'."""
     import pymupdf
     out = {}
     doc = pymupdf.open(path)
@@ -72,7 +74,7 @@ def raw_lines_of(path, parser="hin"):
         boxes = TH.find_boxes(page, page.get_drawings())
         if not boxes:
             continue
-        chars, _ = TH.page_chars(page)
+        chars, _ = TH.page_chars(page, (mfix_pages or {}).get(pno))
         own = TH.assign([(c[1], c[2], c[3]) for c in chars], boxes)
         per = collections.defaultdict(list)
         for c, k in zip(chars, own):
@@ -90,8 +92,9 @@ def raw_lines_of(path, parser="hin"):
 def parse_one(path, lang):
     """One PDF -> (records, meta with 'validation'). Runs in a worker process."""
     p = parser_of(lang)
+    mfix_pages = {}
     if p == "hin":
-        recs, meta = TH.parse_pdf(path)
+        recs, meta = TH.parse_pdf(path, mfix_pages)
         val = TH.validate(recs, meta)
     elif p == "eng":
         recs, meta = TE.parse_pdf(path)
@@ -106,7 +109,7 @@ def parse_one(path, lang):
             val["pages_match"] = meta["printed_pages"] == meta.get("pages")
             val["ok"] = bool(val["ok"] and val["pages_match"])
     if p != "any":
-        raw = raw_lines_of(path, p)
+        raw = raw_lines_of(path, p, mfix_pages)
         for r in recs:
             rl = raw.get((r["page"], str(r.get("serial_no")))) or raw.get((r["page"], r.get("epic")))
             if rl:
