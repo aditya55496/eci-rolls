@@ -71,7 +71,8 @@ def raw_lines_of(path, parser="hin", mfix_pages=None):
     out = {}
     doc = pymupdf.open(path)
     for pno, page in enumerate(doc):
-        boxes = TH.find_boxes(page, page.get_drawings())
+        # the English parser reads a page stretched by one wide box with all its stroke boxes (TA.find_boxes_wide)
+        boxes = (TA.find_boxes_wide if parser == "eng" else TH.find_boxes)(page, page.get_drawings())
         if not boxes:
             continue
         chars, _ = TH.page_chars(page, (mfix_pages or {}).get(pno))

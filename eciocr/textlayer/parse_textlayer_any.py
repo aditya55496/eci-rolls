@@ -116,7 +116,11 @@ def _visual_re(lang):
 VISUAL_PRE = {k: _visual_re(k) for k in PRE_BASE}
 # space before a mark: removed (a split cluster), except before a pre-base sign (and the Malayalam ra-sign)
 SPACE_MARK = re.compile(r' +(?=[\u0300-\u036f\u0900-\u0dff])')
-RA = {'ASM': '\u09f0', 'BEN': '\u09b0'}            # ৰ (Assamese), র (Bengali)
+RA = {'ASM': '\u09f0', 'BEN': '\u09b0'}            # ৰ (Assamese), র (Bengali): the ra-phala that ra_phala_restored puts back
+# 'ব়' in the text layer: the SolaimanLipi glyph of the Bengali র (gid 365; text 'ব়'); the Assamese ৰ has its own glyph (gid 402,
+# text 'ৰ'), in ASM and BEN rolls alike (S03 sample: 32,141 + 2,595 র glyphs all 'ব়', 59,862 + 5,008 ৰ glyphs all 'ৰ'). So 'ব়'
+# is the printed Bengali র in Assamese rolls too (before 2026-11-25 it became ৰ there: 'চৌধুৰী' for the printed 'চৌধুরী').
+RA_GLYPH = '\u09b0'
 DANGLING = re.compile('\u09cd(?=[\u09be-\u09cc\u09d7])')   # a virama right before a vowel sign: a consonant is missing
 CHILLU = {'ണ': 'ൺ', 'ന': 'ൻ', 'ര': 'ർ', 'ല': 'ൽ', 'ള': 'ൾ', 'ക': 'ൿ'}
 CHILLU_RE = re.compile('([ണനരലളക])്‍')
@@ -177,7 +181,7 @@ def repair(s, lang, counts=None):
         s = s.replace('\u09f1', '\u09ac'); counts['bengali_wa'] += 1
     if lang in RA and '\u09ac\u09bc' in s:
         # after a virama the glyph trace shows ব-phala + র ('ঈশ্ব়' is 'ঈশ্বর': 43 of 44 sample cases); elsewhere ব় is র
-        s = s.replace('\u09cd\u09ac\u09bc', '\u09cd\u09ac' + RA[lang]).replace('\u09ac\u09bc', RA[lang])
+        s = s.replace('\u09cd\u09ac\u09bc', '\u09cd\u09ac' + RA_GLYPH).replace('\u09ac\u09bc', RA_GLYPH)
         counts['bengali_ra'] += 1
     if lang == 'MAL' and CHILLU_RE.search(s):
         s = CHILLU_RE.sub(lambda m: CHILLU[m.group(1)], s); counts['chillu_atomic'] += 1
@@ -317,16 +321,19 @@ KHANDA_RE = re.compile('\u09a4\u09cd(?=[\u0995-\u09a3\u09a6\u09a7\u09aa-\u09ad\u
 ALEFS = '\u0627\u0622\u0623\u0625'
 
 
+KHANDA_GID = 714
+
+
 def trace_clusters(tl):
     """Glyph-trace chars (ch, ox, oy, gid) -> clusters: one glyph and the chars of its ToUnicode string (gid -1, same
-    origin), in drawing order: [(codes, x)]."""
+    origin), in drawing order: [(codes, x, gid)]."""
     out = []
     for c in tl:
         if out and c[3] == -1 and abs(c[1] - out[-1][1]) < 0.05:
             out[-1][0].append(c[0])
         else:
-            out.append(([c[0]], c[1]))
-    return [(''.join(cs), x) for cs, x in out]
+            out.append(([c[0]], c[1], c[3]))
+    return [(''.join(cs), x, g) for cs, x, g in out]
 
 
 def bengali_trace_fixes(v, tl, ba=True):
@@ -338,11 +345,16 @@ def bengali_trace_fixes(v, tl, ba=True):
       it only when the text letters then equal the glyph trace ('দ্বিব' is drawn ি দ্ব ব: no ব is missing there)."""
     kinds = []
     cl = trace_clusters(tl)
-    k = sum(1 for i, (c, _) in enumerate(cl) if c == '\u09a4\u09cd' and not (i + 1 < len(cl) and cl[i + 1][0] == ZWJ))
-    cand = KHANDA_RE.findall(v)
-    if k and len(cand) == k:
-        v = KHANDA_RE.sub('\u09ce', v); kinds.append('khanda_ta')
-    phala = [i for i, (c, _) in enumerate(cl) if len(c) >= 3 and c[1:3] == '\u09ac\u09cd' and re.match(BN_CONS, c[0])]
+    # the 'ত্' glyphs: gid 714 is khanda ta (ৎ), gid 468 is ত with a visible hasanta (ত্); both have the text 'ত্'
+    # (SolaimanLipi, same gids in Normal and Bold; checked on the page images). Before 2026-11-25 every candidate became ৎ.
+    tg = [g for i, (c, _, g) in enumerate(cl) if c == '\u09a4\u09cd' and not (i + 1 < len(cl) and cl[i + 1][0] == ZWJ)]
+    cand = list(KHANDA_RE.finditer(v))
+    if tg and len(cand) == len(tg) and KHANDA_GID in tg:
+        for m, g in reversed(list(zip(cand, tg))):
+            if g == KHANDA_GID:
+                v = v[:m.start()] + '\u09ce' + v[m.end():]
+        kinds.append('khanda_ta')
+    phala = [i for i, (c, _, _) in enumerate(cl) if len(c) >= 3 and c[1:3] == '\u09ac\u09cd' and re.match(BN_CONS, c[0])]
     follow = [bool(i + 1 < len(cl) and cl[i + 1][0] == '\u09ac') for i in phala]
     if ba and any(follow):
         pos = [m.end() for m in re.finditer('\u09cd\u09ac', v)]
@@ -352,6 +364,67 @@ def bengali_trace_fixes(v, tl, ba=True):
                 v = v[:p] + '\u09ac' + v[p:]
             if add: kinds.append('ba_after_ba_phala')
     return v, kinds
+
+
+def row_trace(cs, tchars, tol=2.5):
+    """Glyph-trace chars of one text row (same baseline, x range of the row chars), in drawing order."""
+    ys = [c[2] for c in cs]; xs = [c[1] for c in cs]
+    lo, hi = min(ys) - tol, max(ys) + tol
+    return [tc for tc in tchars if lo <= tc[2] <= hi and min(xs) - 2 <= tc[1] <= max(xs) + 8]
+
+
+MAL_PRE = PRE_BASE['MAL']
+MAL_CONS = '\u0d15-\u0d3a'
+
+
+def chillu_space_fix(raw, tl):
+    """Malayalam: the text layer adds a space after a chillu (consonant + virama + ZWJ) inside a word whose next syllable has
+    a pre-base vowel sign ('മേക്കോാണ്\u200d പൊായില്', print and glyph trace 'മേക്കോൺപൊയിൽ': the trace has the chillu glyph
+    and then the sign glyph, no space glyph; 2026-11-25: 'മേക്കോൺ പൊയിൽ'). The n-th ZWJ of the row text is the n-th ZWJ of
+    the trace (chillus keep their order); a space after it is removed when the trace draws the pre-base sign right after
+    the ZWJ and the text has a consonant after the space (logical order). With a space glyph in the trace the space is real
+    ('സുബിന്\u200d െക എസ്'). Different ZWJ counts: unchanged."""
+    tz = [i for i, c in enumerate(tl) if c[0] == ZWJ]
+    zs = [m.start() for m in re.finditer(ZWJ, raw)]
+    if len(tz) != len(zs):
+        return raw
+    cut = [z + 1 for z, i in zip(zs, tz)
+           if raw[z + 1:z + 2] == ' ' and re.match('[' + MAL_CONS + ']', raw[z + 2:z + 3])
+           and i + 1 < len(tl) and tl[i + 1][0] in MAL_PRE]
+    for k in reversed(cut):
+        raw = raw[:k] + raw[k + 1:]
+    return raw
+
+
+MAL_SIGNS = '\u0d3e-\u0d4c\u0d57\u0d02\u0d03'
+ZWJ_REPEAT = re.compile('(\u0d4d\u200d)([' + MAL_CONS + '][' + MAL_SIGNS + ']*)\\2')
+NTA_DOUBLED = re.compile('\u0d7b\u0d4d\u0d31([\u0d3e-\u0d4c]?)\u0d4d\u0d31\\1')
+CHILLU_ORPHAN = re.compile('([\u0d7a-\u0d7f]) ?(?=[\u0d3e-\u0d44\u0d57])')
+
+
+def mal_trace_fixes(v, minus, plus):
+    """Malayalam text-layer faults next to a ZWJ / chillu, each checked by the caller against the glyph trace (kept only
+    when the value's letters then equal the trace). Returns [(kind, new value)] candidates.
+      zwj_repeat     after virama + ZWJ the next syllable is repeated: 'റഹ്\u200dമാമാൻ' -> 'റഹ്\u200dമാൻ', 'അസ്\u200dലംലം'
+      nta_doubled    the nta conjunct (glyph 'ന്റ') comes as chillu + virama + rra and the rra again: 'സെയിൻ്റ്റ്' -> 'സെയിന്റ്',
+                     'ആൻ്റു്റു' -> 'ആന്റു' (the trace's encoding ന്റ)
+      chillu_lost    a consonant and its pre-base sign are lost after a chillu, the other sign is left: 'അൽാൺസ്' (trace
+                     'അല്\u200dേഫാണ്\u200dസ്') -> 'അൽഫോൺസ്'; only when the trace has exactly one consonant and one pre-base sign
+                     more and the value has one such orphan sign"""
+    out = []
+    t = ZWJ_REPEAT.sub(lambda m: m.group(1) + m.group(2), v)
+    if t != v: out.append(('zwj_repeat', t))
+    t = NTA_DOUBLED.sub(lambda m: '\u0d28\u0d4d\u0d31' + m.group(1), v)
+    if t != v: out.append(('nta_doubled', t))
+    ms = list(CHILLU_ORPHAN.finditer(v))
+    if len(ms) == 1 and not plus and sum(minus.values()) == 2:
+        cons = [c for c in minus if re.match('[' + MAL_CONS + ']', c)]
+        pre = [c for c in minus if c in MAL_PRE]
+        if len(cons) == 1 and len(pre) == 1:
+            m = ms[0]
+            t = unicodedata.normalize('NFC', v[:m.start()] + m.group(1) + cons[0] + pre[0] + v[m.end():])
+            out.append(('chillu_lost', t))
+    return out
 
 
 def lam_alef_fix(chars, tchars):
@@ -374,7 +447,9 @@ def lam_alef_fix(chars, tchars):
     return chars, n
 
 
-def parse_box(box, chars, tchars, lang, photo_texts):
+def parse_box(box, chars, tchars, lang, photo_texts, photo_frame=None):
+    """photo_frame: the drawn photo frame of the box, used only when photo_texts is empty (the first voter page has one box,
+    so no text repeats; 2026-11-25 S19: 'ਫੋਟੋ ਉਪਲਬਧ' became a body row and 'ਹੈ' was joined to the gender, 'ਪੁਰਸ਼ਹੈ')."""
     rep, warn, rec = collections.Counter(), [], {}
     rx = box.x0 + 0.72 * box.width
     spans = collections.OrderedDict()
@@ -384,6 +459,10 @@ def parse_box(box, chars, tchars, lang, photo_texts):
     for sid, cs in spans.items():
         if min(c[1] for c in cs) >= rx and min(c[2] for c in cs) > box.y0 + 0.25 * box.height:
             if cs[0][4].strip() in photo_texts:
+                drop.add(sid)
+            elif not photo_texts and photo_frame is not None and \
+                    all(photo_frame.x0 - 1 <= c[1] <= photo_frame.x1 + 1 and photo_frame.y0 - 1 <= c[2] <= photo_frame.y1 + 1
+                        for c in cs):
                 drop.add(sid)
             else:
                 warn.append('right_span')
@@ -402,7 +481,7 @@ def parse_box(box, chars, tchars, lang, photo_texts):
             # ('ജോാസഫ് ്' + 'രശീജിത്', printed 'ജോസഫ് ്രശീജിത്'; 2026-11-25 this gave 'ജോസഫ്് രശീജിത്'): moved back, then
             # read in visual order ('ശ്രീജിത്')
             pr = body[-1][1].rstrip()[:-1].rstrip()
-            body[-1] = (repair(pr, lang), pr, body[-1][2])
+            body[-1] = (repair(pr, lang), pr + ' ', body[-1][2])   # the space before the virama: the rows join with a space
             raw = '\u0d4d' + raw
         if r['y'] < top_y:
             toks, lab = top_tokens(r['c'])   # a printed '( .. )' label over the serial cell -> top_label
@@ -419,20 +498,40 @@ def parse_box(box, chars, tchars, lang, photo_texts):
                 else:
                     rec.setdefault('_top', []).append(tok)
             continue
+        if lang == 'MAL' and '\u200d ' in raw:
+            fixed = chillu_space_fix(raw, row_trace(r['c'], tchars))
+            if fixed != raw:
+                rep['chillu_space'] += 1
+                raw = fixed
         t = repair(raw, lang)
         if t:
             body.append((t, raw, r['c']))
-    # fields: a row with ':' starts one, a row without ':' continues the one before; the age row is found by its form
-    fields = []      # [label_kind_or_None, text, raw, chars]
-    for t, raw, cs in body:
+    # the age row is found by its form. A house line can have that form too ('ਮਕਾਨ ਨੰ. : 162 ਵਾਰਡ ਨੰ: 13', 'ഓല്ഡ് നോാ:623';
+    # 2026-11-25 it was read as the age row: house empty, age 162, gender '13'). With 2 or more such rows, the age row is the
+    # last one whose gender word is known (else the last one); the others are fields as any other row.
+    cand = [j for j, (t, raw, cs) in enumerate(body) if ':' in t and is_age_row(t)]
+    age_j = None
+    if len(cand) > 1:
+        known = [j for j in cand if AGE_ROW.match(body[j][0]).group(4).strip() in GENDER.get(lang, {})]
+        age_j = (known or cand)[-1]
+    # fields: a row with ':' starts one, a row without ':' continues the one before. The rows are joined with a space only
+    # when the row above ends with one: a line broken at a hyphen or inside a word has none ('ਗਲੀ ਨੰਬਰ-' + '01', 'ਵÇ' + 'ਰ੍ਡ';
+    # before 2026-11-25 joined as 'ਨੰਬਰ- 01')
+    fields = []      # [label_kind_or_None, text, raw, chars, body index]
+    for j, (t, raw, cs) in enumerate(body):
         if ':' in t or not fields:
-            fields.append([None, t, raw, list(cs)])
-        elif fields and not is_age_row(fields[-1][1]):
-            fields[-1][1] += ' ' + t; fields[-1][2] += ' ' + raw; fields[-1][3] += cs
+            fields.append([None, t, raw, list(cs), j])
+        elif fields and not (is_age_row(fields[-1][1]) if age_j is None else fields[-1][4] == age_j):
+            sep = ' ' if fields[-1][2][-1:].isspace() else ''
+            fields[-1][1] += sep + t; fields[-1][2] += sep + raw; fields[-1][3] += cs
             warn.append('wrapped_line:%d' % (len(fields) - 1))
         else:
             rec.setdefault('extra_text', []).append(t); warn.append('extra_text')
-    ai = next((i for i, f in enumerate(fields) if is_age_row(f[1])), None)
+    if age_j is None:
+        ai = next((i for i, f in enumerate(fields) if is_age_row(f[1])), None)
+    else:
+        ai = next(i for i, f in enumerate(fields) if f[4] == age_j)
+    fields = [f[:4] for f in fields]
     if ai is not None and ai >= 3:
         kinds = ['name', 'rel', 'house'] + [None] * (ai - 3) + ['age']
     elif ai is not None:
@@ -501,6 +600,13 @@ def parse_box(box, chars, tchars, lang, photo_texts):
                 for kd in kinds:
                     rep[kd] += 1
         a = letters(t, lang)
+        if a != b and lang == 'MAL' and fk and rec.get(fk):
+            for kind, nv in mal_trace_fixes(rec[fk], b - a, a - b):
+                nt = t.replace(rec[fk], nv) if rec[fk] in t else None
+                if nt is not None and letters(nt, lang) == b:
+                    t, rec[fk], a = nt, nv, b
+                    rep[kind] += 1
+                    break
         if a != b and lang in RA and fk:
             # the text layer drops the ra-phala of some conjuncts ('শুক্া' for 'শুক্রা', 'মেক্ী' for 'মেক্ৰী'): restored when the
             # glyph trace has exactly one more র per virama-before-vowel-sign and nothing else differs
@@ -520,6 +626,80 @@ def parse_box(box, chars, tchars, lang, photo_texts):
 
 # --------------------------------------------------------------------------- document
 
+WIDE_W = (100, 300)   # edge widths of a stretched page (2026-11-25): 144-165 / 200.5-267 pt seen
+
+
+def _stroke_boxes(drawings, ok):
+    """Boxes from pairs of horizontal strokes 60-90 pt apart whose width passes ok(w) (as parse_textlayer.find_boxes)."""
+    cols = collections.defaultdict(list)
+    for d in drawings:
+        r = d['rect']
+        if r.height < 1.5 and ok(r.width):
+            cols[(round(r.x0), round(r.x1))].append(r.y0)
+    boxes = []
+    for (x0, x1), ys in cols.items():
+        ys = sorted(set(round(y, 1) for y in ys))
+        i = 0
+        while i < len(ys) - 1:
+            if 60 <= ys[i + 1] - ys[i] <= 90:
+                boxes.append(pymupdf.Rect(x0, ys[i], x1, ys[i + 1])); i += 2
+            else:
+                i += 1
+    return boxes
+
+
+def find_boxes_wide(page, drawings, stats=None):
+    """parse_textlayer.find_boxes, and on a page whose columns are stretched by one wide box: the stroke boxes with edges
+    out of the 175-200 pt range too. 2026-11-25: a long name or house number printed in one box widens it (207-267 pt), and
+    the page then lays its 3 columns out at other widths (S03 AC 42 part 243 page 25: 200.5 / 185 / 165 pt; AC 45 part 199
+    page 27: 165 / 201 / 165 pt; S22 AC 128 part 143 page 29: 200.5 / 148 / 144 pt; U07 AC 30 part 17 page 10). find_boxes
+    keeps only the 175-200 pt columns and anchors boxes on the EPIC words of the others: an anchored box that overlaps a
+    stroke box is dropped (a lost column), one that starts right of the real edge loses the labels ('ame :', S22 AC 27
+    part 437). Only when a stroke box of 100-300 pt out of the normal range holds an EPIC word in its top quarter, the page
+    gets its boxes from all strokes of 100-300 pt (EPIC words outside them anchored as before). Every other page: find_boxes
+    unchanged. stats (Counter): 'epic_anchored' as find_boxes, 'wide_pages' += 1 per page read so."""
+    wide = _stroke_boxes(drawings, lambda w: WIDE_W[0] <= w <= WIDE_W[1] and not BOX_W[0] <= w <= BOX_W[1])
+    words = []
+    if wide:
+        words = [w for w in page.get_text('words') if EPIC_ANY.match(w[4])]
+        wide = [b for b in wide if any(b.x0 <= (w[0] + w[2]) / 2 <= b.x1 and b.y0 <= (w[1] + w[3]) / 2 <= b.y0 + 0.25 * b.height
+                                       for w in words)]
+    if not wide:
+        return find_boxes(page, drawings, stats)
+    boxes = _stroke_boxes(drawings, lambda w: WIDE_W[0] <= w <= WIDE_W[1])
+    # a stroke box inside a bigger one (strokes within a wide box) is not a voter box
+    boxes = [b for b in boxes if not any(o != b and o.contains(b) for o in boxes)]
+    anchored = []
+    for x0, y0, x1, y1, w, *_ in words:
+        cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+        if any(b.x0 <= cx <= b.x1 and b.y0 <= cy <= b.y1 for b in boxes):
+            continue
+        r = pymupdf.Rect(x1 - 188, y0 - 4, x1 + 3, y0 + 72)
+        if any((r & b).get_area() > 0.1 * r.get_area() for b in boxes + anchored):
+            continue
+        anchored.append(r)
+    if stats is not None:
+        if anchored:
+            stats['epic_anchored'] += len(anchored)
+        stats['wide_pages'] += 1
+    rows = []
+    for r in sorted(boxes + anchored, key=lambda r: r.y0):
+        if rows and r.y0 - rows[-1][0].y0 <= 8:
+            rows[-1].append(r)
+        else:
+            rows.append([r])
+    return [r for row in rows for r in sorted(row, key=lambda r: r.x0)]
+
+
+def drop_wide_edges(drawings, boxes):
+    """For a page read by find_boxes_wide: the drawings without the horizontal strokes that are a box's own edges or lie in
+    its serial row (a wide box has a wider serial cell), so box_marks does not count them as stamps."""
+    def own(r):
+        return r.height < 1.5 and any(b.x0 - 1 <= r.x0 and r.x1 <= b.x1 + 1 and b.y0 - 1 <= r.y0 <= b.y1 + 1 and
+                                      (abs(r.width - b.width) < 1.5 or r.y0 < b.y0 + 0.25 * b.height) for b in boxes)
+    return [d for d in drawings if not own(d['rect'])]
+
+
 def box_marks(page, boxes, drawings):
     """As parse_textlayer.box_marks (drawings and images inside a box that are not part of the box template: a possible
     deletion stamp), but the serial cell strokes may be up to 75 pt wide: 4-digit serials widen the cell (Malayalam 65.25 pt)."""
@@ -538,6 +718,20 @@ def box_marks(page, boxes, drawings):
             if b.intersects(r):
                 marks[i] += 1
     return marks
+
+
+def photo_frame_of(box, drawings):
+    """The drawn photo frame of a box: the bounding box of the thin filled rectangles (frame sides) in the right 40 % of the
+    box below its serial row; None when it is not 30-70 x 40-75 pt."""
+    fr = None
+    for d in drawings:
+        r = d['rect']
+        if (r.width < 1.5 or r.height < 1.5) and d.get('type') == 'f' and box.contains(r) and \
+                r.x0 >= box.x0 + 0.6 * box.width and r.y0 > box.y0 + 0.15 * box.height:
+            fr = pymupdf.Rect(r) if fr is None else fr | r
+    if fr is None or not (30 <= fr.width <= 70 and 40 <= fr.height <= 75):
+        return None
+    return fr
 
 
 def photo_texts_of(page, boxes, per_box):
@@ -577,7 +771,9 @@ def parse_pdf(path, lang=None):
     for pno, page in enumerate(doc):
         chars, plines = page_chars(page)
         drawings = page.get_drawings()
-        boxes = find_boxes(page, drawings, anch)
+        nw = anch['wide_pages']
+        boxes = find_boxes_wide(page, drawings, anch)
+        wide_page = anch['wide_pages'] > nw
         lines = merged_lines(plines, boxes)
         for y, x, t in lines:
             if y > page.rect.height - 40:
@@ -610,11 +806,12 @@ def parse_pdf(path, lang=None):
             if k is not None: per_tbox[k].append(c)
         photo = photo_texts_of(page, boxes, per_box) | photo_doc
         photo_doc |= photo
-        marks = box_marks(page, boxes, drawings)
+        marks = box_marks(page, boxes, drop_wide_edges(drawings, boxes) if wide_page else drawings)
         for i, b in enumerate(boxes):
             for y, no, name in sec_marks:
                 if y < b.y0: section = (no, name)
-            rec, rep, warn = parse_box(b, per_box[i], per_tbox[i], lang, photo)
+            rec, rep, warn = parse_box(b, per_box[i], per_tbox[i], lang, photo,
+                                       photo_frame_of(b, drawings) if not photo else None)
             if 'epic' not in rec and 'serial_no' not in rec and 'name' not in rec:
                 continue
             if marks.get(i):
@@ -627,7 +824,8 @@ def parse_pdf(path, lang=None):
             if warn: out['text_warnings'] = warn
             for k in rep: repairs[k] += 1
             records.append(out)
-    if anch: meta['epic_anchored'] = anch['epic_anchored']
+    if anch.get('epic_anchored'): meta['epic_anchored'] = anch['epic_anchored']
+    if anch.get('wide_pages'): meta['wide_pages'] = anch['wide_pages']
     if footers: meta['printed_pages'] = collections.Counter(footers).most_common(1)[0][0]
     if parts_hdr: meta['part_no'] = collections.Counter(parts_hdr).most_common(1)[0][0]
     if acs_hdr: meta['ac_no'] = collections.Counter(acs_hdr).most_common(1)[0][0]

@@ -34,7 +34,8 @@ import pymupdf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_textlayer import (find_boxes, page_chars, assign, rows_of, row_text, page_lines, box_marks,   # noqa: E402
-                             EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_PRINTED, top_tokens)
+                             EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_PRINTED, top_tokens, LABEL_SPAN)
+from parse_textlayer_any import find_boxes_wide, drop_wide_edges   # noqa: E402
 
 GENDERS = {'Male', 'Female', 'Third Gender'}
 PHOTO_TEXT = 'Photo'
@@ -109,6 +110,31 @@ def parse_summary(page):
 
 # --------------------------------------------------------------------------- box
 
+LABEL_SPAN_ENG = re.compile(r'.*[(){}].*|999\..*')
+
+
+def top_tokens_eng(chars):
+    """parse_textlayer.top_tokens, and before it: a span of the serial row with a bracket or a '999.' prefix is a section
+    label drawn over the serial cell (2026-11-25, S22 AC 18 'Door No ( 1 To 81 ) & ( 2 To 82 )', 'Door No { 1 To 73 & 2 To 54 }',
+    the tail '00 )' of a label that runs into the next box, AC 177 part 37 '999.OVERSEAS ELECTORS'; they were split into
+    words: serial_no = a digit of the label, epic '999.OVERSEAS'). Spans that top_tokens reads as a label already
+    ('( MAIBANG PT-I)') are left to it."""
+    spans = collections.OrderedDict()
+    for c in chars:
+        spans.setdefault(c[3], []).append(c)
+    label, keep = [], []
+    for cs in spans.values():
+        t = ''.join(c[0] for c in cs)
+        if LABEL_SPAN_ENG.fullmatch(t.strip()) and not LABEL_SPAN.fullmatch(t):
+            label.append(t.strip())
+        else:
+            keep += cs
+    toks, lab = top_tokens(keep)
+    if lab:
+        label.append(lab)
+    return toks, (' '.join(label) or None)
+
+
 def parse_box(box, chars, tchars):
     warn, rec, extra = [], {}, []
     photo_sids = {c[3] for c in chars if c[4].strip() in ('Photo', 'Available', 'Photo Available', 'Photo Not Available')
@@ -116,10 +142,10 @@ def parse_box(box, chars, tchars):
     chars = [c for c in chars if c[3] not in photo_sids]
     rows = rows_of(chars, key_y=lambda c: c[2])
     top_y = box.y0 + 0.25 * box.height
-    fields, last = {}, None
+    fields, last, last_sp = {}, None, True
     for r in rows:
         if r['y'] < top_y:
-            toks, lab = top_tokens(r['c'])   # S03: a section label '( MAIBANG PT-I)' over the serial cell -> top_label
+            toks, lab = top_tokens_eng(r['c'])   # a section label over the serial cell -> top_label
             if lab: rec['top_label'] = lab
             for tok in toks:
                 if re.fullmatch(r'\d+', tok) and 'serial_no' not in rec: rec['serial_no'] = int(tok)
@@ -127,18 +153,21 @@ def parse_box(box, chars, tchars):
                 elif EPIC_PRINTED.match(tok) and 'epic' not in rec: rec['epic'] = tok; warn.append('epic_nonstandard')
                 else: extra.append(('top', tok))
             continue
-        t = clean(row_text(r['c']))
+        rt = row_text(r['c'])
+        t = clean(rt)
         if not t: continue
         lab = ('name' if NAME_RE.match(t) else 'rel' if REL_RE.match(t) else 'house' if HOUSE_RE.match(t)
                else 'age' if AGE_RE.match(t) else None)
         if lab is None or lab in fields:
             if last and lab is None:
-                fields[last] = (fields[last][0] + ' ' + t, fields[last][1] + r['c'])
+                # joined with a space only when the row above ends with one (a line broken at a hyphen has none)
+                fields[last] = (fields[last][0] + (' ' if last_sp else '') + t, fields[last][1] + r['c'])
                 warn.append('wrapped_line:' + last)
+                last_sp = rt[-1:].isspace()
             else:
                 extra.append(('row', t))
             continue
-        fields[lab] = (t, r['c']); last = lab
+        fields[lab] = (t, r['c']); last = lab; last_sp = rt[-1:].isspace()
     if 'name' in fields: rec['name'] = clean(NAME_RE.match(fields['name'][0]).group(1))
     if 'rel' in fields:
         m = REL_RE.match(fields['rel'][0])
@@ -192,7 +221,9 @@ def parse_pdf(path):
     records, section = [], (None, None)
     for pno, page in enumerate(doc):
         drawings = page.get_drawings()
-        boxes = find_boxes(page, drawings, anch)
+        nw = anch['wide_pages']
+        boxes = find_boxes_wide(page, drawings, anch)   # a page stretched by one wide box: its odd column widths too
+        wide_page = anch['wide_pages'] > nw
         if not boxes: continue
         chars, plines = page_chars(page)
         sec_marks = []
@@ -208,7 +239,7 @@ def parse_pdf(path):
             if k is not None: per_box[k].append(c)
         for c, k in zip(tch, town):
             if k is not None: per_tbox[k].append(c)
-        marks = box_marks(page, boxes, drawings)
+        marks = box_marks(page, boxes, drop_wide_edges(drawings, boxes) if wide_page else drawings)
         for i, b in enumerate(boxes):
             for y, no, name in sec_marks:
                 if y < b.y0: section = (no, name)
@@ -224,7 +255,8 @@ def parse_pdf(path):
                 if k in rec: out[k] = rec[k]
             if warn: out['text_warnings'] = warn
             records.append(out)
-    if anch: meta['epic_anchored'] = anch['epic_anchored']
+    if anch.get('epic_anchored'): meta['epic_anchored'] = anch['epic_anchored']
+    if anch.get('wide_pages'): meta['wide_pages'] = anch['wide_pages']
     meta['pages'] = len(doc)
     meta['seconds'] = round(time.time() - t0, 3)
     return records, meta
