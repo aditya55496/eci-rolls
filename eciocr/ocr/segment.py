@@ -75,6 +75,7 @@ STAMP_CHECK = False
 TEMPLATE_OVERRIDE = None
 LAST_CENTRES = None
 LAST_STAMP = None
+DASH_IDS = set()   # id() of the dash-line crops of the current page (segment_eng dash=True); eci_ocr reads them as '-'
 
 
 def stamp_below(gray, xl, px):
@@ -295,6 +296,7 @@ def segment_eng(gray, dash=False):
                 if len(xs) and ys.max() - ys.min() <= 0.3 * P and xs.max() - xs.min() <= 0.8 * P and xs.min() < 0.5 * sub.shape[1]:
                     y0, y1 = y_body + a, y_body + min(b, len(prof))
                     out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
+                    DASH_IDS.add(id(out[f'line{k}']))
                     k += 1
                     continue
             if k >= 4: break     # empty band after >= 4 lines: end of the text block
