@@ -238,7 +238,35 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
     return band[m:]
 
 
-def segment_eng(gray, dash=False):
+# lang-mal (2026-11-25): Malayalam / Telugu text lines are taller than the English grid pitch (vowel signs above and below the
+# letters: ു ൂ ് ...), so the grid cut gave a mark band as its own line and split the house line (2027 renders: 89 of 91 boxes
+# had a line count other than the text rows). peaks=True: line = a peak of the row ink profile smoothed over ~0.3 pitch (peaks at
+# least 0.7 pitch apart, highest first), cut at the emptiest rows between two peaks; marks above / below stay with their line.
+PEAK_PITCH = {'MAL': 0.119, 'TEL': 0.119}
+
+
+def _peak_cuts(prof, P, thr):
+    k = max(3, int(0.3 * P) | 1)
+    sm = np.convolve(prof, np.ones(k) / k, mode='same')
+    order = np.argsort(-sm, kind='stable')
+    peaks = []
+    for i in order:
+        if sm[i] <= 1.5 * thr: break
+        if all(abs(int(i) - q) >= 0.7 * P for q in peaks): peaks.append(int(i))
+    peaks.sort()
+    if not peaks: return []
+    ink = np.where(prof > 0)[0]
+    first = int(ink[ink >= peaks[0] - P][0]) if len(ink[ink >= peaks[0] - P]) else max(0, peaks[0] - int(0.6 * P))
+    cuts = [max(0, first - 1)]
+    for a, b in zip(peaks, peaks[1:]):
+        c0, c1 = a + int(0.3 * P), b - int(0.3 * P)
+        cuts.append(_runs_min(prof, c0, c1) if c1 > c0 else (a + b) // 2)
+    after = ink[(ink > peaks[-1]) & (ink <= peaks[-1] + 0.75 * P)]
+    cuts.append(int(after[-1]) + 2 if len(after) else peaks[-1] + int(0.5 * P))
+    return cuts
+
+
+def segment_eng(gray, dash=False, peaks=None):
     """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
     dash=True (lang-tam 2026-11-25, Tamil rolls): a band with only a short flat mark right after the name or relative line is
     kept as a line (the SIR print wraps the ' -' after a long name to its own line; the band test below dropped it)."""
@@ -277,6 +305,16 @@ def segment_eng(gray, dash=False):
     ink = np.where(prof > thr)[0]
     if not len(ink): return out
     top = int(ink[0])
+    if peaks:   # lang-mal: profile-peak lines (see _peak_cuts)
+        cuts = _peak_cuts(prof, PEAK_PITCH[peaks] * h, thr)
+        k = 0
+        for a, b in zip(cuts, cuts[1:]):
+            if (prof[a:b] > thr).sum() < 0.25 * PEAK_PITCH[peaks] * h: continue
+            y0, y1 = y_body + a, y_body + min(b, len(prof))
+            out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
+            k += 1
+            if k >= ENG_MAX_LINES: break
+        return out
     # grid boundaries: top - P/4 .. ; each inner boundary moved to the emptiest rows within +-0.3 P of the grid point
     cuts = [max(0, top - int(0.2 * P))]
     for k in range(1, ENG_MAX_LINES + 1):

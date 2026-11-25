@@ -39,6 +39,7 @@ import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_tam                                    # noqa: E402
+import parse_mal                                    # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -466,6 +467,10 @@ def parse_heading(lines, lang='HIN'):
                 m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
                 if m: return f'{m.group(1)}-{m.group(2).strip()}'
             continue
+        if lang in ('MAL', 'TEL'):   # 'സെക്ഷന്റെ നമ്പറും പേരും 1-<name>' / 'విభాగం సంఖ్య మరియు పేరు 1-<name>' (no colon in MAL)
+            m = re.search(r'(?:പേരും|పేరు)\s*[:;.]?\s*([0-9]+)\s*-\s*(.*)', t)
+            if m: return f'{m.group(1)}-{m.group(2).strip()}'
+            continue
         if lang == 'ENG':   # 'Section No and Name : 1-Lozar ,Aldona'
             m = re.search(r'Sect\w*\s+No\.?\s+and\s+Name\s*[:;.]?\s*([0-9]+)\s*-?\s*(.*)', t)
             if m: return f'{m.group(1)}-{m.group(2).strip()}'
@@ -624,9 +629,12 @@ ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,
 ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 # lang-tam (2026-11-25): Tamil SIR rolls (S22, U07) use the English SIR box template: segment_eng, the ENG code-cell test, Tesseract
 # 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
-LATIN_TPL = ('ENG', 'TAM')
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam'}
-PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam)}
+# lang-mal (2026-11-25): Malayalam (S11, U06, U07-29) and Telugu (U07-30) SIR rolls: the same template, Tesseract 'mal' / 'tel',
+# parse_mal (labels / genders of the language in parse_mal.LANG).
+LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL')
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel'}
+PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam),
+           'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -744,6 +752,7 @@ CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
+    if lang in ('MAL', 'TEL'): parse_mal.LANG = lang
     if lang in LATIN_TPL:
         # English / Tamil: line roles voted over all engines, then every engine parsed with the same roles (parse_eng / parse_tam)
         P, from_l = PARSERS[lang]
@@ -876,7 +885,7 @@ def process_page(task):
     _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
         if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
-            segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM').items() if im.size}); stamps.append(False)
+            segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM', peaks=lang if lang in ('MAL', 'TEL') else None).items() if im.size}); stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
@@ -1412,9 +1421,11 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL'): return opt.upper()
     b = os.path.basename(path).upper()
-    return 'ENG' if '-ENG-' in b else 'TAM' if '-TAM-' in b else 'HIN'
+    for L in ('ENG', 'TAM', 'MAL', 'TEL'):
+        if f'-{L}-' in b: return L
+    return 'HIN'
 
 
 def parse_pages(spec, n):
@@ -1448,7 +1459,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, TAM for *-TAM-* file names, else HIN), HIN, ENG or TAM')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* file names, else HIN), HIN, ENG, TAM, MAL or TEL')
     ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
                     'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
