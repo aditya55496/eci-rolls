@@ -514,6 +514,10 @@ TESS_LAZY = os.environ.get('ECI_TESS_LAZY', '0') == '1'
 # stamp lines. Loaded only when the stamp test is on; SIR 2026 rolls never use it.
 STAMP_SET = [d for d in os.environ.get('ECI_STAMP_SET', '').split(',') if d]
 _ES = None
+# job1 speed (2026-11-25): ECI_S1_SCREEN=1 (hint cascade; default off): the stage-1 CRNN only screens. Boxes it settles keep its
+# reading; a stage-2 box is decided by the other engines alone (as if the set had no stage-1 model there), so a small fast
+# screening model (quarter width) does not vote on the hard boxes.
+S1_SCREEN = os.environ.get('ECI_S1_SCREEN', '0') == '1'
 RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
 # 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
 # the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
@@ -965,7 +969,7 @@ def process_page(task):
             nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
         else:
-            nm = stamp_nm.get(i) or ((_E.names[:K] + _E.tnames) if i in stage1_only else _E.names)
+            nm = stamp_nm.get(i) or ((_E.names[:K] + _E.tnames) if i in stage1_only else (_E.names[K:] if S1_SCREEN and K > 0 and _OPT['hints'] else _E.names))
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
         if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
             readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
