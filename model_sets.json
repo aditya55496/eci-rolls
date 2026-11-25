@@ -1608,5 +1608,59 @@
    "lang_ben_r5_half_i8": "65fc08649910a35a",
    "lang_ben_r5_q_i8": "65fc08649910a35a"
   }
+ },
+ "oriN4s": {
+  "about": "Odisha SIR Odia (lang-ori round 5 oriN4s, owner 2026-11-26 deploy; silent-first: 0 silent on gold, high flag rate accepted - unflagged 100 % on gold). No hints (no 2027 Odia roll). 2 int8 CRNNs (r11 half + quarter, fine-tuned on real + Opus labels + rare-cluster synth) + Tesseract ori/eng; no cascade (stage1 0, all engines read every box). Serial / EPIC from Tesseract (ECI_ORI_TESS_NUM, the print's Latin digit font is unseen by the CRNNs); Odia parse fixes (ORI_FIX), house/age Latin by CRNN unanimity (ORI_DIGITS), out-of-lexicon name flag (ECI_ORI_LEX=F, ori_lex.json in the engine), component line slicing (ORI_SLICE, ORI_SPLIT2). Native-resolution pages (ECI_RESCALE_H=0). Engine branch lang-ori c02dd0a. Gold (696 boxes, ACs 1 35 64 91 106 124): record 94.54 %, unflagged 100 % (233 unflagged records, 0 silent), flag 66.52 %, EPIC 100 %. Held-out flag 82.1 %.",
+  "models": [
+   "lang_ori_r11a2_x0",
+   "lang_ori_r11b_x0"
+  ],
+  "sha256_16": {
+   "lang_ori_r11a2_x0": "78fa13ee261d17fa",
+   "lang_ori_r11b_x0": "365fb092cd4c8cbe"
+  },
+  "hints": "none",
+  "stage1": 0,
+  "lang": "ORI",
+  "env": {
+   "ECI_ORI_TESS_NUM": "1",
+   "ECI_ORI_TESS_SERIAL": "0",
+   "ECI_ORI_SPLIT": "1",
+   "ECI_ORI_NEAREST": "1",
+   "ECI_ORI_BOTH": "1",
+   "ECI_ORI_SLICE": "1",
+   "ECI_ORI_DIGITS": "1",
+   "ECI_ORI_FIX": "1",
+   "ECI_ENG_NOHINT": "0",
+   "ECI_ORI_LEX": "F",
+   "ECI_ORI_SPLIT2": "1",
+   "ECI_RESCALE_H": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "tessdata": "ori + eng traineddata (apt tesseract-ocr-ori)",
+  "gold": {
+   "ori_rec": 94.54,
+   "ori_unflagged": 100.0,
+   "ori_flag_pct": 66.52,
+   "ori_silent": 0,
+   "epic_ori": 100.0,
+   "boxes_ori": 696,
+   "ori_heldout_flag_pct": 82.1,
+   "rec_ci95": [
+    92.39,
+    96.47
+   ],
+   "source": "lang-ori eval r11ab_f (eval/out/r11ab_f.score.json)"
+  },
+  "charset_sha256_16": {
+   "lang_ori_r11a2_x0": "f0d28efea18b9204",
+   "lang_ori_r11b_x0": "f0d28efea18b9204"
+  },
+  "arch_sha256_16": {
+   "lang_ori_r11a2_x0": "6a6b3afb4f11d1aa",
+   "lang_ori_r11b_x0": "7717a339c8db6429"
+  }
  }
 }

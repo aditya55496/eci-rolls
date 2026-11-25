@@ -18,6 +18,7 @@ import parse_tam
 import parse_mal   # lang-mal: Malayalam / Telugu (parse_mal.LANG = 'MAL' | 'TEL')
 import parse_pan   # lang-pan: Punjabi (Gurmukhi)
 import parse_ben
+import parse_ori   # lang-ori: Odia
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -62,6 +63,7 @@ _visual_hin = visual
 def visual(s):   # lang-tam: Tamil sequences that print the same (ௌ = ெள, ஂ = ்) are one value
     if LANG in ('MAL', 'TEL'): s = parse_mal.norm(s)   # lang-mal: chillu + virama + ZWJ -> atomic chillu before the ZWJ drop
     v = _visual_hin(s)
+    if LANG == 'ORI': return parse_ori.norm(v)   # lang-ori: Odia canonical form
     return v.replace('\u0bcc', '\u0bc6\u0bb3').replace('\u0b82', '\u0bcd') if LANG == 'TAM' else v
 
 
@@ -71,6 +73,7 @@ def valid(f, v):
     if LANG in ('MAL', 'TEL'): return parse_mal.valid_mal(f, v, EPIC_RE)
     if LANG == 'PAN': return parse_pan.valid_pan(f, v)
     if LANG == 'BEN': return parse_ben.valid_ben(f, v, EPIC_RE)
+    if LANG == 'ORI': return parse_ori.valid_ori(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
@@ -84,6 +87,7 @@ def hvis(f, v):
         return re.sub(r'(\s*-)+$', '', visual(v))
     if LANG == 'PAN' and PAN_CANON: return parse_pan.canon(v)   # lang-pan r2
     if LANG == 'BEN' and f == 'relation_label': return parse_ben.rel_canon(v)
+    if LANG == 'ORI' and f == 'relation_label': return parse_ori.rel_canon(v)
     return visual(v)
 
 
@@ -433,7 +437,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             # (gold_v3 measured run: 4 such errors without this condition).
             # job3 (ECI_ENG_CODE=1): English rolls have no stamp test; when the pixel test says a code is printed and NO Tesseract
             # reading gave anything (not even '#'), the first CRNN's letter code is taken (the field stays flagged)
-            eng_code = ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL') and pix and all(t == '' for t in tv)
+            eng_code = ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL', 'ORI') and pix and all(t == '' for t in tv)
             if ((CODE_CRNN and stamp) or eng_code) and pix and all(t in ('', '#') for t in tv) and names:
                 j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
                 if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
@@ -579,7 +583,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
                 if not v: continue
-                if ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL') and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
+                if ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL', 'ORI') and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
                 w[visual(v)] += (cf.get(LINE_OF[f], CONFW) if nm.startswith('crnn') else CONFW)
             if w:
                 top = w.most_common(1)[0][0]
@@ -715,7 +719,8 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
         g = {'পুরুষ': 'Male', 'মহিলা': 'Female'}.get(out.get('gender'), '')
     else:
         g = out.get('gender')
-    if (lab.startswith('husband') and g == 'Male') or (lab.startswith('wife') and g == 'Female'):
+    if (lab.startswith('husband') and g == 'Male') or (lab.startswith('wife') and g == 'Female') \
+            or (lab.startswith('கணவ') and g == 'ஆண்') or (lab.startswith('மனைவி') and g == 'பெண்'):
         if 'gender' not in flags: flags.append('gender')
     if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags

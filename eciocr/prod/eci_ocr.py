@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, segment_pan, segment_pan2, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_pan, segment_pan2, segment_ori, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
@@ -45,6 +45,7 @@ import parse_ben                                    # noqa: E402  (lang-ben)
 import ctcvar_ben                                   # noqa: E402  (lang-ben)
 _CTCVAR_LINE = re.compile(r'(^|:)\s*[ঀ-৿]')         # name / relation line ('নাম : X', 'পিতার নাম: X') or a wrapped name line
 _CTCVAR_SKIP = re.compile(r'বয়স|লিঙ্গ|বাড়ি|বাড়ী|নং')
+import parse_ori                                    # noqa: E402  (lang-ori)
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 import ctchint_pan                                  # noqa: E402  (lang-pan r2)
@@ -666,11 +667,12 @@ ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 # 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
 # lang-mal (2026-11-25): Malayalam (S11, U06, U07-29) and Telugu (U07-30) SIR rolls: the same template, Tesseract 'mal' / 'tel',
 # parse_mal (labels / genders of the language in parse_mal.LANG).
-LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL', 'BEN')   # lang-ben: Bengali uses the English SIR box template too
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan', 'BEN': 'ben'}
+LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL', 'BEN', 'ORI')   # lang-ben/ori: Bengali and Odia use the English SIR box template too
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan', 'BEN': 'ben', 'ORI': 'ori'}
 PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam),
            'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal),
-           'BEN': (parse_ben, parse_ben.from_lines_ben)}
+           'BEN': (parse_ben, parse_ben.from_lines_ben),
+           'ORI': (parse_ori, parse_ori.from_lines_ori)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -782,7 +784,32 @@ _ENG_LEX = None
 
 def lang_of_pdf_is_eng(recs):
     return any(r.get('lang') == 'ENG' for r in recs)
+ORI_TESS_NUM = os.environ.get('ECI_ORI_TESS_NUM', '1') == '1'   # lang-ori: serial / EPIC from Tesseract only (see decide_box)
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+ORI_TESS_SERIAL = os.environ.get('ECI_ORI_TESS_SERIAL', '0') == '1'   # r2: 0 = CRNNs vote on the serial again (r4: real serial labels)
+ORI_DIGITS = os.environ.get('ECI_ORI_DIGITS', '1') == '1'   # lang-ori r2: house / age in Latin characters by CRNN unanimity
+ORI_FIX = os.environ.get('ECI_ORI_FIX', '1') == '1'   # lang-ori r2: X+subjoined TTA -> X+subjoined BA in names (not after ଟ ଷ ଣ ନ ର)
+_ORI_TTA = re.compile('([\u0b15-\u0b1e\u0b20-\u0b22\u0b24-\u0b27\u0b2a-\u0b2f\u0b32-\u0b33\u0b36\u0b38\u0b39\u0b5f])\u0b4d\u0b1f')
+_ORI_O = re.compile('\u0b13(?=[\u0b3e-\u0b4c\u0b56\u0b57])')
+_ORI_HOUSE_ASCII = re.compile(r'^[0-9A-Za-z][0-9A-Za-z/.\- ]{0,11}$')
+_ORI_AGE = re.compile(r'^(1[89]|[2-9][0-9]|1[01][0-9])$')
+# lang-ori r3: name / relation token lexicon = tokens of 53,757 Opus-read real line strips of NON-gold Odisha ACs (ocr/ori_lex.json).
+#   U: a flagged name / relation_name whose CRNN readings are all equal (>= 2 CRNNs) and whose tokens are all in the lexicon
+#      (count >= ECI_ORI_LEX_MIN) is unflagged.   F: an UNflagged name / relation_name with a token outside the lexicon is flagged.
+ORI_VOTE3 = os.environ.get('ECI_ORI_VOTE3', '0') == '1'   # lang-ori r4: all >= 3 CRNNs agree -> name / relation / house accepted (see decide_box)
+ORI_LEX = os.environ.get('ECI_ORI_LEX', '')   # '' | 'U' | 'F' | 'UF' | + 'P' (r4: F settled per PDF, ori_pdf_lex)
+ORI_LEX_MIN = int(os.environ.get('ECI_ORI_LEX_MIN', '2'))
+_ORI_LEXSET = None
+
+
+def _ori_inlex(v):
+    global _ORI_LEXSET
+    if _ORI_LEXSET is None:
+        fn = os.environ.get('ECI_ORI_LEX_FILE') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ocr', 'ori_lex.json')
+        _ORI_LEXSET = {w for w, n in json.load(open(fn))['counts'].items() if n >= ORI_LEX_MIN}
+    from parse_ori import norm as _n
+    t = _n(v or '').replace('.', ' ').split()
+    return bool(t) and all(w in _ORI_LEXSET for w in t)
 
 
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False, nocv=False):
@@ -796,10 +823,28 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         roles = P.box_roles([per_engine[n][0] for n in names], nl)
         per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
         cands = [from_l(per_engine[n][0]) for n in names]
+        if lang == 'ORI' and ORI_TESS_NUM:
+            # lang-ori r1-r3: the print's Latin digits (serial cell, EPIC) are drawn by a font the synthetic sets do not have
+            # (the CRNNs read its 3 as 8 on 270 gold serials); Tesseract eng reads them (EPIC 100 % on gold): the CRNN
+            # candidates take Tesseract's serial / EPIC (tess, else tess2), so these two fields are voted by Tesseract alone
+            tv = [c for n, c in zip(names, cands) if n.startswith('tess')]
+            if tv:
+                for n, c in zip(names, cands):
+                    if not n.startswith('tess'):
+                        c['epic'] = tv[0]['epic']
+                        if ORI_TESS_SERIAL: c['serial_no'] = tv[0]['serial_no']
     elif lang == 'PAN':
         cands = [from_lines_pan(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
+    if lang == 'ORI' and ORI_FIX:
+        # lang-ori r2: subjoined TTA after these consonants does not occur in Odia names; the print's subjoined BA (a small loop)
+        # is read as subjoined TTA by Tesseract and by CRNNs trained on its labels (gold: X+୍ଟ only after ଟ ଷ ଣ; ସ୍ବ 290 / ସ୍ଟ 0)
+        for c in cands:
+            for f in ('name', 'relation_name'):
+                if c.get(f) and '\u0b4d\u0b1f' in c[f]: c[f] = _ORI_TTA.sub('\\1\u0b4d\u0b2c', c[f])
+                # the independent vowel O (ଓ) never takes a vowel sign: it is the print's standalone WA (ୱ, same shape family)
+                if c.get(f) and '\u0b13' in c[f]: c[f] = _ORI_O.sub('\u0b71', c[f])
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
     if lang in LATIN_TPL and ENG_NOHINT and hint is None:   # lang-tam: Tamil too
@@ -836,8 +881,38 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         flags = flags + ['house_no']   # lang-ben r3: a stray mark in the house cell is read as '.', ',' or nothing (gold: 2 silent)
     if lang == 'BEN' and BEN_HOUSE_1BD and re.fullmatch('[০-৯]', (out.get('house_no') or '').strip()) and 'house_no' not in flags:
         flags = flags + ['house_no']   # lang-ben r5: one Bengali digit = mostly a misread '-' ('৭': 38 of 19,284 twin-roll records)
+    if lang == 'ORI' and ORI_DIGITS and flags:
+        # lang-ori r2: Tesseract ori misreads the Latin digits of the Odia lines (and reads stray marks of the next line as
+        # Odia digits: '27 ୪'); a house number / age in Latin characters only that ALL CRNNs read the same is accepted
+        # (gold r3: house 4/4 unanimous ASCII values 316 right / 0 wrong, age 55 / 0)
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f, rx in (('house_no', _ORI_HOUSE_ASCII), ('age', _ORI_AGE)):
+            if f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and rx.match(cn[0].get(f) or '') \
+                    and out.get(f) == cn[0].get(f):
+                flags = [x for x in flags if x != f]
+    v3, oov = [], []   # lang-ori r4: fields accepted by VOTE3 (no Tesseract support) / accepted but out of the lexicon (ECI_ORI_LEX P)
+    if lang == 'ORI' and ORI_VOTE3 and flags:
+        # lang-ori r4: with >= 3 CRNNs (the pair + a third family trained from scratch on Opus labels only, r10), a flagged name /
+        # relation_name / house_no that ALL CRNNs read the same (non-empty) is accepted without Tesseract (Tesseract ori is the
+        # weak voter behind most flags). Meant with ECI_ORI_LEX=F (gold sim, uncertain fields skipped: flag 43 -> 49 %,
+        # unflagged 98.74 -> 99.72 %; asis + F: 67 % / 100 %)
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f in ('name', 'relation_name', 'house_no'):
+            if f in flags and len(cn) >= 3 and cn[0].get(f) and len({c.get(f) for c in cn}) == 1:
+                out[f] = cn[0][f]; flags = [x for x in flags if x != f]; v3.append(f)
+    if lang == 'ORI' and ORI_LEX:
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f in ('name', 'relation_name'):
+            if 'U' in ORI_LEX and f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and cn[0].get(f) \
+                    and out.get(f) == cn[0].get(f) and _ori_inlex(out.get(f)):
+                flags = [x for x in flags if x != f]
+            elif 'F' in ORI_LEX and f not in flags and not _ori_inlex(out.get(f)):
+                if 'P' in ORI_LEX: oov.append(f)   # settled per PDF (ori_pdf_lex)
+                else: flags = flags + [f]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
+    if v3 and 'P' in ORI_LEX: readings['_ori_v3'] = v3
+    if oov: readings['_ori_oov'] = oov
     for f in (flags if not os.environ.get('ECI_READINGS_ALL') else list(flags) + [f for f in OUT_FIELDS if f not in flags and f in SRC]):   # debug: readings of every field
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
@@ -953,7 +1028,9 @@ def process_page(task):
     segs_list, stamps = [], []
     _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang in LATIN_TPL:   # ENG, TAM, MAL, TEL, BEN: the English SIR box template
+        if lang == 'ORI':   # lang-ori: Odia lines from connected components (marks above / below the line core)
+            segs_list.append({k: im for k, im in segment_ori(g).items() if im.size}); stamps.append(False)
+        elif lang in LATIN_TPL:   # ENG, TAM, MAL, TEL, BEN: the English SIR box template
             if lang == 'BEN':   # lang-ben: Bengali box (top_cells + pitch + component line assignment)
                 seg = segment_eng(g, top_cells=BEN_TOP_CELLS, pitch=BEN_PITCH, comp=BEN_COMP)
             else:
@@ -1432,6 +1509,33 @@ def eng_lex_guard(recs, cmax=2, nmin=30, ratio=30.0, pmin=2):
     return n
 
 
+def ori_pdf_lex(recs, k=None):
+    """lang-ori r4 (ECI_ORI_LEX with P, e.g. 'FP'): the API lexicon misses the regional surnames of many ACs (held-out PDFs: 72 %
+    of records hold a token outside it). A name / relation_name accepted by the votes but with a token outside the lexicon
+    (readings._ori_oov) is accepted when every such token occurs in >= k (ECI_ORI_PDFLEX_K, default 3) OTHER records of the same
+    PDF in a name / relation_name that Tesseract confirmed (unflagged, not accepted by VOTE3 alone); else it is flagged."""
+    from parse_ori import norm as _n
+    k = k or int(os.environ.get('ECI_ORI_PDFLEX_K', '3'))
+    def toks(v): return set(_n(v or '').replace('.', ' ').split())
+    cnt = collections.Counter(); per = []
+    for r in recs:
+        rd = r.get('readings', {}); bad = set(r['flags']) | set(rd.get('_ori_v3', []))   # Tesseract-confirmed fields only
+        t = set()
+        for f in ('name', 'relation_name'):
+            if f not in bad: t |= toks(r.get(f))
+        per.append(t); cnt.update(t)
+    n = 0
+    for r, t in zip(recs, per):
+        rd = r.get('readings', {})
+        for f in rd.pop('_ori_oov', []):
+            miss = [w for w in toks(r.get(f)) if not _ori_inlex(w) and cnt[w] - (w in t) < k]
+            if miss:
+                r['flags'].append(f); rd[f] = {'_oov': miss}
+            else: n += 1
+        rd.pop('_ori_v3', None)
+    return n
+
+
 # lang-mal r3 (2026-11-25, both default off):
 # ECI_DRAFT_FIELDS=1: a draft record is used field by field: its UNFLAGGED fields count, its flagged fields give no value (job4 used
 #   only wholly unflagged draft records; held-out Kerala: 80 of 139 matched DELETED-stamped final boxes had a draft record with a
@@ -1532,9 +1636,9 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI'): return opt.upper()
     b = os.path.basename(path).upper()
-    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN'):
+    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI'):
         if f'-{L}-' in b: return L
     return 'HIN'
 
@@ -1570,7 +1674,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL / PAN for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* / *-PAN-* file names, else HIN), HIN, ENG, TAM, MAL, TEL or PAN')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL / PAN / ORI for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* / *-PAN-* / *-ORI-* file names, else HIN), HIN, ENG, TAM, MAL, TEL, PAN or ORI')
     ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
                     'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
@@ -1662,6 +1766,8 @@ def main():
                 info['stamp3'] = eng_stamp3(recs)
             if ENG_LEX and lang_of_pdf_is_eng(recs) and recs:
                 info['lex_guard'] = eng_lex_guard(recs)
+            if ORI_LEX and 'P' in ORI_LEX and recs:
+                info['ori_pdf_lex_accepted'] = ori_pdf_lex(recs)
             if a.draft_records and recs:
                 info['draft_fill'] = draft_fill(recs, a.draft_records)
             if kind == 'SIR' and recs:
