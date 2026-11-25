@@ -638,6 +638,11 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
             if ok or f in NOHINT_SUPPORT: out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
         elif not stage1 and n * 2 > len(cv) and top in tvv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
             ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        if not ok and f == 'house_no' and MAL_HOUSE and not stage1:
+            # lang-mal r3: the same T rule as with hints (all >= 4 CRNNs read one valid house, Tesseract reads it except for the
+            # number separators / Malayalam digits) for records without a 2027 hint (voters not in the 2027 roll, ACs 1-3)
+            hv_ = mal_house(vals, names)
+            if hv_ is not None: out[f] = hv_; ok = True
         if not ok and f in CORE: flags.append(f)
     lab = (out.get('relation_label') or '').lower()
     if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female') \
