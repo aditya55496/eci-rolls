@@ -548,7 +548,9 @@ def process_page(task):
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
     else:
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, lang=lang)
+        # ECI_GUJ_TESS_LINES=0 (lang-guj round 3, CPU test): Tesseract reads only the number / EPIC cells, not the text lines
+        tg = {'num', 'epic', 'code'} if lang == 'GUJ' and os.environ.get('ECI_GUJ_TESS_LINES', '1') == '0' else None
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, tess_groups=tg, lang=lang)
         stage1_only = set()
     t = time.time()
     if kind is None: kind = 'SUP' if sum('part' in s for s in segs_list) * 2 > len(segs_list) else 'SIR'
