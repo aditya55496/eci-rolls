@@ -290,6 +290,13 @@ class Engines:
                     txts = self.tess_many([prep(segs_list[b][k]) for b, k in gk[g]], tl, psm, wl, tmp)
                 for (b, k), txt in zip(gk[g], txts): res[b][tn][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
+        if _segmod.DASH_IDS:   # lang-tam: a band with only a flat short mark (segment_eng dash=True) is the wrapped ' -': text '-'
+            for b, segs in enumerate(segs_list):
+                for k, im in segs.items():
+                    if id(im) in _segmod.DASH_IDS:
+                        for nm in res[b]:
+                            res[b][nm][0][k] = '-'
+                            if k in res[b][nm][1]: res[b][nm][1][k] = 1.0
         return res
 
 
@@ -466,6 +473,7 @@ def process_page(task):
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
+    _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
         if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
             segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM').items() if im.size}); stamps.append(False)
