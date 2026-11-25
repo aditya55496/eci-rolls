@@ -12,7 +12,7 @@ os.environ.setdefault("SCRAPE_POOL_PROJECT", "eci-rolls-test")
 import hi_common as H  # noqa: E402
 import pytest  # noqa: E402
 
-NEW = ("engD", "engJ", "tamH2", "tamN2")
+NEW = ("engD", "engJ", "engK11", "tamH2", "tamN2")
 # eci_ocr switches that are no decision (call path, debug default, model path when no --crnn is given)
 PASS = {"ECI_OCR_WORKERS", "ECI_TESS_CLI", "ECI_CRNN"}
 
@@ -245,7 +245,7 @@ def test_plan_lang_ocr(monkeypatch):
     assert sorted(by) == ["S05/ENG/12/1", "S05/ENG/12/2", "S05/ENG/13/1", "S10/ENG/60/1", "S10/ENG/60/2", "S10/ENG/61/7", "S22/TAM/80/40"]
     assert by["S05/ENG/12/1"]["payload"]["model_set"] == "engD"
     assert by["S05/ENG/12/1"]["payload"]["hints"] == "eci-rolls-ssr-text/hints/S05-2027-DR/12.jsonl.gz"
-    assert by["S05/ENG/13/1"]["payload"]["model_set"] == "engJ" and by["S05/ENG/13/1"]["payload"]["hints"] is None   # hints incomplete
+    assert by["S05/ENG/13/1"]["payload"]["model_set"] == "engK11" and by["S05/ENG/13/1"]["payload"]["hints"] is None   # hints incomplete
     assert summ["S05"]["acs_hints_incomplete"] == {"13": "missing_pdfs 1"}
     assert list(by["S10/ENG/60/1"]["payload"]["keys"]) == ["S10-2026-DR", "S10-2026-SIR-FIR-1"]
     assert summ["S10"]["parts_partial_held"] == {"S10-2026-SIR-FIR-1": 1}                              # part 3: FIR listed, no PDF
@@ -261,7 +261,7 @@ def test_plan_lang_ocr(monkeypatch):
     items, _ = L.plan({"S10"}, include_partial=True)
     assert "S10/ENG/60/3" in {i["key"] for i in items}
     items, _ = L.plan({"S05"}, state_set={"S05": "engJ"})
-    assert {i["payload"]["model_set"] for i in items} == {"engJ"}
+    assert {i["payload"]["model_set"] for i in items} == {"engJ"} and all(i["payload"]["hints"] is None for i in items)
     with pytest.raises(SystemExit):
         L.plan({"S05"}, state_set={"S05": "j2Ps"})          # a Hindi set does not fit English ACs
     monkeypatch.setattr(L, "queued_acs", lambda project: {("S05", "ENG", 12)})

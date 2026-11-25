@@ -13,15 +13,16 @@ Rolls: the SIR 2026 draft and final rolls of the states in ROLLS (one table; DR-
 Language per AC: lang_used of its AC records, else the language in its PDF file names ('-ENG-', '-TAM-'); ENG and TAM are
 planned, other languages (S25 Bengali ACs, U06 / U07 Malayalam, U07 Telugu) are counted and left out. An AC whose rolls name
 different languages is held (counted). Items: one per part of one AC, draft + final when both PDFs are stored (the draft first:
-its readings are the final roll's cache and, for engJ, the source of draft_fill), else the one stored roll ('parts_one_roll').
+its readings are the final roll's cache and, for engK11 / engJ, the source of draft_fill), else the one stored roll ('parts_one_roll').
 The fetch of every roll is 'done' in eci-rolls-all-cdn (2026-11-25), so a missing PDF of one roll will not come later; an AC
 whose fetch item of a roll is not done is held (--include-fetching plans it).
 A part whose PDF of one roll is missing although that roll's AC record lists the part (a fetch gap: S22 has 5 draft and 3 final AC
 records without any PDF) is held ('parts_partial_held'; listed in the summary for the part-gap work): seed_queue keeps keys, so an
 item seeded with one roll would never get the other one. --include-partial plans it with the stored roll.
 Model set: English with complete 2027 hints (S05 S14 U01: eci-rolls-ssr-text record '<state>-2027-DR/<ac>' with no missing and no
-unparsed PDF, plan_hi_ocr.ssr_done) -> engD with the hints key; English without -> engJ (an AC of a hint state whose hints are
-not complete also gets engJ; --wait-hints holds it instead). Tamil -> tamN2; tamH2 only with --tam-hints STATE=ROLL (a Tamil
+unparsed PDF, plan_hi_ocr.ssr_done) -> engD with the hints key; English without -> engK11 (an AC of a hint state whose hints are
+not complete also gets the no-hint set; --wait-hints holds it instead). No-hint English set: engK11 (job4 round 3, adopted 10:20;
+engJ = round 2 stays defined, --state-set STATE=engJ or a hub swap ocr_model_set_map {"engK11": "engJ"} uses it). Tamil -> tamN2; tamH2 only with --tam-hints STATE=ROLL (a Tamil
 2027 roll in eci-rolls-ssr-text: none exists on 2026-11-25, its hints are the ENGLISH 2027 text, which cannot confirm Tamil
 names) and complete hints for the AC. --state-set overrides the set of a state (it must fit the state's language and hints).
 Held states (HOLD): planned only with --release STATE. 2026-11-25: S25 West Bengal English ACs (job4: final rolls without the
@@ -64,12 +65,12 @@ NAMES = {"U01": "Andaman & Nicobar", "S05": "Goa", "S14": "Manipur", "S02": "Aru
          "S25": "West Bengal (English ACs)"}
 # English 2027 SSR roll in eci-rolls-ssr-text (task ssrtext, English parser): the hints of these states' English SIR rolls
 ENG_HINT_ROLL = {"S05": "S05-2027-DR", "S14": "S14-2027-DR", "U01": "U01-2027-DR"}
-SETS = {("ENG", True): "engD", ("ENG", False): "engJ", ("TAM", True): "tamH2", ("TAM", False): "tamN2"}
+SETS = {("ENG", True): "engD", ("ENG", False): "engK11", ("TAM", True): "tamH2", ("TAM", False): "tamN2"}
 PLAN_LANGS = ("ENG", "TAM")
-HOLD = {"S25": "job4 (2026-11-25 09:40, round 3 not adopted): set J reads West Bengal FINAL rolls without their draft at 68.9 % "
-               "record / 60 % flagged (gold AC 157 part 144, 'UNDER ADJUDICATION' stamps; held-out stamp set 95.14 % / 10.27 % "
-               "flagged); with the draft roll (draft_records) the English gold is 99.95 %. Target not met for finals: --release S25 "
-               "plans it (pairs read with draft_fill, one-roll final parts without)"}
+HOLD = {"S25": "job4 (2026-11-25 10:20, set K11): West Bengal FINAL rolls without their draft stay below target (held-out stamp set: "
+               "97.52 % record / 10.14 % flagged; J 95.14 / 10.27); with the draft roll (draft_records) the English gold is 99.95 % "
+               "record / 0.29 % flagged. --release S25 plans it (pairs read with draft_fill; final-only parts are held as partial "
+               "parts unless --include-partial)"}
 FILE_LANG = re.compile(r"-(HIN|ENG|TAM|BEN|MAL|TEL|KAN|GUJ|ORI|PAN|ASM|MAR|URD)-\d+-")
 
 

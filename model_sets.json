@@ -1,5 +1,5 @@
 {
- "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 / charset_sha256_16 = first 16 hex chars of the sha256 of crnn.onnx / charset.json (both checked by the task before the first item). FROZEN ONCE DEPLOYED: after the first item of a set has run on the pool, its entry (models, sha256_16, env, stage1) is never changed; a change is a new set (new name), so ocr_model_set + ocr_code name the exact rules and models of every record (model_sha256_16 is only in the part summary). The sets below are not deployed yet (2026-11-25 ocrv5 review fixes went into v4a before the first run). Every set names every eci_ocr decision switch (ECI_* read by eciocr/prod and eciocr/ocr), also those without effect for its hints mode; ECI_RESCALE_H and ECI_DIGIT_CRNN are listed with the values that are the code defaults ('' = off). ocr-any removes every other ECI_* variable; only ECI_OCR_WORKERS and ECI_TESS_CLI pass (speed / call path); ECI_CRNN is only the default when no --crnn is given (ocr-any always gives them). Review 3 (2026-11-25, before any deploy): ECI_CODE_VALID=1 and ECI_PARTNO_LIST=1 added to every set (see eci_ocr.post_rules). formocr (2026-11-25): set j5r4 for the form-route rolls; 'aux' lists further files under models/ that the env names as <models>/NAME (checked like the models). Switches added to the code after a set was frozen (the job2 / job5 NOHINT_*, EPIC_STATE, PAREN_GUARD, CONFW_SKIP) are not in the older sets: ocr-any removes every other ECI_* variable, so for those sets they stay at their code default (off). engocr (2026-11-25): sets engD, engJ (English) and tamH2, tamN2 (Tamil) for the SIR rolls of eci-rolls-all-cdn; new keys: 'lang' (ENG / TAM; absent = HIN; a set is used only on items of its language, also by a hub swap), 'arch_sha256_16' (arch.json of a model, read by eci_ocr for the input stretch 'xs'; checked like the model), 'stage1_nohint' (--stage1 also without hints: job4 / lang-tam no-hint cascade), 'args' (extra eci_ocr arguments, only --tess2), 'draft_records' (a final roll reads the item's draft records). These sets name EVERY switch of the merged code, also main's Hindi rules (off: their job evaluations ran without them).",
+ "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 / charset_sha256_16 = first 16 hex chars of the sha256 of crnn.onnx / charset.json (both checked by the task before the first item). FROZEN ONCE DEPLOYED: after the first item of a set has run on the pool, its entry (models, sha256_16, env, stage1) is never changed; a change is a new set (new name), so ocr_model_set + ocr_code name the exact rules and models of every record (model_sha256_16 is only in the part summary). The sets below are not deployed yet (2026-11-25 ocrv5 review fixes went into v4a before the first run). Every set names every eci_ocr decision switch (ECI_* read by eciocr/prod and eciocr/ocr), also those without effect for its hints mode; ECI_RESCALE_H and ECI_DIGIT_CRNN are listed with the values that are the code defaults ('' = off). ocr-any removes every other ECI_* variable; only ECI_OCR_WORKERS and ECI_TESS_CLI pass (speed / call path); ECI_CRNN is only the default when no --crnn is given (ocr-any always gives them). Review 3 (2026-11-25, before any deploy): ECI_CODE_VALID=1 and ECI_PARTNO_LIST=1 added to every set (see eci_ocr.post_rules). formocr (2026-11-25): set j5r4 for the form-route rolls; 'aux' lists further files under models/ that the env names as <models>/NAME (checked like the models). Switches added to the code after a set was frozen (the job2 / job5 NOHINT_*, EPIC_STATE, PAREN_GUARD, CONFW_SKIP) are not in the older sets: ocr-any removes every other ECI_* variable, so for those sets they stay at their code default (off). engocr (2026-11-25): sets engD, engJ (English) and tamH2, tamN2 (Tamil) for the SIR rolls of eci-rolls-all-cdn; new keys: 'lang' (ENG / TAM; absent = HIN; a set is used only on items of its language, also by a hub swap), 'arch_sha256_16' (arch.json of a model, read by eci_ocr for the input stretch 'xs'; checked like the model), 'stage1_nohint' (--stage1 also without hints: job4 / lang-tam no-hint cascade), 'args' (extra eci_ocr arguments, only --tess2), 'draft_records' (a final roll reads the item's draft records). These sets name EVERY switch of the merged code, also main's Hindi rules (off: their job evaluations ran without them). engK11 (job4 round 3, 10:20) is the planner's default English no-hint set; engJ stays defined (hot-swap back: ocr_model_set_map {\"engK11\": \"engJ\"}).",
  "v4a": {
   "about": "Hindi SIR with 2027 SSR hints (owner plan 2026-11-25 03:49): v4a students (half-width CRNNs distilled from g8, all convs int8) + Hindi label-variant fix (branch hinvar 2bc0673). 5x less CPU than production c11q..c3q. Review fixes 2026-11-25 (before any deploy): ECI_EPICFIX2_GUARD=1 + ECI_EPICFIX2_MIN=70 (epicfix.fix2 swaps the EPIC only when the name or the relative's name is close to the 2027 voter's, else flag 'epic'; two wrong unflagged swaps in Rajasthan) and ECI_AGE_HINT_MAJ=1 (an age in the 2027 window is taken without a flag only when a CRNN read it and no majority of the readings is outside the window; S20/14/70 serial 135).",
   "models": [
@@ -470,7 +470,12 @@
    "ECI_CASCADE_NOHINT": "0",
    "ECI_DUMP": "0",
    "ECI_READINGS_ALL": "",
-   "ECI_TOFU": "0"
+   "ECI_TOFU": "0",
+   "ECI_ENG_UNAN": "0",
+   "ECI_ENG_UNAN_LEX": "5",
+   "ECI_ENG_STAMPBOX": "0",
+   "ECI_ENG_TIE_TESS": "0",
+   "ECI_ENG_STAMP3": "0"
   },
   "gold": {
    "with_ssr_boxes": 428,
@@ -570,7 +575,12 @@
    "ECI_CASCADE_NOHINT": "0",
    "ECI_DUMP": "0",
    "ECI_READINGS_ALL": "",
-   "ECI_TOFU": "0"
+   "ECI_TOFU": "0",
+   "ECI_ENG_UNAN": "0",
+   "ECI_ENG_UNAN_LEX": "5",
+   "ECI_ENG_STAMPBOX": "0",
+   "ECI_ENG_TIE_TESS": "0",
+   "ECI_ENG_STAMP3": "0"
   },
   "gold": {
    "all_boxes": 2064,
@@ -653,7 +663,12 @@
    "ECI_CASCADE_NOHINT": "0",
    "ECI_DUMP": "0",
    "ECI_READINGS_ALL": "",
-   "ECI_TOFU": "0"
+   "ECI_TOFU": "0",
+   "ECI_ENG_UNAN": "0",
+   "ECI_ENG_UNAN_LEX": "5",
+   "ECI_ENG_STAMPBOX": "0",
+   "ECI_ENG_TIE_TESS": "0",
+   "ECI_ENG_STAMP3": "0"
   },
   "gold": {
    "boxes": 695,
@@ -750,7 +765,12 @@
    "ECI_CASCADE_NOHINT": "0",
    "ECI_DUMP": "0",
    "ECI_READINGS_ALL": "",
-   "ECI_TOFU": "0"
+   "ECI_TOFU": "0",
+   "ECI_ENG_UNAN": "0",
+   "ECI_ENG_UNAN_LEX": "5",
+   "ECI_ENG_STAMPBOX": "0",
+   "ECI_ENG_TIE_TESS": "0",
+   "ECI_ENG_STAMP3": "0"
   },
   "gold": {
    "boxes": 695,
@@ -766,6 +786,111 @@
    "heldout": "8,731 records of 6 ACs: flag 1.80 %, ~99.90 % unflagged (8 silent + 1 unsure of 8,574 found by eye: dropped pulli x4, misprinted dot x2, house & -> 8, Pt -> Ph)",
    "cpu_s_per_record": 0.11,
    "source": "lang-tam eval g_tamN2 + heldout (models2/lang-tam/NOTES.md round 2)"
+  }
+ },
+ "engK11": {
+  "about": "English SIR rolls WITHOUT 2027 hints (job4 round 3 set K11, adopted 2026-11-25 10:20, replaces J as job4's best): stage 1 = J's clean pair (j4r2b_sa_q0, j4r1_g2_q0), stage 2 = j4r3_dbS_q2 + j4r3_d3S_q2 (J's stage-2 models fine-tuned on 19,906 REAL West Bengal final-roll lines under 'UNDER ADJUDICATION' / 'DELETED' stamps, labels from the draft twin) + Tesseract + --tess2; rules of J + ECI_ENG_UNAN 4, STAMPBOX, TIE_TESS, STAMP3 1 (branch job4 3bf63b9, cherry-picked). Final rolls read the draft roll's records of the same part (draft_records). Gate vs J (job4 r2/gate.py): >= on every gold item with and without draft, dev equal, CPU equal within noise. The job4 evaluations ran with ECI_EPIC_PAIR=0 ECI_CODE_CRNN=0 and without main's Hindi rules: all named here.",
+  "lang": "ENG",
+  "models": [
+   "j4r2b_sa_q0",
+   "j4r1_g2_q0",
+   "j4r3_dbS_q2",
+   "j4r3_d3S_q2"
+  ],
+  "sha256_16": {
+   "j4r2b_sa_q0": "cafbe7a9b7401e0c",
+   "j4r1_g2_q0": "f478493bb570199e",
+   "j4r3_dbS_q2": "c3d3b3cd58ddd229",
+   "j4r3_d3S_q2": "d520202dc5326fe8"
+  },
+  "charset_sha256_16": {
+   "j4r2b_sa_q0": "d839097864c5d91a",
+   "j4r1_g2_q0": "d839097864c5d91a",
+   "j4r3_dbS_q2": "d839097864c5d91a",
+   "j4r3_d3S_q2": "d839097864c5d91a"
+  },
+  "arch_sha256_16": {
+   "j4r2b_sa_q0": "04087464b3e22b6c",
+   "j4r3_dbS_q2": "82035462f5264c51",
+   "j4r3_d3S_q2": "fa3cb01459fefcc8"
+  },
+  "hints": "none",
+  "stage1": 2,
+  "stage1_nohint": true,
+  "args": [
+   "--tess2"
+  ],
+  "draft_records": true,
+  "env": {
+   "ECI_ENG_NOHINT": "1",
+   "ECI_ENG_DESC": "0.35",
+   "ECI_ENG_LEX": "1",
+   "ECI_ENG_DARK": "170",
+   "ECI_ENG_S1_TESS": "num,epic,code,line",
+   "ECI_ENG_CODE": "0",
+   "ECI_ENG_AGREE": "0",
+   "ECI_ENG_TIL": "0",
+   "ECI_ENG_SEQ": "0",
+   "ECI_EPIC_PAIR": "0",
+   "ECI_CODE_CRNN": "0",
+   "ECI_EPIC_CONFIRM": "1",
+   "ECI_EPICFIX2_GUARD": "0",
+   "ECI_EPICFIX2_MIN": "60",
+   "ECI_TAM_EPIC_L2D8": "0",
+   "ECI_EPIC_TESS_NOHINT": "0",
+   "ECI_RESCALE_H": "0",
+   "ECI_STAMP_TEMPLATE": "1",
+   "ECI_NOHINT_DIGITS": "0",
+   "ECI_EPIC_PREFIX": "0",
+   "ECI_EPIC_FMT": "0",
+   "ECI_EPIC_OLDFMT": "0",
+   "ECI_AGE_HINT_MAJ": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": "",
+   "ECI_EPIC_STATE": "0",
+   "ECI_PAREN_GUARD": "0",
+   "ECI_NOHINT_CLOSED": "0",
+   "ECI_NOHINT_TESSCLEAN": "0",
+   "ECI_NOHINT_HOUSE_PUNCT": "0",
+   "ECI_NOHINT_SLACK1": "",
+   "ECI_NOHINT_AMP": "0",
+   "ECI_NOHINT_TESS_SKIP": "0",
+   "ECI_NOHINT_VALSET": "",
+   "ECI_NOHINT_VALKEEP": "",
+   "ECI_NOHINT_VALF": "",
+   "ECI_NOHINT_VALGUARD": "0",
+   "ECI_NOHINT_LEX": "",
+   "ECI_NOHINT_LEXG": "0",
+   "ECI_NOHINT_NUNF": "0",
+   "ECI_NOHINT_MARKVAR": "",
+   "ECI_NOHINT_NAMES": "0",
+   "ECI_NOHINT_CASCADE": "0",
+   "ECI_CONFW_SKIP": "",
+   "ECI_CASCADE_NOHINT": "0",
+   "ECI_DUMP": "0",
+   "ECI_READINGS_ALL": "",
+   "ECI_TOFU": "0",
+   "ECI_ENG_UNAN": "4",
+   "ECI_ENG_UNAN_LEX": "5",
+   "ECI_ENG_STAMPBOX": "1",
+   "ECI_ENG_TIE_TESS": "1",
+   "ECI_ENG_STAMP3": "1"
+  },
+  "gold": {
+   "all_boxes": 2064,
+   "all_no_draft": "99.66 / 99.95 / 2.81 % / 1 silent",
+   "without_ssr_no_draft": "99.57 / 99.94 / 3.48 % / 1",
+   "all_with_draft": "99.95 / 99.95 / 0.29 % / 1 silent",
+   "without_ssr_with_draft": "99.94 / 99.94 / 0.37 % / 1",
+   "dev_440": "100.0 / 100.0 / 0.68 % / 0",
+   "epic": 100.0,
+   "heldout_flag_pct": 0.6,
+   "heldout_records": 13953,
+   "s25_final_without_draft": "held-out stamp set HS (9 West Bengal final rolls, no draft; indicator vs the draft twin): 97.52 % record / 10.14 % flagged / 99.95 % unflagged / 2 'silent' (both real draft->final reprints); J: 95.14 / 10.27 / 99.83 / 7. Target (98.5-99.3 % record, 3-6 % flagged) not met for finals without the draft.",
+   "cpu_s_per_record": "= J within noise (0.060-0.105 s/record, job4 harness, loaded server)",
+   "note": "record / unflagged / flag % / silent",
+   "source": "models2/job4/NOTES.md round 3 (10:20 K11) and models/adopted_r3_K11/README.md"
   }
  }
 }
