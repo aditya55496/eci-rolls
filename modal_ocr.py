@@ -26,7 +26,7 @@ TOKEN_FILE = os.path.expanduser("~/.config/eci/modal-hub.env")
 
 image = (
     modal.Image.from_registry("ubuntu:24.04", add_python="3.12")
-    .apt_install("git", "ca-certificates", "tesseract-ocr", "tesseract-ocr-hin", "tesseract-ocr-eng", "tesseract-ocr-tam", "tesseract-ocr-mal")
+    .apt_install("git", "ca-certificates", "tesseract-ocr", "tesseract-ocr-hin", "tesseract-ocr-eng", "tesseract-ocr-tam", "tesseract-ocr-mal", "tesseract-ocr-tel", "tesseract-ocr-pan", "tesseract-ocr-ben", "tesseract-ocr-ori", "tesseract-ocr-guj")
     .run_commands(f"git clone -q https://github.com/s1d-labs/eci-rolls /app && git -C /app checkout -q {COMMIT}",
                   "pip install -q -r /app/requirements.txt 'scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk'")
 )

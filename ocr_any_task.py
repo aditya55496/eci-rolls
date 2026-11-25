@@ -58,7 +58,8 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~1-
 CPUS = len(os.sched_getaffinity(0))
 _TOOLS = {}
 TESSDATA = "/usr/share/tesseract-ocr/5/tessdata"     # = eci_ocr.STD_TESSDATA
-TESS_LANG = {"HIN": (), "ENG": ("eng",), "TAM": ("eng", "tam")}   # traineddata per item language besides hin (eng: numbers, EPIC)
+TESS_LANG = {"HIN": (), "ENG": ("eng",), "TAM": ("eng", "tam"), "MAL": ("eng", "mal"), "TEL": ("eng", "tel"),
+             "PAN": ("eng", "pan"), "BEN": ("eng", "ben"), "ORI": ("eng", "ori"), "GUJ": ("eng", "guj")}   # traineddata per item language besides hin (eng: numbers, EPIC)
 
 
 def tools(lang="HIN"):
