@@ -428,6 +428,10 @@ GUJ_MERGE_SAFE = {('ય', 'ચ'), ('ઔ', 'ઓ'), ('ધ્', 'દ')}
 # Tesseract read equals the corrected value.
 GUJ_LEX = os.environ.get('ECI_GUJ_LEX', '1') != '0'
 ALL_READINGS = os.environ.get('ECI_ALL_READINGS', '0') == '1'
+# relation_label when the CRNNs disagree (lang-guj round 4): the generic vote lets Tesseract (+ one CRNN) win, and Tesseract drops
+# the anusvara of 'પિતાનું' / 'પતિનું' in 119 of 664 gold boxes -> the label is the CRNN majority (ties: the first CRNN).
+# Gold r11 readings: 9 of 13 wrong 'નુ' outputs came from 2-of-3 CRNN 'નું' splits. The field stays flagged (CRNNs disagree).
+GUJ_LABEL_CRNN = os.environ.get('ECI_GUJ_LABEL_CRNN', '1') != '0'
 
 
 def guj_merge(v, t):
@@ -451,6 +455,9 @@ def guj_agree(out, flags, cands, names):
         cv = {nm(cands[i][f]) for i in ci}
         if len(cv) != 1: 
             if GUJ_LEX and f in ('name', 'relation_name') and out.get(f): out[f] = guj_lex.correct(nm(out[f]))
+            if GUJ_LABEL_CRNN and f == 'relation_label':
+                vals = [nm(cands[i][f]) for i in ci if nm(cands[i][f])]
+                if vals: out[f] = max(vals, key=lambda x: (vals.count(x), -vals.index(x)))
             if f not in flags: flags = flags + [f]
             continue
         v = cands[ci[0]][f]
