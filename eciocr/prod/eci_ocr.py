@@ -36,6 +36,7 @@ from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_guj                                    # noqa: E402
 import guj_lex                                      # noqa: E402
+import guj_dot                                      # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -432,6 +433,31 @@ ALL_READINGS = os.environ.get('ECI_ALL_READINGS', '0') == '1'
 # the anusvara of 'પિતાનું' / 'પતિનું' in 119 of 664 gold boxes -> the label is the CRNN majority (ties: the first CRNN).
 # Gold r11 readings: 9 of 13 wrong 'નુ' outputs came from 2-of-3 CRNN 'નું' splits. The field stays flagged (CRNNs disagree).
 GUJ_LABEL_CRNN = os.environ.get('ECI_GUJ_LABEL_CRNN', '1') != '0'
+# relation-label anusvara from the pixels (lang-guj round 5, ocr/guj_dot.py): the dot of 'પિતાનું' / 'પતિનું' is decided by a
+# small MLP on the relation line crop (CRNNs always write it, Tesseract drops it). The label is unflagged when all CRNNs agree
+# on the label word without the dot and the dot decision is outside the uncertain band; flagged when inside the band.
+GUJ_DOT = os.environ.get('ECI_GUJ_DOT', '0') == '1'   # default OFF: see lang-guj NOTES round 5 (crop loses / gains dots)
+
+
+def guj_dot_fix(out, flags, readings, per_engine, names, cands, segs):
+    lab = parse_guj.norm(out.get('relation_label') or '')
+    ci = [i for i, n in enumerate(names) if n.startswith('crnn')]
+    if not lab or not ci: return out, flags
+    raw = per_engine[names[ci[0]]][0]
+    lk = sorted((k for k in raw if k.startswith('line') and k[4:].isdigit()), key=lambda x: int(x[4:]))
+    k = next((k for k in lk if k != 'line0' and re.match(r'^\s*(પિતા|પતિ)', raw[k] or '')), 'line1')
+    v, ok, p = guj_dot.decide(lab, segs.get(k))
+    if p is None: return out, flags
+    out['relation_label'] = v
+    if ALL_READINGS or not ok: readings.setdefault('relation_label', {}).update(dot_p=round(p, 4), dot_line=k)
+    strip = lambda x: parse_guj.norm(x or '').replace('ં', '')
+    cw = {strip(cands[i]['relation_label']) for i in ci}
+    if ok and len(cw) == 1 and strip(v) in cw: flags = [f for f in flags if f != 'relation_label']
+    elif 'relation_label' not in flags:
+        flags = flags + ['relation_label']
+        rd = readings.setdefault('relation_label', {})
+        for n, c in zip(names, cands): rd.setdefault(n, c['relation_label'])
+    return out, flags
 
 
 def guj_merge(v, t):
@@ -568,6 +594,7 @@ def process_page(task):
             if y <= b[1] + 5 and h: section = h
         nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
         out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
+        if lang == 'GUJ' and GUJ_DOT: out, flags = guj_dot_fix(out, flags, readings, r, nm, cands, segs_list[i])
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}

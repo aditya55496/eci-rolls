@@ -328,6 +328,7 @@ def line_bands(prof, P, max_lines=8):
 
 GUJ_SEG = os.environ.get('ECI_GUJ_SEG', 'band')   # band (default since 2026-11-25 04:50) | comp (first version)
 GUJ_EXT = float(os.environ.get('ECI_GUJ_EXT', '0.45'))   # band mode: rows kept above / below the line core, x pitch
+GUJ_MARK_GAP = float(os.environ.get('ECI_GUJ_MARK_GAP', '0.3'))     # bandm: max gap between mark bottom and line core top, x pitch
 
 
 def guj_lines(body, region, P, mode=None):
@@ -353,7 +354,7 @@ def guj_lines(body, region, P, mode=None):
         cores.append((a + rows[0], a + rows[-1] + 1))
     n, lab, st, _ = cv2.connectedComponentsWithStats(body, 8)
     out = []
-    if mode == 'band':
+    if mode in ('band', 'bandm'):
         H = body.shape[0]; e = int(round(GUJ_EXT * P))
         ov = np.zeros((n, len(cores)), np.int32)
         for j in range(1, n):
@@ -365,8 +366,14 @@ def guj_lines(body, region, P, mode=None):
             if k > 0: r0 = max(r0, cores[k - 1][0])          # never above the previous line's core top
             if k < len(cores) - 1: r1 = min(r1, cores[k + 1][1])
             other = [j for j in range(1, n) if ov[j, k] == 0 and ov[j].sum() > 0]
+            # bandm (lang-guj round 5): all ink in a strip of GUJ_MARK_GAP pitch above this line's core top is kept, whichever
+            # component it belongs to (tight line pitch: the anusvara of 'પિતાનું' / 'ડુંગરાણી' touches a descender of the line
+            # above, joins that component and was whitened in band mode; gold S06-32 p15: 12 label dots lost)
             sub = lab[r0:r1]
             keep = (sub > 0) & ~np.isin(sub, other)
+            if mode == 'bandm':
+                g0 = max(r0, c0 - int(round(GUJ_MARK_GAP * P)))
+                keep[g0 - r0:c0 - r0] |= sub[g0 - r0:c0 - r0] > 0
             if not keep.any(): continue
             keep = cv2.dilate(keep.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
             crop_ = region[r0:r1].copy(); crop_[~keep] = 255
