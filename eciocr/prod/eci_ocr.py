@@ -553,6 +553,7 @@ DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 # job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
 ENG_LEX = os.environ.get('ECI_ENG_LEX', '0') == '1'   # job4 r2: name lexicon guard (eng_lex_guard)
+ENG_UNAN = int(os.environ.get('ECI_ENG_UNAN', '0') or 0)   # job4 r3: accept CRNN-unanimous fields without Tesseract support (eng_unan)
 _ENG_LEX = None
 
 
@@ -899,8 +900,55 @@ def eng_epic_prefix(recs, min_other=3):
         un = r.get('readings', {}).get('_nohint_crnn_unanimous', [])
         if 'epic' in r['flags'] and 'epic' in un and pf[r['epic'][:3]] >= min_other:
             r['flags'].remove('epic'); r['readings'].pop('epic', None); r['epic_by_prefix'] = True; n += 1
-    for r in recs:
-        r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
+    if not ENG_UNAN:
+        for r in recs:
+            r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
+    return n
+
+
+def _lex():
+    global _ENG_LEX
+    if _ENG_LEX is None:
+        import gzip
+        _ENG_LEX = json.load(gzip.open(os.path.join(os.path.dirname(os.path.abspath(ensemble2.__file__)), 'eng_name_lex.json.gz'), 'rt'))['counts']
+    return _ENG_LEX
+
+
+def eng_unan(recs, lexmin=None, pmin=2):
+    """job4 r3 (English, no hints; ECI_ENG_UNAN=N): a field flagged ONLY because no Tesseract reading confirmed it (stage 2: every
+    CRNN, N or more of them, read the same valid value; '_nohint_crnn_unanimous') is accepted when an independent check holds:
+      name / relation_name: every token of >= 2 letters is common in the non-gold name lexicon (count >= ECI_ENG_UNAN_LEX,
+        default 5) or is read in >= pmin OTHER unflagged name fields of the same PDF;
+      house_no: the same value is the unflagged house number of the record before or after it (families share a house);
+      age: 18..120 and every CRNN agrees (closed numeric range, plausibility already checked);
+      gender / relation_label: closed vocabularies (every CRNN agrees).
+    Cause: West Bengal SIR final rolls print a grey 'UNDER ADJUDICATION' stamp over the text; Tesseract reads nothing useful
+    there, stamp-trained CRNNs do. Returns the number of fields accepted."""
+    lexmin = lexmin or int(os.environ.get('ECI_ENG_UNAN_LEX', '5'))
+    C = _lex(); tok = re.compile(r'[A-Za-z]+'); n = 0
+    pc = collections.Counter(t.lower() for r in recs for k in ('name', 'relation_name') if k not in r['flags']
+                             for t in set(tok.findall(r.get(k) or '')))
+    for i, r in enumerate(recs):
+        un = r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
+        if not un: continue
+        for f in un:
+            if f not in r['flags']: continue
+            if sum(k.startswith('crnn') and k != 'crnn_conf' for k in r['readings'].get(f, {})) < ENG_UNAN: continue
+            ok = False
+            v = r.get(f) or ''
+            if f in ('name', 'relation_name'):
+                ts = [t.lower() for t in tok.findall(v) if len(t) >= 2]
+                own = collections.Counter(ts)
+                ok = bool(ts) and all(C.get(t, 0) >= lexmin or pc[t] - own[t] >= pmin for t in ts)
+            elif f == 'house_no':
+                nb = [recs[j] for j in (i - 1, i + 1) if 0 <= j < len(recs)]
+                ok = bool(v) and any(x.get('house_no') == v and 'house_no' not in x['flags'] for x in nb)
+            elif f == 'age':
+                ok = v.isdigit() and 18 <= int(v) <= 120
+            elif f in ('gender', 'relation_label'):
+                ok = bool(v)
+            if ok:
+                r['flags'].remove(f); r['readings'].pop(f, None); r.setdefault('unan', []).append(f); n += 1
     return n
 
 
@@ -1134,6 +1182,8 @@ def main():
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed, post_rules=post)
             if ENG_NOHINT and not _HINTS and recs:
                 info['epic_by_prefix'] = eng_epic_prefix(recs)
+            if ENG_UNAN and ENG_NOHINT and not _HINTS and recs:
+                info['unan'] = eng_unan(recs)
             if ENG_LEX and lang_of_pdf_is_eng(recs) and recs:
                 info['lex_guard'] = eng_lex_guard(recs)
             if a.draft_records and recs:
