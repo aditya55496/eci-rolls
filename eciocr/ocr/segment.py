@@ -240,6 +240,8 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
 BEN_COMP_CUT = float(os.environ.get('ECI_BEN_COMP_CUT', '0.25'))  # > 0: touching lines split at headline - CUT x P (0: narrowest row)
 BEN_COMP_ZONE = float(os.environ.get('ECI_BEN_COMP_ZONE', '0.22'))  # line zone centre = headline + ZONE x P (marks go to the nearest)
 BEN_COMP_UP = os.environ.get('ECI_BEN_COMP_UP', '1') == '1'       # split a line's component that reaches up into the line above
+BEN_STAMP = float(os.environ.get('ECI_BEN_STAMP', '0'))          # > 0: grey-stamp removal (median grey of a stamp letter above this)
+BEN_STAMP_CORE = int(os.environ.get('ECI_BEN_STAMP_CORE', '75'))  # text keeps the pixels within 1 px of a pixel darker than this
 BEN_COMP_DARK = int(os.environ.get('ECI_BEN_COMP_DARK', '0'))   # ink threshold of the component labels (antialias edges touch)
 
 
@@ -259,6 +261,18 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
     W = body.shape[1]
     dark = ((gray[y_body: y_body + H, x0: x0 + W] < BEN_COMP_DARK) & (body > 0)).astype(np.uint8) if BEN_COMP_DARK > 0 else body
     n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
+    stamp = None
+    if BEN_STAMP > 0:   # grey stamp ('UNDER ADJUDICATION', job4 finding): >= 2 tall components with a light median grey ->
+        G = gray[y_body: y_body + H, x0: x0 + W]   # keep only ink within 1 px of a dark core pixel, label again
+        greys = []
+        for j in range(1, n):
+            x, y, w, h, _a = st[j]
+            if h > 1.3 * P: greys.append(np.median(G[y: y + h, x: x + w][lab[y: y + h, x: x + w] == j]))
+        if sum(1 for v in greys if v > BEN_STAMP) >= 2:
+            core = cv2.dilate((G < BEN_STAMP_CORE).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            stamp = ~core
+            dark = (dark > 0) & core
+            n, lab, st, _ = cv2.connectedComponentsWithStats(dark.astype(np.uint8), 8)
     owner = np.full(n, -1, int); tall = np.zeros(n, bool); split = []
     def cut_row(j, k):   # the narrowest row of component j in the gap above line k + 1 (where two lines' marks touch)
         r0 = max(0, int(round(heads[k + 1] - 0.33 * P))); r1 = max(r0 + 1, int(round(heads[k + 1] - 0.1 * P)) + 1)
@@ -305,6 +319,7 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
         keep = cv2.dilate((keep | tb).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
         g = gray[y_body + y0: y_body + y1, x0: x0 + W].copy()
         g[~keep & ((L > 0) | (g > 140))] = 255
+        if stamp is not None: g[stamp[y0:y1]] = 255
         out.append(g)
     return out
 

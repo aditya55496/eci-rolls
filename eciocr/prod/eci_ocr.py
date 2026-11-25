@@ -293,6 +293,8 @@ class Engines:
 LATIN_TEMPLATE = ('ENG', 'BEN')   # lang-ben: rolls printed in the English template (segment_eng, parse by line roles)
 BEN_TOP_CELLS = float(os.environ.get('ECI_BEN_TOP_CELLS', '0.15') or 0)
 BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # segment_eng line pitch for Bengali boxes
+BEN_LEX = os.environ.get('ECI_BEN_LEX', '')   # lang-ben r2: lexicon json for the mark-variant guard (empty = off)
+BEN_STAMP_FLAG = [f for f in os.environ.get('ECI_BEN_STAMP_FLAG', '').split(',') if f]   # lang-ben r2: fields flagged in stamped boxes
 BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
 
@@ -435,6 +437,10 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if lang == 'BEN' and BEN_LEX:   # lang-ben r2: mark-variant lexicon guard on agreed names (parse_ben.lex_suspect)
+        flags = flags + [f for f in ('name', 'relation_name') if f not in flags and parse_ben.lex_suspect(out.get(f), BEN_LEX)]
+    if lang == 'BEN' and BEN_STAMP_FLAG and nl >= 5:   # lang-ben r2: >= 5 crop lines = stamped box (grey 'UNDER ADJUDICATION')
+        flags = flags + [f for f in BEN_STAMP_FLAG if f not in flags]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:

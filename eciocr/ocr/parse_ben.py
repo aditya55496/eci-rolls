@@ -190,3 +190,47 @@ def valid_ben(f, v, epic_re=None):
     if f == 'serial_no': return v.isdigit()
     if f in ('name', 'relation_name'): return bool(NAME_RE.match(v or '')) and bool(BEN_LETTER.search(v or ''))
     return True
+
+
+# lang-ben round 2: mark-variant lexicon guard (ECI_BEN_LEX=lexicon.json, models2/lang-ben/tools/build_lex.py). The CRNN pair
+# agrees on a name token that drops a mark (u-kar / uu-kar / ri-kar hook, reph, chandrabindu, nukta) or swaps ু/ূ/ৃ; when a
+# one-mark variant of the token is much more common in the non-gold lexicon (>= LEX_R x (count + 1) and >= LEX_M), the field
+# is flagged. Only insertions / swaps: a read mark is never questioned.
+_LEX = None
+import os as _os
+LEX_R, LEX_M = float(_os.environ.get('ECI_BEN_LEX_R', '3')), int(_os.environ.get('ECI_BEN_LEX_M', '3'))
+_CONS = set('কখগঘঙচছজঝঞটঠডঢণতথদধনপফবভমযরলশষসহড়ঢ়য়ৎ')
+_SIGN = set('ুূ্ািীেৈোৌৃ়ঁং')
+_VOWS = set('অআইঈউঊএঐওঔািীুূেৈোৌ')
+_NUK = {'ড': 'ড়', 'ঢ': 'ঢ়', 'য': 'য়'}
+
+
+def mark_variants(t):
+    out = set()
+    for i, c in enumerate(t):
+        nxt = t[i + 1] if i + 1 < len(t) else ''
+        if c in _CONS and nxt not in _SIGN:
+            for u in 'ুূৃ': out.add(t[:i + 1] + u + t[i + 1:])
+        if c in 'ুূৃ':
+            for u in 'ুূৃ':
+                if u != c: out.add(t[:i] + u + t[i + 1:])
+        if c in _CONS and i > 0 and t[i - 1] != '্':
+            out.add(t[:i] + 'র্' + t[i:])
+        if c in _VOWS and nxt != 'ঁ':
+            out.add(t[:i + 1] + 'ঁ' + t[i + 1:])
+        if c in _NUK and nxt != '়':
+            out.add(unicodedata.normalize('NFC', t[:i] + _NUK[c] + t[i + 1:]))
+    out.discard(t)
+    return out
+
+
+def lex_suspect(value, path):
+    """True when a token of value has a one-mark variant that the lexicon saw far more often."""
+    global _LEX
+    if _LEX is None:
+        import json
+        _LEX = json.load(open(path))
+    for t in re.findall(r'[ঀ-৿]+', value or ''):
+        n = _LEX.get(t, 0)
+        if any(_LEX.get(v, 0) >= max(LEX_M, LEX_R * (n + 1)) for v in mark_variants(t)): return True
+    return False
