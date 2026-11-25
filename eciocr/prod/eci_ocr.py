@@ -35,6 +35,9 @@ import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_ben                                    # noqa: E402
+import ctcvar_ben                                   # noqa: E402
+_CTCVAR_LINE = re.compile(r'(^|:)\s*[ঀ-৿]')         # name / relation line ('নাম : X', 'পিতার নাম: X') or a wrapped name line
+_CTCVAR_SKIP = re.compile(r'বয়স|লিঙ্গ|বাড়ি|বাড়ী|নং')
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -186,7 +189,12 @@ class Engines:
             for t, k in enumerate(seq):
                 if k != prev and k != 0: s.append(CH[k - 1]); conf = min(conf, float(P[t, k]))
                 prev = k
-            out.append((''.join(s), conf))
+            s = ''.join(s)
+            if BEN_CTCVAR is not None:   # lang-ben r4: margin of the best one-mark variant of a name line (ctcvar_ben)
+                mv = ctcvar_ben.margin(P, CH, s)[0] if _CTCVAR_LINE.search(s) and not _CTCVAR_SKIP.search(s) else None
+                out.append((s, conf, mv))
+            else:
+                out.append((s, conf))
         return out
 
     def crnn_read(self, eng, ims):
@@ -258,9 +266,11 @@ class Engines:
                 for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel])):
                     outs[i] = r
                     if self.collect: self.cache_out[(eng[0], hs[i])] = r
-            for (b, k), (txt, c) in zip(keys, outs):
+            for (b, k), r in zip(keys, outs):
+                txt, c = r[0], r[1]
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
+                if len(r) > 2 and r[2] is not None: cf['mv:' + k] = round(r[2], 3)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
         groups = {'line': ({'ENG': 'eng', 'BEN': 'ben'}.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
@@ -296,6 +306,7 @@ BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # se
 BEN_LEX = os.environ.get('ECI_BEN_LEX', '')   # lang-ben r2: lexicon json for the mark-variant guard (empty = off)
 BEN_STAMP_FLAG = [f for f in os.environ.get('ECI_BEN_STAMP_FLAG', '').split(',') if f]   # lang-ben r2: fields flagged in stamped boxes
 BEN_HOUSE_PUNCT = os.environ.get('ECI_BEN_HOUSE_PUNCT', '0') == '1'   # lang-ben r3: flag a house value that is empty, '.' or ','
+BEN_CTCVAR = float(os.environ['ECI_BEN_CTCVAR']) if os.environ.get('ECI_BEN_CTCVAR') else None   # lang-ben r4: CTC mark-variant guard
 BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
 
@@ -443,6 +454,10 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         flags = flags + [f for f in ('name', 'relation_name') if f not in flags and parse_ben.lex_suspect(out.get(f), BEN_LEX)]
     if lang == 'BEN' and BEN_STAMP_FLAG and nl >= 5:   # lang-ben r2: >= 5 crop lines = stamped box (grey 'UNDER ADJUDICATION')
         flags = flags + [f for f in BEN_STAMP_FLAG if f not in flags]
+    if lang == 'BEN' and BEN_CTCVAR is not None:   # lang-ben r4: an agreed name whose image fits a one-mark variant about as well
+        for f, src in (('name', 'mv:line0'), ('relation_name', 'mv:line1')):
+            mv = [per_engine[n][1].get(src) for n in names if n.startswith('crnn') and per_engine[n][1]]
+            if f not in flags and mv and all(m is not None for m in mv) and min(mv) > BEN_CTCVAR: flags = flags + [f]
     if lang == 'BEN' and BEN_HOUSE_PUNCT and (out.get('house_no') or '').strip() in ('', '.', ',') and 'house_no' not in flags:
         flags = flags + ['house_no']   # lang-ben r3: a stray mark in the house cell is read as '.', ',' or nothing (gold: 2 silent)
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
@@ -484,7 +499,7 @@ def process_page(task):
         if lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
             heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], 'eng' if lang == 'ENG' else 'hin', 7), lang)))
         else:
-            heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
+            heads.append((y, parse_heading([r[0] for r in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
     if lang in LATIN_TEMPLATE and ENG_NOHINT and not _OPT['hints'] and K >= 2:

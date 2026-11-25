@@ -100,14 +100,16 @@ def canonical(raw, roles):
 
 
 def canonical_conf(conf, roles):
-    out = {k: v for k, v in conf.items() if not k.startswith('line')}
-    cur, acc = None, collections.defaultdict(list)
+    out = {k: v for k, v in conf.items() if not k.startswith('line') and not k.startswith('mv:')}
+    cur, acc, mv = None, collections.defaultdict(list), collections.defaultdict(list)
     for i, r in enumerate(roles):
         if r == 'drop': continue
         if r: cur = r
         if cur and f'line{i}' in conf: acc[cur].append(conf[f'line{i}'])
+        if cur and f'mv:line{i}' in conf: mv[cur].append(conf[f'mv:line{i}'])   # r4: CTC mark-variant margin, max over joined lines
     for j, r in enumerate(ROLE_ORDER):
         if acc[r]: out[f'line{j}'] = min(acc[r])
+        if mv[r]: out[f'mv:line{j}'] = max(mv[r])
     return out
 
 
