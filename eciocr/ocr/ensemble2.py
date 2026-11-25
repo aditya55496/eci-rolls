@@ -53,6 +53,19 @@ HINT_CONF_FIELDS = ('name', 'relation_name', 'house_no')
 # job1 (off by default): ECI_HINT_TOP=k: a 2027 match counts when one of the first k engines (c11, c9 roles) reads it, or when
 # two engines read it; a match by a later engine alone (c4, c3, Tesseract) is flagged with its value kept.
 HINT_TOP = int(os.environ.get('ECI_HINT_TOP') or 0)
+# job1 round 2 (off by default): ECI_HINT_MARK=1: a hinted name / relative / house field whose 2027 match does not come from the
+# first engine (stage-1 CRNN), while that engine's reading differs from the 2027 value ONLY by marks (nukta, anusvara, candrabindu,
+# virama, space, ZWJ/ZWNJ), is flagged with the matched value kept. Reason: the 2027 roll often spells such marks differently from
+# the 2026 print (e.g. nukta added, anusvara gap removed) and one later engine that reproduces the 2027 spelling is weak evidence.
+HINT_MARK = os.environ.get('ECI_HINT_MARK', '0') != '0'
+_MARKS = set('\u093c\u0902\u0901\u094d\u200c\u200d ')
+
+
+def mark_only(a, b):
+    a, b = visual(a), visual(b)
+    return a != b and ''.join(c for c in a if c not in _MARKS) == ''.join(c for c in b if c not in _MARKS)
+
+
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 
 
@@ -107,6 +120,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 J = [i for i, x in enumerate(vis) if x == h]
                 if len(J) < 2 and J[0] >= HINT_TOP:
                     out[f] = m; flags.append(f); keep.add(f); continue
+            if m is not None and HINT_MARK and f in HINT_CONF_FIELDS and vis[0] != h and mark_only(vals[0], hint[f]):
+                out[f] = m; flags.append(f); keep.add(f); continue
             if m is not None and HINT_CONF > 0 and f in HINT_CONF_FIELDS and names and confs:
                 J = [i for i, x in enumerate(vis) if x == h]
                 strong = len(J) >= 2 or any(names[i].startswith('crnn') and (confs[i] or {}).get(LINE_OF[f], 1.0) >= HINT_CONF for i in J)
