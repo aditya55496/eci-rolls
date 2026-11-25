@@ -139,7 +139,8 @@ def final_deleted(recs, engines=None):
     whose serial is a draft voter's serial AND whose EPIC ends in the same 6 digits (misread I/O mapped to 1/0) becomes a voter
     record with the draft's fields: 'deleted_in_final': True, 'from_draft': True, the final roll's own readings in 'final_ocr'.
     recs: all records of one part file (draft and final). engines: the reading names of the first two CRNNs (default the
-    production SIR set's crnn_c11q, crnn_c9q; other model sets pass theirs, e.g. ['crnn_c11g9s', 'crnn_c9g9s']).
+    production SIR set's crnn_c11q, crnn_c9q; other model sets pass theirs, e.g. ['crnn_c11g9s', 'crnn_c9g9s'], or a function
+    record -> names for a file of several sets).
     Returns the number of records changed."""
     draft = {}
     for r in recs:
@@ -160,7 +161,7 @@ def final_deleted(recs, engines=None):
         # the status code (deletion reason, e.g. Q / S / E) is only in the final roll; under the stamp the vote is often
         # undecided ('#'): take the letter when c11 and c9 agree (as CODE_CRNN for GE 2024), the field stays flagged
         rc = (r.get('readings') or {}).get('code') or {}
-        e1, e2 = (engines or ('crnn_c11q', 'crnn_c9q'))[:2]
+        e1, e2 = ((engines(r) if callable(engines) else engines) or ('crnn_c11q', 'crnn_c9q'))[:2]
         a, b = rc.get(e1), rc.get(e2)
         if r.get('code') in ('#', '', None) and a and a == b and a.isalpha():
             r['code'] = a

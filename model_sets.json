@@ -1,5 +1,5 @@
 {
-  "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 = first 16 hex chars of crnn.onnx's sha256 (checked by the task before the first item). FROZEN ONCE DEPLOYED: after the first item of a set has run on the pool, its entry (models, sha256_16, env, stage1) is never changed; a change is a new set (new name), so ocr_model_set + ocr_code name the exact rules and models of every record (model_sha256_16 is only in the part summary). The sets below are not deployed yet (2026-11-25 ocrv5 review fixes went into v4a before the first run). Every set names every eci_ocr switch, also those without effect for its hints mode.",
+  "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 / charset_sha256_16 = first 16 hex chars of the sha256 of crnn.onnx / charset.json (both checked by the task before the first item). FROZEN ONCE DEPLOYED: after the first item of a set has run on the pool, its entry (models, sha256_16, env, stage1) is never changed; a change is a new set (new name), so ocr_model_set + ocr_code name the exact rules and models of every record (model_sha256_16 is only in the part summary). The sets below are not deployed yet (2026-11-25 ocrv5 review fixes went into v4a before the first run). Every set names every eci_ocr decision switch (ECI_* read by eciocr/prod and eciocr/ocr), also those without effect for its hints mode; ECI_RESCALE_H and ECI_DIGIT_CRNN are listed with the values that are the code defaults ('' = off). ocr-any removes every other ECI_* variable; only ECI_OCR_WORKERS and ECI_TESS_CLI pass (speed / call path); ECI_CRNN is only the default when no --crnn is given (ocr-any always gives them). Review 3 (2026-11-25, before any deploy): ECI_CODE_VALID=1 and ECI_PARTNO_LIST=1 added to every set (see eci_ocr.post_rules).",
   "v4a": {
     "about": "Hindi SIR with 2027 SSR hints (owner plan 2026-11-25 03:49): v4a students (half-width CRNNs distilled from g8, all convs int8) + Hindi label-variant fix (branch hinvar 2bc0673). 5x less CPU than production c11q..c3q. Review fixes 2026-11-25 (before any deploy): ECI_EPICFIX2_GUARD=1 + ECI_EPICFIX2_MIN=70 (epicfix.fix2 swaps the EPIC only when the name or the relative's name is close to the 2027 voter's, else flag 'epic'; two wrong unflagged swaps in Rajasthan) and ECI_AGE_HINT_MAJ=1 (an age in the 2027 window is taken without a flag only when a CRNN read it and no majority of the readings is outside the window; S20/14/70 serial 135).",
     "models": [
@@ -13,6 +13,12 @@
       "c9g9s": "37df347aa2a5e1e6",
       "c4g9s": "1749043685aa2146",
       "c3g9s": "c9e0ebab641980c3"
+    },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "c9g9s": "f022b1ee76aacbfb",
+      "c4g9s": "28b7fa05b3bd0679",
+      "c3g9s": "28b7fa05b3bd0679"
     },
     "hints": "required",
     "stage1": 1,
@@ -28,7 +34,11 @@
       "ECI_EPIC_OLDFMT": "0",
       "ECI_EPICFIX2_GUARD": "1",
       "ECI_EPICFIX2_MIN": "70",
-      "ECI_AGE_HINT_MAJ": "1"
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
     },
     "gold": {
       "g26_rec": 98.74,
@@ -59,6 +69,12 @@
       "job2_r2_s4mx0": "0a385332a0bbed7d",
       "job2_r2_s3mx0": "18a33b47eff5a62d"
     },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "job2_r1_s9mx0": "f022b1ee76aacbfb",
+      "job2_r2_s4mx0": "28b7fa05b3bd0679",
+      "job2_r2_s3mx0": "28b7fa05b3bd0679"
+    },
     "hints": "none",
     "stage1": 1,
     "env": {
@@ -73,7 +89,11 @@
       "ECI_EPIC_OLDFMT": "0",
       "ECI_EPICFIX2_GUARD": "1",
       "ECI_EPICFIX2_MIN": "70",
-      "ECI_AGE_HINT_MAJ": "1"
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
     },
     "gold": {
       "g26_rec": 98.23,
@@ -107,6 +127,12 @@
       "job2_r2_s4mx0": "0a385332a0bbed7d",
       "job2_r2_s3mx0": "18a33b47eff5a62d"
     },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "job2_r1_s9mx0": "f022b1ee76aacbfb",
+      "job2_r2_s4mx0": "28b7fa05b3bd0679",
+      "job2_r2_s3mx0": "28b7fa05b3bd0679"
+    },
     "hints": "none",
     "stage1": 1,
     "env": {
@@ -121,7 +147,11 @@
       "ECI_EPIC_OLDFMT": "1",
       "ECI_EPICFIX2_GUARD": "1",
       "ECI_EPICFIX2_MIN": "70",
-      "ECI_AGE_HINT_MAJ": "1"
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
     },
     "gold": {
       "g26_rec": 98.23,

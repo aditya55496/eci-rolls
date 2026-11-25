@@ -146,7 +146,7 @@ def test_do_item_output_and_provenance(monkeypatch):
     import ocr_any_task as O
     calls, up = [], []
     monkeypatch.setattr(O, "run_eci", _fake_run_eci(calls))
-    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {"final_deleted": 0, "serial_gaps": 0})
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines, rules=None: {"final_deleted": 0, "serial_gaps": 0})
     monkeypatch.setattr(H, "CODE", "0123456789ab")
     monkeypatch.setattr(H, "code_commit", lambda: "0123456789ab")
     rec = O.do_item(None, _fake_item(), settings={}, fetch=_fake_fetch, upload=up.extend)
@@ -170,7 +170,7 @@ def test_do_item_hub_swap_and_no_hint_set(monkeypatch):
     import ocr_any_task as O
     calls = []
     monkeypatch.setattr(O, "run_eci", _fake_run_eci(calls))
-    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {})
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines, rules=None: {})
     monkeypatch.setattr(H, "code_commit", lambda: H.CODE)
     rec = O.do_item(None, _fake_item("j2Ps", hints=False), settings={"ocr_model_set_map": {"j2Ps": "j2Psf"}},
                     fetch=_fake_fetch, upload=lambda files: None)
@@ -183,7 +183,7 @@ def test_do_item_hub_swap_and_no_hint_set(monkeypatch):
 def test_do_item_code_guards(monkeypatch):
     import ocr_any_task as O
     monkeypatch.setattr(O, "run_eci", _fake_run_eci([]))
-    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {})
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines, rules=None: {})
     monkeypatch.setattr(H, "CODE", "0123456789ab")
     monkeypatch.setattr(H, "code_commit", lambda: "ba9876543210")      # the checkout moved during the item
     with pytest.raises(H.CodeChanged):
@@ -411,3 +411,160 @@ def test_repair_any_epic_keeps_the_runs_fix2_guard():
     files["eci-rolls-hi-ocr/ocr/S20/14/70.jsonl.gz"] = gzip.compress((json.dumps(rec, ensure_ascii=False) + "\n").encode())
     out = RA.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
     assert out["changed"]["epic_fix2"] == 1
+
+
+# ---- review 3 (2026-11-25)
+
+def test_override_values_that_are_no_set_name():
+    """{"j2Ps": null} / "" / a number are no override: hub_override_unknown and choose_set agree (before: [None] -> every worker
+    exited 75 before claiming)."""
+    for v in (None, "", "  ", 5):
+        s = {"ocr_model_set_map": {"j2Ps": v}, "ocr_model_set": v}
+        assert H.hub_override_unknown(s, SETS) == []
+        assert H.choose_set(NOHINT, s, SETS) == ("j2Ps", "payload")
+    assert H.hub_override_unknown({"ocr_model_set_map": {"j2Ps": "j2Psff"}}, SETS) == ["j2Psff"]     # a typo stays unknown
+
+
+def test_model_sets_review3_switches_and_charset_sha():
+    for name, ms in H.MODEL_SETS.items():
+        assert set(ms["charset_sha256_16"]) == set(ms["models"]), name
+        for k in ("ECI_CODE_VALID", "ECI_PARTNO_LIST", "ECI_RESCALE_H", "ECI_DIGIT_CRNN"):
+            assert k in ms["env"], (name, k)
+        assert ms["env"]["ECI_CODE_VALID"] == "1" and ms["env"]["ECI_PARTNO_LIST"] == "1" and ms["env"]["ECI_DIGIT_CRNN"] == ""
+    sets = dict(H.MODEL_SETS, badcs=dict(H.MODEL_SETS["j2Ps"], charset_sha256_16=dict(H.MODEL_SETS["j2Ps"]["charset_sha256_16"], c11g9s="0" * 16)))
+    with pytest.raises(H.ModelSetIncomplete, match="charset.json"):
+        H.model_dirs("badcs", sets)
+
+
+def test_payload_version_and_missing_roll(monkeypatch):
+    import ocr_any_task as O
+    monkeypatch.setattr(O, "run_eci", _fake_run_eci([]))
+    monkeypatch.setattr(H, "code_commit", lambda: H.CODE)
+    it = _fake_item("j2Ps", hints=False)
+    it["payload"]["v"] = 2
+    with pytest.raises(H.UnknownPayloadVersion):
+        O.do_item(None, it, settings={}, fetch=_fake_fetch, upload=lambda files: None)
+    it["payload"]["v"] = 1
+    O.do_item(None, it, settings={}, fetch=_fake_fetch, upload=lambda files: None)
+
+    def fetch_one_lost(keys, dest):         # common.download gives None after 4 failed tries (any network error)
+        got = _fake_fetch(keys, dest)
+        got[[k for k in keys if "FinalRoll" in k][0]] = None
+        return got
+    with pytest.raises(H.MissingRoll, match="S12-2026-FIR"):
+        O.do_item(None, _fake_item("j2Ps", hints=False), settings={}, fetch=fetch_one_lost, upload=lambda files: None)
+
+
+def _main_with(monkeypatch, item, do_item=None, commit=None):
+    import ocr_any_task as O
+    _FakeHub.instances.clear()
+
+    class Hub(_FakeHub):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.items = [item]
+    monkeypatch.setattr(O, "HubClient", Hub)
+    monkeypatch.setattr(H, "CODE", "0123456789ab")
+    if do_item:
+        monkeypatch.setattr(O, "do_item", do_item)
+    if commit:
+        monkeypatch.setattr(H, "code_commit", commit)
+    with pytest.raises(SystemExit) as e:
+        O.main()
+    return e.value.code, _FakeHub.instances[0]
+
+
+def test_main_payload_version_gives_item_back(monkeypatch):
+    it = _fake_item("j2Ps", hints=False)
+    it["payload"]["v"] = 99
+    code, hub = _main_with(monkeypatch, it)
+    assert code == 75 and hub.completed[0][1] == "pending" and "payload_version_unknown" in hub.metrics
+
+
+def test_main_failure_while_checkout_moved_is_given_back(monkeypatch):
+    """review 3: eci_ocr crashed (ImportError) because a sibling's refetch reset the checkout: not 'failed', but back as
+    'pending' (CodeChanged) and exit 75."""
+    def boom(*a, **k):
+        raise RuntimeError("eci_ocr exit 1 on S12-2026-DR: ImportError: cannot import name 'x'")
+    code, hub = _main_with(monkeypatch, _fake_item("j2Ps", hints=False), do_item=boom, commit=lambda: "ba9876543210")
+    assert code == 75 and hub.completed[0][1] == "pending" and "moved" in hub.completed[0][2] and "code_changed" in hub.metrics
+    code, hub = _main_with(monkeypatch, _fake_item("j2Ps", hints=False), do_item=boom, commit=lambda: "0123456789ab")
+    assert code == 0 and hub.completed[0][1] == "failed"         # same commit: a real failure, retried by the hub
+
+
+def test_post_rules_code_and_part_no(monkeypatch):
+    import eci_ocr as E
+    monkeypatch.setattr(E, "PARTNO_LIST", True)
+    L = E.LISTS[0]
+    recs = [dict(kind="SIR", section="1-गांव", part_no="91", code="", flags=["name"]),
+            dict(kind="SIR", section=L, part_no="1", code="#", flags=[]),
+            dict(kind="SIR", section="1-गांव", part_no="", code="7", code_invalid=True, flags=[]),
+            dict(kind="SUP", section=None, part_no="12", code="", flags=[])]
+    assert E.post_rules(recs, True) == {"part_no_outside_list": 1, "code_invalid": 1}
+    assert recs[0]["part_no"] == "" and recs[0]["part_no_outside_list"] == "91" and recs[0]["flags"] == ["name", "part_no"]
+    assert recs[1]["part_no"] == "1" and recs[1]["flags"] == []          # addition list: the part_no cell is real
+    assert recs[2]["flags"] == ["code"] and recs[3]["part_no"] == "12"
+    assert E.post_rules(recs, True) == {}                                   # idempotent
+    r = [dict(kind="SIR", section=None, part_no="1", code="", flags=[])]
+    assert E.post_rules(r, False) == {} and r[0]["part_no"] == "1"         # GE 2024 rolls: supplement boxes keep part_no
+    assert all(E.CODE_RE.fullmatch(c) for c in ("#", "#2", "S", "R3", "E", "Q", "M"))
+    assert not any(E.CODE_RE.fullmatch(c) for c in ("7", "SS", "S#", "#S", "1"))
+
+
+def test_repair_part_flags_invalid_code_again():
+    d, f = "2026-EROLLGEN-S12-1-SIR-DraftRoll-Revision1-HIN-1-WI.pdf", "2026-EROLLGEN-S12-1-SIR-FinalRoll-Revision1-HIN-1-WI.pdf"
+    recs = [_rec(d, 1, "ABC1234567", code=""), _rec(d, 2, "ABC2345678", code=""),
+            _rec(f, 1, "ABC1234567", code=""), _rec(f, 2, "ABCZ345678", nvb=True, code="SS")]
+    c = H.repair_part(recs, ["crnn_c11g9s", "crnn_c9g9s"], rules={"ECI_CODE_VALID": "1"})
+    assert c == {"final_deleted": 1, "serial_gaps": 0, "code_invalid": 1}
+    assert recs[3]["deleted_in_final"] and "code" in recs[3]["flags"] and recs[3]["code_invalid"]
+    recs2 = [_rec(f, 2, "ABC2345678", code="SS")]
+    assert H.repair_part(recs2, None, rules={"ECI_CODE_VALID": "0"}) == {"final_deleted": 0, "serial_gaps": 0}
+    recs2[0]["ocr_rules"] = {"ECI_CODE_VALID": "1"}                         # rules=None: each record's own ocr_rules
+    assert H.repair_part(recs2, None)["code_invalid"] == 1
+
+
+def test_serial_summary_after_repairs_and_additions_check():
+    d, f = "2026-EROLLGEN-S20-1-SIR-DraftRoll-Revision1-HIN-1-WI.pdf", "2026-EROLLGEN-S20-1-SIR-FinalRoll-Revision1-HIN-1-WI.pdf"
+    fin = [_rec(f, 1, "A"), _rec(f, 2, "B"), _rec(f, 3, "C")]
+    s = H.serial_summary(fin)
+    assert s["records_equal_last"] and s["n_missing"] == 0 and s["sequence_breaks"] == 0
+    assert H.serial_summary([_rec(f, 1, "A"), _rec(f, 3, "C")])["missing"] == [2]
+    before = [dict(r) for r in fin]
+    H.serial_summary(fin)
+    assert fin == before                                                   # no change to the records (eci_ocr's check flags)
+    recs = [_rec(d, 1, "A"), _rec(d, 2, "B"), _rec(f, 1, "A", section="1-x"), _rec(f, 2, "B", section="1-x"),
+            _rec(f, 3, "C", section=H.LISTS[0]), _rec(f, 4, "D", section="1-x")]
+    assert H.additions_without_list(recs) == {f: 1}
+
+
+def test_repair_any_parts_unknown_and_mixed_sets():
+    import gzip
+    import json
+    import repair_any_task as RA
+    d, f = "2026-EROLLGEN-S12-1-SIR-DraftRoll-Revision1-HIN-1-WI.pdf", "2026-EROLLGEN-S12-1-SIR-FinalRoll-Revision1-HIN-1-WI.pdf"
+    m1, m2 = H.MODEL_SETS["v4a"]["models"], H.MODEL_SETS["j2Ps"]["models"]
+    recs = [_rec(d, 1, "ABC1234567", ocr_model_set="v4a"), _rec(d, 2, "ABC2345678", ocr_model_set="v4a"),
+            _rec(f, 1, "ABC1234567", ocr_model_set="j2Ps"),
+            _rec(f, 2, "ABCZ345678", nvb=True, code="#", ocr_model_set="j2Ps",
+                 readings={"code": {"crnn_" + m2[0]: "Q", "crnn_" + m2[1]: "Q", "crnn_" + m1[1]: "E"}})]
+    key = "eci-rolls-hi-ocr/ocr/S12/1/1.jsonl.gz"
+    files = {key: gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode())}
+
+    def fetch(keys, dest):
+        out = {}
+        for k in keys:
+            p = os.path.join(dest, k.replace("/", "__"))
+            open(p, "wb").write(files[k])
+            out[k] = p
+        return out
+    up = []
+    item = {"key": "parts/S12/1", "payload": {"state": "S12", "ac": 1, "p": [1], "fix": "parts", "hints": None}}
+    out = RA.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
+    assert out["changed"]["final_deleted"] == 1
+    new = [json.loads(l) for l in gzip.decompress(up[1][1]).decode().splitlines()]
+    assert new[3]["code"] == "Q"                                           # the record's own set's engines (j2Ps), not UP's
+    recs[0]["ocr_model_set"] = "nosuchset"
+    files[key] = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode())
+    with pytest.raises(H.UnknownModelSet):
+        RA.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)

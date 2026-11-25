@@ -373,6 +373,26 @@ def parse_heading(lines):
             continue
         m = process.extractOne(' '.join(t.split()[:3]), LISTS, scorer=fuzz.ratio)
         if m and m[1] >= 75: return m[0]
+        lw = list_word(t)
+        if lw: return lw
+    return None
+
+
+# 2026-11-25 (ocrv5 review 3): the final rolls of Bihar, MP, Rajasthan and Chhattisgarh head the addition list
+# 'घटक I - परिवर्धन सूची 1 (dates)'; the CRNN reads 'पटका : परिवर्धन सूची 1 /23-12-2025 से 21-02-2026 तक' (S12, S20, S26) or
+# 'पटक ा : परिवर्धन सूची 1 /01-08-2025 ...' (S04). The 3-word match above takes only 'परिवर्धन की सूची' at the line start (UP,
+# Uttarakhand, Chandigarh), so every addition record kept the last main-list section (review: 71 of 71 addition records).
+# A list word in the first 6 words, followed within 2 words by 'सूची', is the list heading.
+LIST_WORDS = {'परिवर्धन': LISTS[0], 'विलोपन': LISTS[1], 'संशोधन': LISTS[2]}
+
+
+def list_word(t):
+    from rapidfuzz import process, fuzz
+    w = t.split()[:6]
+    for i, x in enumerate(w):
+        m = process.extractOne(x, list(LIST_WORDS), scorer=fuzz.ratio)
+        if m and m[1] >= 80 and any(fuzz.ratio(y, 'सूची') >= 75 for y in w[i + 1: i + 3]):
+            return LIST_WORDS[m[0]]
     return None
 
 
@@ -406,6 +426,17 @@ _OPT = {}
 
 
 RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
+# 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
+# the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
+# ECI_CODE_VALID=1: decide() takes Tesseract's code without a check; a code that is not '#' or S E R Q M (with an optional digit,
+# as '#2', 'R3' in the UP gold) is flagged 'code' (Bihar final rolls: '#' read '7', 'S' read 'SS', unflagged).
+# ECI_PARTNO_LIST=1: in an SIR roll (file name '-SIR-') a box has a part_no cell only in the supplement lists (section = one of
+# LISTS); outside them part_no is junk read from the serial cell ('91', '14118', '1119'): the value moves to
+# 'part_no_outside_list', part_no = '', flagged. Not for other rolls: the GE 2024 rolls print supplement boxes with a part_no
+# under headings that parse_heading does not know (GE gold run: 548 such boxes with section None).
+CODE_VALID = os.environ.get('ECI_CODE_VALID', '0') == '1'
+PARTNO_LIST = os.environ.get('ECI_PARTNO_LIST', '0') == '1'
+CODE_RE = re.compile(r'(?:#|[SERQM])[0-9]?')
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
@@ -507,6 +538,9 @@ def process_page(task):
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, section=section, **{f: out[f] for f in OUT_FIELDS})
+        if CODE_VALID and out['code'] and not CODE_RE.fullmatch(out['code']) and 'code' not in flags:
+            rec['code_invalid'] = True      # flag added by post_rules (after the not_voter_box rule)
+            readings['code'] = {n: c['code'] for n, c in zip(nm, cands)}
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
         recs.append(rec)
@@ -520,6 +554,22 @@ def process_page(task):
 
 
 # ---------------------------------------------------------------- per-PDF checks
+
+def post_rules(recs, sir_roll):
+    """ECI_CODE_VALID / ECI_PARTNO_LIST (see the switches above) on the records of one PDF, after sections are final and after
+    the not_voter_box rule. sir_roll: the PDF is an SIR roll ('-SIR-' in its file name). Idempotent. Returns {rule: records
+    changed}."""
+    n = collections.Counter()
+    for r in recs:
+        if r.get('code_invalid') and 'code' not in r['flags']:
+            r['flags'].append('code'); n['code_invalid'] += 1
+        if PARTNO_LIST and sir_roll and r.get('kind') == 'SIR' and r.get('part_no') and r.get('section') not in LISTS:
+            r['part_no_outside_list'] = r['part_no']; r['part_no'] = ''
+            r.setdefault('readings', {})['part_no'] = {'outside_list': r['part_no_outside_list']}
+            if 'part_no' not in r['flags']: r['flags'].append('part_no')
+            n['part_no_outside_list'] += 1
+    return dict(n)
+
 
 def sequence_confirm(recs):
     """SIR: a serial_no flagged only by engine disagreement is confirmed when BOTH neighbours in reading order
@@ -665,6 +715,7 @@ def main():
             for r in recs:
                 if not ensemble2.valid('epic', r['epic'] or '') and len(r['flags']) >= 6:
                     r['not_voter_box'] = True
+            post = post_rules(recs, '-SIR-' in os.path.basename(pdf))
             allrecs, recs = recs, [r for r in recs if not r.get('not_voter_box')]
             if _HINTS:   # EPIC prefixes the CRNNs never saw: repaired from the 2027 roll (epicfix.py; hand check 2026-11-22)
                 import epicfix
@@ -681,7 +732,7 @@ def main():
             kind = m['kind'] or (collections.Counter(p['kind'] for p in pages if p.get('kind')).most_common(1) or [(None,)])[0][0]
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
-                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
+                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed, post_rules=post)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)

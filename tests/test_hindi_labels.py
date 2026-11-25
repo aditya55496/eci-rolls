@@ -78,6 +78,21 @@ def test_ocr_headings_as_read_at_1679px():
         assert E.parse_heading([line]) is None, line
 
 
+def test_ocr_list_headings_review3():
+    """The final rolls of S04 S12 S20 S26 head the addition list 'घटक I - परिवर्धन सूची 1 (dates)' (CRNN readings at 1679 px,
+    ocrv5 review 3); UP, S28, U02 print 'परिवर्धन की सूची' / 'परिवर्धन सूची 1 ...'."""
+    import eci_ocr as E
+    for line in ("पटका : परिवर्धन सूची 1 16-12-2025 से 21-02-2026 तकJ", "पटका : परिवर्धन सूची 1 /24-12-2025 21-02-20261",
+                 "पटक ा : परिवर्धन सूची 1 /01-08-2025 से 01-09-2025 तक प्राप्त दावो के आधार परा",
+                 "परिवर्धन सूची 1 /15-07-2026 28-09-20261", "1 परिवर्धन सूची 1 /01-01-2026 28-02-20261", "परिवर्धन की सूची"):
+        assert E.parse_heading([line]) == E.LISTS[0], line
+    assert E.parse_heading(["घटक II - विलोपन सूची"]) == E.LISTS[1]
+    # the section line still wins in its own band order (last match), and a section name is no list
+    assert E.parse_heading(["पटका : परिवर्धन सूची 1", "अनुभाग संख्या व नाम 2-परिवर्धन नगर"]) == "2-परिवर्धन नगर"
+    assert E.parse_heading(["विधान सभा क्षेत्र की संख्या व नाम : 175-राजसमन्द"]) is None
+    assert E.parse_heading(["परिवर्तन के बाद"]) is None                    # no 'सूची' after the word
+
+
 def test_number_sections():
     import eci_ocr as E
     recs = [dict(section=s) for s in ("?-जैनपुर खुर्द", "?-जैनपुर खुर्द", "?-जैनपुर खुद", "2-कासमपुर", "?-नया गांव", None)]

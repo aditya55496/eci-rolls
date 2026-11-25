@@ -3,7 +3,7 @@
 Queue item (project eci-rolls-hi-ocr, items from plan_hi_ocr.py): key "<state>/<ac>/<part>", payload
   {"state": "S12", "ac": 230, "part": 10, "lang": "HIN", "keys": {"S12-2026-DR": key, "S12-2026-FIR": key},
    "hints": "eci-rolls-ssr-text/hints/S12-2027-DR/230.jsonl.gz" or null, "model_set": "v4a" | "j2Ps" | ...,
-   "extra_rolls": [roll ids where this part is above the portal's part list, optional]}
+   "extra_rolls": [roll ids where this part is above the portal's part list, optional], "v": 1 (payload format, absent = 1)}
 Keys and the hints key start with the project that stored them; each file is read through that project's links.
 Model set: model_sets.json (CRNN dirs, eci_ocr env switches, hints mode, stage1). The hub settings of this project can swap the
 set of every pending item at once (hi_common.choose_set): "ocr_model_set_map" {"j2Ps": "newset"} or "ocr_model_set" "newset".
@@ -12,7 +12,9 @@ untried (status 'pending', the attempt is not counted) and exits 75 (hi_common.E
 family-refetch change fetches the family's main again at once and goes on with the new code; an older runner waits 30-300 s,
 asks again, and idles like this until its job ends (jobs that start later check out the newer code).
 Provenance: the worker refuses to start when the family commit is unknown, and gives an item back and exits 75 when the
-checkout moved to another commit during the item (hi_common.code_commit).
+checkout moved to another commit during the item (hi_common.code_commit), also when the item failed while it moved (a
+sibling worker's refetch can replace files under a running eci_ocr). A payload 'v' this checkout does not know -> given back,
+exit 75. A PDF the item names that cannot be read from the bucket -> the item fails and is retried (never done with a roll less).
 Engine: eciocr/prod/eci_ocr.py, one run per PDF, draft first; the draft's readings are the final roll's cache (as ocr_task.py).
 With hints: --hint-2027 (the whole AC's 2027 SSR records; confirmation, EPIC repair inside eci_ocr) and --stage1 of the set.
 Without hints: all engines on every box, the set's no-hint rules.
@@ -124,6 +126,7 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     if not H.CODE:
         raise RuntimeError("the family commit is unknown (git rev-parse failed); no output without its provenance")
     p = item["payload"]
+    H.payload_version(p)        # raises UnknownPayloadVersion for a newer payload format
     state, ac, part = str(p["state"]), int(p["ac"]), int(p["part"])
     if (p.get("lang") or "HIN") != "HIN":
         raise RuntimeError(f"lang {p.get('lang')} not supported (eci_ocr reads Hindi SIR rolls)")
@@ -162,6 +165,8 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
             if not nh:
                 raise RuntimeError(f"2027 hints file is empty: {p['hints']}")
         missing = [r for r in rolls if not got.get(keys[r])]
+        if missing:     # every planned key is a stored PDF: a missing one is a read error, so the item is retried
+            raise H.MissingRoll(f"PDF of {', '.join(missing)} not read from the bucket: " + ", ".join(keys[r] for r in missing))
         pdfs = []
         os.makedirs(os.path.join(tmp, "pdf"), exist_ok=True)
         for r in rolls:     # the portal's file name as 'source' in the records (download() names files by the whole key)
@@ -178,7 +183,20 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     if now != H.CODE:     # eci_ocr runs from the checkout for each PDF: the output may mix code; the item is done again
         raise H.CodeChanged(f"family checkout moved {H.CODE} -> {now or '?'} during the item")
     engines = ["crnn_" + m for m in ms["models"]]
-    repairs = H.repair_part(recs, engines)
+    repairs = H.repair_part(recs, engines, rules=ms.get("env", {}))
+    # serial checks again after the repairs (the hub record's pdfs[].serial_check; eci_ocr's own is serial_check_ocr)
+    by_src = {}
+    for r in recs:
+        if not r.get("not_voter_box"):
+            by_src.setdefault(r.get("source"), []).append(r)
+    no_list = H.additions_without_list(recs)
+    for s in summs:
+        for d in s["pdfs"]:
+            if "serial_check" in d:
+                d["serial_check_ocr"] = d.pop("serial_check")
+                d["serial_check"] = H.serial_summary(by_src.get(d["pdf"], []))
+            if d["pdf"] in no_list:
+                d["additions_without_list_section"] = no_list[d["pdf"]]
     prov = {"ocr_model_set": name, "ocr_models": list(ms["models"]), "ocr_code": H.CODE,
             "ocr_rules": H.rules_of(ms, year, hpath is not None), "hints_used": hpath is not None}
     extra = set(p.get("extra_rolls") or [])
@@ -202,6 +220,7 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
             "epic_fix2_refused": sum(1 for r in voters if "fix2_candidate" in (((r.get("readings") or {}).get("epic")) or {})),
             "rolls": rolls, "missing_rolls": missing, "records": len(voters), "not_voter_boxes": len(recs) - len(voters),
             "flagged_records": nfl, "flag_rate": round(nfl / max(1, len(voters)), 4), "by_roll": by_roll, "repairs": repairs,
+            "additions_without_list_section": sum(no_list.values()),
             "voter_pages": vp, "wall_s": round(secs, 1), "cpu_s": round(cpu, 1), "cpu_s_per_voter_page": round(cpu / max(1, vp), 2),
             "workers": WORKERS, "runs": [{k: s.get(k) for k in ("roll", "wall_s", "cache_in", "cache_out", "voter_pages", "peak_worker_rss_mb")} for s in summs],
             "pdfs": [dict(d, roll=s["roll"]) for s in summs for d in s["pdfs"]]}
@@ -214,9 +233,25 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
                                 "model_set_source", "hints_records", "hints_sha256", "ocr_tools", "epic_fix2_refused", "rolls",
                                 "missing_rolls", "records", "not_voter_boxes",
                                 "flag_rate", "by_roll", "repairs", "voter_pages", "wall_s", "cpu_s", "cpu_s_per_voter_page")}
+    rec["additions_without_list_section"] = sum(no_list.values())
     rec["pdfs"] = [{k: d.get(k) for k in ("roll", "pdf", "kind", "records", "flag_rate", "hint_matched", "epic_from_2027", "serial_check",
-                                          "worker_s_total")} for d in summ["pdfs"]]
+                                          "serial_check_ocr", "post_rules", "additions_without_list_section", "worker_s_total")}
+                   for d in summ["pdfs"]]
     return rec
+
+
+def give_back(hub, it, e):
+    """Item back as 'pending' (attempt not counted) with the metric of the reason."""
+    if isinstance(e, H.ModelSetIncomplete):
+        err, metric = f"model set {e} incomplete in this checkout ({H.CODE})", "model_set_incomplete"
+    elif isinstance(e, H.UnknownModelSet):
+        err, metric = f"model set {e} not in this checkout ({H.CODE})", "model_set_unknown"
+    elif isinstance(e, H.UnknownPayloadVersion):
+        err, metric = f"{e} ({H.CODE})", "payload_version_unknown"
+    else:
+        err, metric = str(e), "code_changed"
+    hub.complete([it["key"]], "pending", error=err[:400])
+    hub.metric(metric)
 
 
 def main():
@@ -244,26 +279,25 @@ def main():
             try:
                 rec = do_item(hub, it, settings=hub.settings)
                 hub.record(it["key"], rec)
-                if rec["missing_rolls"]:
-                    hub.failure("missing-roll", it["key"], "a PDF named in the item was not in the bucket", rolls=rec["missing_rolls"])
+                if rec["additions_without_list_section"]:
+                    hub.metric("additions_without_list_section", rec["additions_without_list_section"])
                 hub.metric("voter_pages", rec["voter_pages"])
                 hub.metric("ocr_cpu_s", rec["cpu_s"])
                 hub.metric("set_" + re.sub(r"[^a-z0-9_-]", "_", rec["ocr_model_set"].lower()))   # metric names: a-z 0-9 - _
                 hub.complete([it["key"]], "done", fetched=rec["records"])
-            except H.UnknownModelSet as e:
-                # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete);
-                # ModelSetIncomplete (model files missing / wrong sha256) is handled the same way
-                inc = isinstance(e, H.ModelSetIncomplete)
-                hub.complete([it["key"]], "pending", error=f"model set {e} {'incomplete' if inc else 'not'} in this checkout ({H.CODE})")
-                hub.metric("model_set_incomplete" if inc else "model_set_unknown")
-                code = H.EXIT_NEEDS_NEWER_CODE
-                break
-            except H.CodeChanged as e:
-                hub.complete([it["key"]], "pending", error=str(e))
-                hub.metric("code_changed")
+            except H.NeedsNewerCode as e:
+                # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete).
+                # UnknownModelSet, ModelSetIncomplete (model files missing / wrong sha256), UnknownPayloadVersion, CodeChanged
+                give_back(hub, it, e)
                 code = H.EXIT_NEEDS_NEWER_CODE
                 break
             except Exception as e:  # one bad part must not stop the worker
+                now = H.code_commit()
+                if now != H.CODE:   # it failed while a sibling's refetch replaced the files (e.g. an ImportError): not the item's fault
+                    give_back(hub, it, H.CodeChanged(f"family checkout moved {H.CODE} -> {now or '?'} during the item "
+                                                     f"({type(e).__name__}: {e})"[:300]))
+                    code = H.EXIT_NEEDS_NEWER_CODE
+                    break
                 hub.error()
                 hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:400])
         if stop.is_set():

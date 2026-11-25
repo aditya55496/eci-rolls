@@ -23,7 +23,7 @@ part-gap follow-up.
 An AC whose fetch item of one of the state's SIR rolls is not done (Bihar's form route, 2026-11-25: 108 + 75 failed) is held
 too (an item seeded now would keep only the PDFs stored so far); --include-fetching plans it anyway.
 Held states (HOLD): a state there is planned only when --state-set names its set (2026-11-25: S07 Haryana, j2Ps flags 22-50 %
-of the records, j2Psf 3-4 % in ACs 1 and 3 but 40-48 % in AC 28, no gold run of j2Psf; S25 West Bengal, Nepali print, 78 % flagged).
+of the records, j2Psf 3-7 % in ACs 1 3 12 40 66 but 22-33 % in AC 88, 40-48 % in AC 28, 41-56 % in AC 78, no gold run of j2Psf; S25 West Bengal, Nepali print, 78 % flagged).
 Partial parts: a part whose PDF of one of the state's SIR rolls is missing although that roll's AC record lists the part (or
 the roll's fetch of the AC is not done) is held (seed_queue keeps keys: an item seeded with one roll never gets the other);
 --include-partial seeds it with the rolls stored now. --resets OUT.sql: for items already in the queue whose stored rolls are
@@ -58,8 +58,9 @@ SIR = {
 # Partition rank per state: fixed (a dict order change or a new state must not change the ids of seeded items).
 RANK = {"S07": 0, "S27": 1, "U05": 2, "U02": 3, "S25": 4, "S12": 5, "S20": 6, "S26": 7, "S28": 8, "S04": 9}
 # States planned only when --state-set names their set (the main session / owner decides; see the docstring).
-HOLD = {"S07": "j2Ps flags 22-50 % (old-format EPICs); j2Psf 3-7 % in ACs 1 3 12 40 66 but 22-33 % in AC 88 and 40-48 % in AC 28 "
-               "(names printed with a missing-glyph box, flagged), not gold-run: choose --state-set S07=j2Ps|j2Psf",
+HOLD = {"S07": "j2Ps flags 22-58 % (old-format EPICs); j2Psf 3-7 % in ACs 1 3 12 40 66 but 22-33 % in AC 88, 40-48 % in AC 28 "
+               "and 41-56 % in AC 78 (names printed with a missing-glyph box, read '' or '0', flagged), not gold-run: "
+               "choose --state-set S07=j2Ps|j2Psf",
         "S25": "Nepali print: 78 % of records flagged with j2Ps; hold until a suited set exists (--state-set S25=SET to plan)"}
 HINT_ROLL = {"S04": "S04-2027-DR", "S12": "S12-2027-DR", "S20": "S20-2027-DR", "S26": "S26-2027-DR", "S28": "S28-2027-DR"}
 NAMES = {"S04": "Bihar", "S07": "Haryana", "S12": "Madhya Pradesh", "S20": "Rajasthan", "S25": "West Bengal (Hindi ACs)",
@@ -227,7 +228,7 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
                     continue
                 pl = {"state": st, "ac": ac, "part": part, "lang": "HIN", "keys": dict(sorted(keys.items())),
                       "hints": f"{hints_project}/hints/{HINT_ROLL[st]}/{ac}.jsonl.gz" if hinted else None,
-                      "model_set": mset}
+                      "model_set": mset, "v": H.PAYLOAD_V}
                 ex = sorted(extra[ac][part] & set(keys))
                 if ex:
                     pl["extra_rolls"] = ex

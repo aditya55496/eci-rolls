@@ -8,6 +8,8 @@ Queue item (project eci-rolls-hi-repair): key "<fix>/<state>/<ac>", payload {"st
 hints (only for items with a hints key), fix2 with the guard switches recorded in the records' ocr_rules. A changed file is written back to eci-rolls-hi-ocr (one file per call); the file it
 replaced is kept once under ocr_prev/<fix>/<state>/<ac>/<part>.jsonl.gz in this project. Records changed by this task get
 "repaired_by": [<fix>, ...] (the record's ocr_* provenance stays that of the OCR run). One hub record per item: counts.
+fix "parts" takes each record's engines from its own model set and the code check from its ocr_rules; a record of a set this
+checkout lacks -> the item is given back ('pending') and the worker exits 75, as ocr-any.
 """
 import gzip
 import json
@@ -71,10 +73,13 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
             out["records"] += len(recs)
             before = [json.dumps(r, sort_keys=True, ensure_ascii=False) for r in recs]
             if fix == "parts":
-                sets = {r.get("ocr_model_set") for r in recs}
-                ms = H.MODEL_SETS.get(next(iter(sets))) if len(sets) == 1 else None
-                engines = ["crnn_" + m for m in ms["models"]] if ms else None
-                c = H.repair_part(recs, engines)
+                # engines per record from its own set (a file can hold records of several sets after a hot swap and a
+                # stall); a set this checkout lacks -> UnknownModelSet: the item is given back for newer code (before:
+                # engines None, final_deleted fell back to the UP names and left the code letter unfilled)
+                unknown = sorted({str(r.get("ocr_model_set")) for r in recs if r.get("ocr_model_set") not in H.MODEL_SETS})
+                if unknown:
+                    raise H.UnknownModelSet(", ".join(unknown))
+                c = H.repair_part(recs, lambda r: ["crnn_" + m for m in H.MODEL_SETS[r["ocr_model_set"]]["models"]], rules=None)
             else:
                 voters = [r for r in recs if not r.get("not_voter_box")]
                 by_roll = {}
@@ -106,6 +111,7 @@ def main():
     stop = stop_flag()
     hub = HubClient(PROJECT, job_index=int(os.environ.get("SCRAPE_JOB_INDEX", 0)), total_jobs=int(os.environ.get("SCRAPE_TOTAL_JOBS", 1)))
     ocr_hub = HubClient(H.OCR_HI_PROJECT, note="repair-any: writes repaired OCR files")
+    code = 0
     try:
         while time.time() < DEADLINE and not stop.is_set():
             if hub.settings.get("paused"):
@@ -120,6 +126,11 @@ def main():
                 hub.record(it["key"], rec)
                 hub.metric("records_repaired", sum(rec["changed"].values()))
                 hub.complete([it["key"]], "done", fetched=sum(rec["changed"].values()))
+            except H.NeedsNewerCode as e:     # a model set of newer code: back as 'pending' (attempt not counted), exit 75
+                hub.complete([it["key"]], "pending", error=f"model set {e} not in this checkout ({H.CODE})"[:300])
+                hub.metric("model_set_unknown")
+                code = H.EXIT_NEEDS_NEWER_CODE
+                break
             except Exception as e:  # one bad AC must not stop the worker
                 hub.error()
                 hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:300])
@@ -129,6 +140,7 @@ def main():
         hub.close("failed", f"{type(e).__name__}: {e}"[:200])
         ocr_hub.close("failed", "repair-any worker failed")
         raise
+    sys.exit(code)
 
 
 if __name__ == "__main__":
