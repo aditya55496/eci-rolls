@@ -566,6 +566,18 @@ EARLY_IDX = sorted(int(x) for x in os.environ.get('ECI_NOHINT_EARLY_IDX', '').sp
 EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') in ('1', '2')
 
 
+# ECI_NOHINT_EARLY_TESSQ=CHARS (default '' = off): a box whose Tesseract text lines contain one of these characters is never settled
+# in stage 1. '?' is printed where the roll's text had an unknown character; no CRNN charset has it, so the stage-1 CRNNs agree on
+# a wrong digit (S07 eye check: 3 of 40 newly unflagged records, all '?' house numbers) and only a stage-2 CRNN disagreed.
+EARLY_TESSQ = set(os.environ.get('ECI_NOHINT_EARLY_TESSQ', ''))
+
+
+def _tess_q(r):
+    if not EARLY_TESSQ: return False
+    t = r.get('tess')
+    return bool(t) and any(c in EARLY_TESSQ for k, v in t[0].items() if k.startswith('line') for c in v)
+
+
 def _s1_conf(r, names):
     v = [c for n in names for k, c in r[n][1].items() if k != 'code']
     return min(v) if v else 1.0
@@ -999,7 +1011,7 @@ def process_page(task):
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
         names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, s1nm) for r in reads]
-        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or _tess_q(r) or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
             more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang, only=set(need))
             for i in need:
@@ -1034,7 +1046,7 @@ def process_page(task):
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
         names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, s1nm) for r in reads]
-        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or _tess_q(r) or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
             more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), only=set(need))
             for i in need:
