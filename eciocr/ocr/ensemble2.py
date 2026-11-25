@@ -166,6 +166,11 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
 NOHINT_SUPPORT = {}   # last decide_eng_nohint call: {field: 'crnn_unanimous'} for fields flagged only for missing Tesseract support
 
 
+# job4 r3 (ECI_ENG_TIE_TESS=1): the value of a flagged field on a vote tie = the one more Tesseract readings support (stamp-trained
+# CRNNs drop small marks: gold "Rekha '" read 'Rekha' by 3 CRNNs, "Rekha '" by 1 CRNN + both Tesseract readings)
+TIE_TESS = os.environ.get('ECI_ENG_TIE_TESS', '0') == '1'
+
+
 def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
     global NOHINT_SUPPORT
     NOHINT_SUPPORT = {}
@@ -186,7 +191,7 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
         cv = [visual(vals[i]) for i in ci]; tvv = [visual(vals[i]) for i in ti]
         allc = collections.Counter(v for v in cv + tvv if v)
         if allc:
-            top_all = max(allc, key=lambda v: (allc[v], -(cv.index(v) if v in cv else 99)))
+            top_all = max(allc, key=lambda v: (allc[v], tvv.count(v) if TIE_TESS else 0, -(cv.index(v) if v in cv else 99)))
             out[f] = next(vals[i] for i in ci + ti if visual(vals[i]) == top_all)
         else:
             out[f] = vals[ci[0]] if ci else ''
