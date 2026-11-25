@@ -74,6 +74,7 @@ def hvis(f, v):
     if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
     if LANG == 'TAM' and f == 'relation_label': return parse_tam.rel_canon(v)
     if LANG in ('MAL', 'TEL') and f == 'relation_label': return parse_mal.rel_canon(v)
+    if LANG == 'MAL' and f in ('name', 'relation_name', 'house_no'): return parse_mal.hint_fold(visual(v))   # lang-mal: word-final virama = chillu
     if LANG == 'TAM' and f in ('name', 'relation_name'):   # SIR prints 'ராமசாமி -' (empty 2nd part), the 2027 roll 'ராமசாமி'
         return re.sub(r'(\s*-)+$', '', visual(v))
     return visual(v)
@@ -91,7 +92,7 @@ ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
 
 
 def agree_eng(f, vals, names, hv='', full=False):
-    if not (ENG_AGREE and LANG == 'ENG' and names and len(vals) >= 2): return False
+    if not (ENG_AGREE and LANG in ('ENG', 'MAL') and names and len(vals) >= 2): return False   # lang-mal: Malayalam too
     if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
     v = [visual(x) for x in vals]
     if not (v[0] and all(x == v[0] for x in v) and valid(f, vals[0])): return False

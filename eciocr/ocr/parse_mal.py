@@ -46,14 +46,26 @@ def colon_re():
 def norm(s):
     s = unicodedata.normalize('NFC', s or '')
     s = CHILLU_RE.sub(lambda m: CHILLU[m.group(1)], s)
+    s = re.sub('([\u0d7a-\u0d7f])\u0d4d', r'\1', s)                  # visual folds (same print): chillu + virama = chillu,
+    s = s.replace('\u0d33\u0d33', '\u0d33\u0d4d\u0d33')                   # ളള = the ള്ള ligature,
+    s = re.sub('(?<=[\u0d02-\u0d4d\u0d57])\u0d6f', '\u0d7b', s)      # digit nine ൯ after a letter = chillu ൻ
     s = s.replace('‌', '').replace('‍', '').replace(' ', ' ')
     return re.sub(r'\s+', ' ', s).strip(' ;_')
 
 
 def vis(s):
-    """visual form for comparisons (gold / 2027 hint): Malayalam old au sign ൌ and the length mark ൗ alone are kept apart
-    (they print differently); only the chillu / ZWJ forms are folded (in norm)"""
+    """visual form for comparisons (gold): norm (atomic chillu, the visual folds)"""
     return norm(s)
+
+
+WORD_FINAL = re.compile('([\u0d23\u0d28\u0d30\u0d32\u0d33])\u0d4d(?=\\s|$|[,.)])')
+
+
+def hint_fold(s):
+    """2027 hint compare only (not the output): a word-final ന് ല് ര് ണ് ള് and its chillu are one value. The same voter's SIR
+    print has the chillu where the 2027 text has the bare virama ('ഭവൻ' / 'ഭവന്', 'വീട്ടിൽ' / 'വീട്ടില്'; side-by-side check of
+    the gold, lang-mal 2026-11-25): the two rolls store the word in two encodings."""
+    return WORD_FINAL.sub(lambda m: CHILLU[m.group(1)], norm(s))
 
 
 def _prefix(t):
