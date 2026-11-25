@@ -6,7 +6,8 @@ XGF3242062); with 3-4 CRNNs agreeing, the vote takes the wrong prefix without a 
 the same 7 digits and the same name.
 
 Rule: a record whose EPIC is not in the AC's 2027 roll gets the 2027 EPIC with the same last 7 characters when exactly one such
-2027 record has the same name or relative's name (visual comparison as in the benchmark). The OCR value is kept in
+2027 record has the same name, or the same relative's name together with the same gender and an age in the 2027 window
+(visual comparison as in the benchmark; the gender + age condition since 2026-11-25). The OCR value is kept in
 'epic_ocr' and the record gets 'epic_from_2027': true. Nothing else changes.
 """
 import collections
@@ -68,8 +69,22 @@ def fix2(recs, idx, age_gap=1):
     return n
 
 
-def fix(recs, idx):
-    """Repair EPICs in place. Returns the number of records changed."""
+def _same_person(r, h, age_gap):
+    """Same gender and an age gap in the 2027 window (age_gap - 1 .. age_gap years). Unknown values do not pass."""
+    try:
+        gap = int(h.get('age')) - int(r.get('age'))
+    except (TypeError, ValueError):
+        return False
+    return bool(_visual(r.get('gender'))) and _visual(h.get('gender')) == _visual(r.get('gender')) and gap in (age_gap - 1, age_gap)
+
+
+def fix(recs, idx, age_gap=1):
+    """Repair EPICs in place. Returns the number of records changed.
+    A 2027 record matches by the same name, or by the same relative's name AND the same person (_same_person: gender and age
+    window). 2026-11-25 (ocrv5 review): the relative's name alone is common in a village (S12 AC 222 part 23 page 24 box 7:
+    printed ZAX1463645, read right by all engines, changed to LWP1463645, a male 63-year-old in 2027, for a female of 64; only
+    the relative's name matched). In the review sample: 126 repairs, 124 right (Bihar 8R -> BR, name matches), 2 wrong (that
+    voter, draft + final), both relative-only matches."""
     epics, by = idx
     n = 0
     for r in recs:
@@ -78,7 +93,8 @@ def fix(recs, idx):
             continue
         cands = by.get(e[-7:], [])
         nm, rn = _visual(r.get('name')), _visual(r.get('relation_name'))
-        m = [h for h in cands if (nm and _visual(h.get('name')) == nm) or (rn and _visual(h.get('relation_name')) == rn)]
+        m = [h for h in cands if (nm and _visual(h.get('name')) == nm)
+             or (rn and _visual(h.get('relation_name')) == rn and _same_person(r, h, age_gap))]
         if len({h['epic'] for h in m}) == 1:
             r['epic_ocr'], r['epic'], r['epic_from_2027'] = e, m[0]['epic'], True
             if 'epic' in (r.get('flags') or []):

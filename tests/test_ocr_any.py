@@ -86,3 +86,21 @@ def test_repairs_with_set_engines():
     assert c == {"final_deleted": 1, "serial_gaps": 1}
     assert recs[4]["deleted_in_final"] and recs[4]["epic"] == "ABC2345678" and recs[4]["code"] == "Q"
     assert recs[5].get("voter_by_serial") and "not_voter_box" not in recs[5]
+
+
+def test_epicfix_relative_name_needs_same_person():
+    """ocrv5 review 2026-11-25 (S12 AC 222 part 23 p24 b7): a relative-name-only match with another gender / age is no repair."""
+    import epicfix
+    hints = [dict(epic="LWP1463645", name="ओमप्रकाश", relation_name="कन्हैयालाल", gender="पुरुष", age="63"),
+             dict(epic="BRA1234567", name="सीता देवी", relation_name="राम लाल", gender="महिला", age="41")]
+    idx = epicfix.index(hints)
+    recs = [dict(epic="ZAX1463645", name="केसरबाई", relation_name="कन्हैयालाल", gender="महिला", age="64", flags=[]),
+            dict(epic="8RA1234567", name="सीता देवी", relation_name="x", gender="महिला", age="40", flags=["epic"]),
+            dict(epic="BHA1234567", name="y", relation_name="राम लाल", gender="महिला", age="40", flags=["epic"])]
+    assert epicfix.fix(recs[:2], idx, 1) == 1
+    assert recs[0]["epic"] == "ZAX1463645" and not recs[0].get("epic_from_2027")
+    assert recs[1]["epic"] == "BRA1234567" and recs[1]["flags"] == []
+    recs[1].update(epic="8RA1234567", epic_from_2027=False)
+    assert epicfix.fix([recs[2]], idx, 1) == 1 and recs[2]["epic"] == "BRA1234567"     # relative + same gender + age in window
+    r = dict(epic="BHA1234567", name="y", relation_name="राम लाल", gender="महिला", age="30", flags=[])
+    assert epicfix.fix([r], idx, 1) == 0                                                  # age gap 11: no repair

@@ -50,3 +50,37 @@ def test_ocr_headings_and_meta():
     assert E.parse_heading(["खण्डको संख्या अनि नाँउ 1-रंगपु फरेष्ट बस्ती"]) == "1-रंगपु फरेष्ट बस्ती"
     assert E.pdf_meta("2026-EROLLGEN-U05-10-SIR-DraftRoll-Revision1-HIN-10-WI.pdf") == dict(state="U05", ac=10, roll_part=10)
     assert E.pdf_meta("2026-EROLLGEN-S24-174-SIR-DraftRoll-Revision1-HIN-1-WI.pdf") == dict(state="S24", ac=174, roll_part=1)
+
+
+def test_ocr_headings_as_read_at_1679px():
+    """CRNN readings of the section line on scaled 240-dpi pages (ocrv5 review 2026-11-25, page crops checked by eye)."""
+    import eci_ocr as E
+    cases = {
+        "अनुभान संख्या एवं नाम : 1-बाला विगहा": "1-बाला विगहा",                 # S04: 'अनुभाग' read 'अनुभान'
+        "अनुभान संख्या और नाम : 1-बड़ागढ़": "1-बड़ागढ़",                          # S07
+        "अनुभान संख्या आर नाम : 1-नवा नगर": "1-नवा नगर",
+        "अनुभान संख्या एवां नाम : 1-सुरगुजिहापारा": "1-सुरगुजिहापारा",          # S26
+        "अनुभान संख्या व नाम 1-माहिग्रान भारत नगर ऑ": "1-माहिग्रान भारत नगर ऑ",  # S28 (no colon)
+        "अनुभाग: संख्या व नाम 3-डी.ए.वी.कालेज सैक्टर-10": "3-डी.ए.वी.कालेज सैक्टर-10",   # U02: colon after the word
+        "अनुभाग की संख्या वा नाम : 1न्ग्राम-कालुखेडा भाग 3": "1-ग्राम-कालुखेडा भाग 3",   # S12: hyphen read 'न्'
+        "अनुभान संख्या एवं नाम : 1नद्वाशय दक्षिण टोला": "1-द्वाशय दक्षिण टोला",       # S04: hyphen read 'न'
+        "अनुभान संख्या एवां नाम : 2-नबैल": "2-नबैल",                              # a real 'न' after the hyphen stays
+        "अनुभान संख्या व नाम -जैनपुर खुर्द": "?-जैनपुर खुर्द",                   # number not read
+        "अनुभाग संख्या व नाम न्ग्राम मलोया": "?-ग्राम मलोया",
+        "खण्डको संख्या अनि नाउ -तीन घरे": "?-तीन घरे",
+        "अनुभान संख्या व नाम 1-्मलोया कालोनी": "1-मलोया कालोनी",
+    }
+    for line, want in cases.items():
+        assert E.parse_heading([line]) == want, line
+    # AC lines are no sections (the section word must start the line)
+    for line in ("विधान सभा क्षेत्र की संख्या व नाम : 175-खंडवा", " संख्या वा नाम : 34 - लक्सर सामान्य",
+                 "विधानसभा निर्वाचन क्षेत्र का नाम और संख्या : 23-पाली - तानाखार"):
+        assert E.parse_heading([line]) is None, line
+
+
+def test_number_sections():
+    import eci_ocr as E
+    recs = [dict(section=s) for s in ("?-जैनपुर खुर्द", "?-जैनपुर खुर्द", "?-जैनपुर खुद", "2-कासमपुर", "?-नया गांव", None)]
+    assert E.number_sections(recs) == 4
+    assert [r["section"] for r in recs] == ["1-जैनपुर खुर्द", "1-जैनपुर खुर्द", "1-जैनपुर खुद", "2-कासमपुर", "3-नया गांव", None]
+    assert [bool(r.get("section_no_inferred")) for r in recs] == [True, True, True, False, True, False]

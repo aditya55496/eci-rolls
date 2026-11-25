@@ -340,28 +340,63 @@ def text_lines(band):
 
 # section line: 'अनुभाग संख्या और नाम :' (UP, Haryana), 'अनुभाग संख्या एवं नाम :' (Bihar, CG), 'अनुभाग की संख्या व नाम :'
 # (MP, Rajasthan, Jharkhand, Delhi), 'अनुभाग संख्या व नाम' without colon (Uttarakhand, Chandigarh), 'खण्डको संख्या अनि नाँउ'
-# without colon (West Bengal, Nepali; c11q reads 'ख्डको ... नाँठ 1-...'). Without a colon: the first 'N-name' after the word.
-SECTION_WORD = re.compile(r'अनुभाग|प्रभाग|ख[ण्ं]*ड')
-SECTION_NOCOLON = re.compile(r'([0-9]+)\s*-\s*(.*)')
+# without colon (West Bengal, Nepali; c11q reads 'ख्डको ... नाँठ 1-...').
+# 2026-11-25 (ocrv5 review): at the scaled 1679 px pages the v4a / j2Ps CRNN reads 'अनुभाग' as 'अनुभान' (S04, S07, S26, S28,
+# U02: section empty in every box), the hyphen of '1-' as 'न' / 'न्' ('1न्ग्राम-कालुखेडा' for '1-ग्राम-कालुखेडा', S04, S12),
+# and sometimes drops the number ('-जैनपुर खुर्द', 'न्ग्राम मलोया' for '1-...'; S25, S28, U02); a colon read after the word
+# ('अनुभाग: संख्या व नाम 3-...') left the label in the value. Checked on 68 PDFs of 10 states (page crops, ocrv5 README).
+# The word must start the line (the AC line 'विधान सभा क्षेत्र की संख्या व नाम : 175-खंडवा' is no section). The value is the
+# first 'N-name' after the label; without a number it is '?-name' and the per-PDF pass gives it a number (section_no_inferred).
+SECTION_WORD = re.compile(r'(?:अनु|प्र)भा[^\s:]*|ख[ण्ं]*ड[^\s:]*')
+SECTION_LABEL_END = re.compile(r'\s(?:की\s+)?सं[^\s:]*\s+(?:\S+\s+)?ना[^\s:0-9-]*\s*:?')   # ' (की) संख्या व नाम :'
+SECTION_VALUE = re.compile(r'([0-9]+)(?:\s*-|न्?(?=[\u0915-\u0939\u0958-\u095f]))?\s*(.*)')
+LOST_HYPHEN = re.compile(r'^(?:-|न्(?=[\u0915-\u0937\u0939\u0958-\u095f])(?<!य)\s*)')    # '-name' / 'न्name' with no number
 LEAD_MARKS = '\u093c\u094d\u0901\u0902\u0903'   # a heading read as '1-्गोटेगांव': marks cannot start a name
 
 
 def parse_heading(lines):
-    """Heading lines (CRNN text) -> section: 'N-name' for SIR sections, or one of LISTS. Last match in the band wins."""
+    """Heading lines (CRNN text) -> section: 'N-name' for SIR sections ('?-name' when the number was not read), or one of
+    LISTS. Last match in the band wins."""
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
-        if SECTION_WORD.search(t) and ':' in t:
-            v = t.split(':', 1)[1].strip(' :.-')
-            m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
-            return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS)}' if m else v
         w = SECTION_WORD.search(t)
-        if w:
-            m = SECTION_NOCOLON.search(t, w.end())
-            if m: return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS)}'
+        if w and w.start() <= 3:
+            rest = t[w.end():]
+            m = SECTION_VALUE.search(rest)
+            if m and m.group(2).lstrip(LEAD_MARKS).strip(' :.-'):
+                return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS).strip()}'
+            e = SECTION_LABEL_END.match(rest)
+            v = (rest[e.end():] if e else rest.split(':', 1)[1] if ':' in rest else '').strip(' :.')
+            v = LOST_HYPHEN.sub('', v).lstrip(LEAD_MARKS).strip(' :.-')
+            if v: return f'?-{v}'
+            continue
         m = process.extractOne(' '.join(t.split()[:3]), LISTS, scorer=fuzz.ratio)
         if m and m[1] >= 75: return m[0]
     return None
+
+
+def number_sections(recs):
+    """'?-name' sections of one PDF (records in reading order) get a number: the previous section's when the name is the same
+    (fuzzy, the CRNN reads the same heading a little differently on each page), else the previous number + 1 (1 at the
+    start). Marked section_no_inferred. Returns the number of records changed."""
+    from rapidfuzz import fuzz
+    prev_no, prev_name, raw, val, n = None, None, None, None, 0
+    for r in recs:
+        s = r.get('section')
+        if s != raw:
+            raw, val = s, None
+            m = re.match(r'([0-9]+)-(.*)', s or '')
+            if m:
+                prev_no, prev_name = int(m.group(1)), m.group(2)
+            elif s and s.startswith('?-'):
+                name = s[2:]
+                no = prev_no if prev_no is not None and prev_name and fuzz.ratio(name, prev_name) >= 85 else (prev_no or 0) + 1
+                val, prev_no, prev_name = f'{no}-{name}', no, name
+        if val:
+            r['section'], r['section_no_inferred'] = val, True
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------- one page
@@ -623,6 +658,7 @@ def main():
             for r in recs:  # a page without a heading continues the previous section
                 if r['section']: sec = r['section']
                 else: r['section'] = sec
+            number_sections(recs)
             # A "box" found on a page that is not a voter page (cover, map, photo page) reads as garbage: no valid EPIC and most
             # fields flagged. It is kept in the output, marked, and left out of the counts and the serial check (2026-11-22;
             # 0 of 2,578 records of 3 checked voter PDFs marked, 6 page-3 boxes marked).
@@ -635,7 +671,7 @@ def main():
                 global _EPIC_IDX
                 if _EPIC_IDX is None:
                     _EPIC_IDX = epicfix.index(_HINTS.values())
-                epic_fixed = epicfix.fix(recs, _EPIC_IDX) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
+                epic_fixed = epicfix.fix(recs, _EPIC_IDX, ensemble2.AGE_GAP) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
             else:
                 epic_fixed = 0
                 if os.environ.get('ECI_EPIC_PREFIX', '0') != '0':   # job2: no 2027 roll -> rare-prefix check (epicfix.prefix_check)

@@ -82,8 +82,9 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
                     by_roll.setdefault(r.get("roll"), []).append(r)
                 c = {"epic_fix1": 0, "epic_fix2": 0}
                 for roll, vs in by_roll.items():
-                    c["epic_fix1"] += epicfix.fix(vs, idx)
-                    c["epic_fix2"] += epicfix.fix2(vs, idx, 2027 - H.roll_year(roll) if roll else 1)
+                    gap = 2027 - H.roll_year(roll) if roll else 1
+                    c["epic_fix1"] += epicfix.fix(vs, idx, gap)
+                    c["epic_fix2"] += epicfix.fix2(vs, idx, gap)
             n = _mark(recs, before, fix)
             for a, b in c.items():
                 out["changed"][a] = out["changed"].get(a, 0) + b
