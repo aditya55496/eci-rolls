@@ -17,7 +17,7 @@ NOHINT = {"model_set": "j2Ps", "hints": None}
 def test_model_sets_file():
     for name, ms in H.MODEL_SETS.items():
         assert ms["hints"] in ("required", "none", "optional"), name
-        assert set(ms["sha256_16"]) == set(ms["models"]), name
+        assert set(ms["sha256_16"]) == set(ms["models"]) | set(ms.get("aux") or []), name     # formocr: aux files too
         for m in ms["models"]:
             assert os.path.exists(os.path.join(H.HERE, "models", m, "charset.json")), (name, m)
         assert all(k.startswith("ECI_") and isinstance(v, str) for k, v in ms["env"].items()), name
@@ -427,7 +427,8 @@ def test_override_values_that_are_no_set_name():
 
 def test_model_sets_review3_switches_and_charset_sha():
     for name, ms in H.MODEL_SETS.items():
-        assert set(ms["charset_sha256_16"]) == set(ms["models"]), name
+        aux_dirs = {a for a in ms.get("aux") or [] if os.path.isdir(os.path.join(H.HERE, "models", a))}
+        assert set(ms["charset_sha256_16"]) == set(ms["models"]) | aux_dirs, name
         for k in ("ECI_CODE_VALID", "ECI_PARTNO_LIST", "ECI_RESCALE_H", "ECI_DIGIT_CRNN"):
             assert k in ms["env"], (name, k)
         assert ms["env"]["ECI_CODE_VALID"] == "1" and ms["env"]["ECI_PARTNO_LIST"] == "1" and ms["env"]["ECI_DIGIT_CRNN"] == ""
@@ -441,7 +442,7 @@ def test_payload_version_and_missing_roll(monkeypatch):
     monkeypatch.setattr(O, "run_eci", _fake_run_eci([]))
     monkeypatch.setattr(H, "code_commit", lambda: H.CODE)
     it = _fake_item("j2Ps", hints=False)
-    it["payload"]["v"] = 2
+    it["payload"]["v"] = 3      # formocr: v 2 = form-route items (roll_group)
     with pytest.raises(H.UnknownPayloadVersion):
         O.do_item(None, it, settings={}, fetch=_fake_fetch, upload=lambda files: None)
     it["payload"]["v"] = 1

@@ -3,7 +3,8 @@
 Queue item (project eci-rolls-hi-parquet, items from plan_hi_ocr.py --parquet): key "<state>/<ac>", payload
 {"state": "S12", "ac": 230, "parts": [1, 2, ...], "rolls": ["S12-2026-DR", "S12-2026-FIR"]}.
 Reads ocr/<state>/<ac>/<part>.jsonl.gz of eci-rolls-hi-ocr (both rolls in one file, after the repairs) and writes one file per
-roll: parquet/<state>/<roll id>/ac_<ac>/data.parquet (zstd). Schema = the SIR schema of parquet_task.py (OCR_SCHEMA; column
+roll: parquet/<state>/<roll id>/ac_<ac>/data.parquet (zstd). Form-route items (formocr): key "<state>/<roll group>/<ac>", payload
++ "roll_group"; read from ocr/<state>/<roll group>/<ac>/; the output path is the same form (the roll id keeps it apart). Schema = the SIR schema of parquet_task.py (OCR_SCHEMA; column
 'roll' = the roll id) plus five provenance columns at the end: ocr_model_set (string), ocr_models (list of strings), ocr_code
 (string, git commit), ocr_rules (JSON text: env switches, stage1, roll_year), hints_used (bool). Keys outside the schema go to
 the JSON column 'extra' (page_scale, extra_part, epic_by_prefix, ...), so nothing is dropped. One hub record per AC: rows per
@@ -42,11 +43,12 @@ def table(rows, roll, ac):
 def do_item(hub, item, fetch=None, upload=None):
     p = item["payload"]
     st, ac, parts = str(p["state"]), int(p["ac"]), [int(x) for x in p["parts"]]
+    base = H.ocr_base(st, ac, p.get("roll_group"))     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
     fetch = fetch or (lambda ks, dest: download(hub, H.OCR_HI_PROJECT, ks, dest))
     upload = upload or hub.upload_many
     by, missing = {r: [] for r in p.get("rolls") or []}, []
     with tempfile.TemporaryDirectory() as tmp:
-        keys = [f"{H.OCR_HI_PROJECT}/ocr/{st}/{ac}/{x}.jsonl.gz" for x in parts]
+        keys = [f"{H.OCR_HI_PROJECT}/{base}/{x}.jsonl.gz" for x in parts]
         got = fetch(keys, tmp)
         for x, k in zip(parts, keys):
             if not got.get(k):
@@ -59,6 +61,8 @@ def do_item(hub, item, fetch=None, upload=None):
                         by.setdefault(r["roll"], []).append(r)
             os.remove(got[k])
     rec = {"state": st, "ac": ac, "parts": len(parts), "parts_without_ocr_file": missing, "rolls": {}}
+    if p.get("roll_group") is not None:
+        rec["roll_group"] = p["roll_group"]
     for roll in sorted(by, key=lambda r: (0 if H.is_draft(r) else 1, r)):
         rows = by[roll]
         if not rows:

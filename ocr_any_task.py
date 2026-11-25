@@ -4,6 +4,9 @@ Queue item (project eci-rolls-hi-ocr, items from plan_hi_ocr.py): key "<state>/<
   {"state": "S12", "ac": 230, "part": 10, "lang": "HIN", "keys": {"S12-2026-DR": key, "S12-2026-FIR": key},
    "hints": "eci-rolls-ssr-text/hints/S12-2027-DR/230.jsonl.gz" or null, "model_set": "v4a" | "j2Ps" | ...,
    "extra_rolls": [roll ids where this part is above the portal's part list, optional], "v": 1 (payload format, absent = 1)}
+Form-route items (formocr, plan_form_ocr.py, payload v 2): key "<state>/<roll group>/<ac>/<part>", payload as above + "roll_group"
+  (GE: the roll id, e.g. "S12-2024-GEN-FIR"; SSR: "<state>-<year>-SSR" with the draft and/or final roll of that year in "keys");
+  output ocr/<state>/<roll group>/<ac>/<part>.jsonl.gz (+ .summary.json), hub record id = item key, + "roll_group".
 Keys and the hints key start with the project that stored them; each file is read through that project's links.
 Model set: model_sets.json (CRNN dirs, eci_ocr env switches, hints mode, stage1). The hub settings of this project can swap the
 set of every pending item at once (hi_common.choose_set): "ocr_model_set_map" {"j2Ps": "newset"} or "ocr_model_set" "newset".
@@ -86,7 +89,7 @@ def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
     # only the set's decision switches: an ECI_* variable from the runner or pool env must not change the run behind the
     # provenance (ECI_OCR_WORKERS and ECI_TESS_CLI change speed / call path only)
     env = {k: v for k, v in os.environ.items() if not k.startswith("ECI_") or k in ("ECI_OCR_WORKERS", "ECI_TESS_CLI")}
-    env.update(ms.get("env", {}))
+    env.update(H.set_env(ms))       # '<models>' paths (VALSET CRNNs, lexicons) -> this checkout's models/
     recs, summs, prev, cpu = [], [], None, 0.0
     for i, (roll, pdf) in enumerate(pdfs):
         o1 = os.path.join(tmp, f"out{i}.jsonl")
@@ -128,6 +131,8 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     p = item["payload"]
     H.payload_version(p)        # raises UnknownPayloadVersion for a newer payload format
     state, ac, part = str(p["state"]), int(p["ac"]), int(p["part"])
+    group = p.get("roll_group")        # form-route items (payload v 2): GE / SSR roll family, own output path
+    base = H.ocr_base(state, ac, group)
     if (p.get("lang") or "HIN") != "HIN":
         raise RuntimeError(f"lang {p.get('lang')} not supported (eci_ocr reads Hindi SIR rolls)")
     keys = {r: k for r, k in (p.get("keys") or {}).items() if k}
@@ -140,6 +145,8 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     if ms.get("hints") == "required" and not want_hints:
         raise RuntimeError(f"model set {name} needs hints; the item has none")
     rolls = H.roll_order(keys)
+    if group is not None and any(not r.startswith(state + "-") for r in rolls):
+        raise RuntimeError(f"rolls {rolls} not of state {state}")
     years = {H.roll_year(r) for r in rolls}
     if len(years) != 1:
         raise RuntimeError(f"rolls of different years in one item: {rolls}")
@@ -214,7 +221,7 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
         b["records"] += 1
         b["flagged"] += bool(r.get("flags"))
     vp = sum(s["voter_pages"] for s in summs)
-    summ = {"item": item["key"], "state": state, "ac": ac, "part": part, **prov, "model_set_source": set_src,
+    summ = {"item": item["key"], "state": state, "ac": ac, "part": part, **({"roll_group": group} if group is not None else {}), **prov, "model_set_source": set_src,
             "model_sha256_16": ms.get("sha256_16"), "hints_key": p.get("hints") if want_hints else None, "hints_records": nh,
             "hints_sha256": hsha, "ocr_tools": tools(),
             "epic_fix2_refused": sum(1 for r in voters if "fix2_candidate" in (((r.get("readings") or {}).get("epic")) or {})),
@@ -227,13 +234,15 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     body = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0)
     # summary first, records last (ocrv5 review: a second worker on the same item after a stall must not leave a summary that
     # names another set than the records)
-    upload([(f"ocr/{state}/{ac}/{part}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
-    upload([(f"ocr/{state}/{ac}/{part}.jsonl.gz", body, "application/gzip")])
+    upload([(f"{base}/{part}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
+    upload([(f"{base}/{part}.jsonl.gz", body, "application/gzip")])
     rec = {k: summ[k] for k in ("state", "ac", "part", "ocr_model_set", "ocr_models", "ocr_code", "ocr_rules", "hints_used",
                                 "model_set_source", "hints_records", "hints_sha256", "ocr_tools", "epic_fix2_refused", "rolls",
                                 "missing_rolls", "records", "not_voter_boxes",
                                 "flag_rate", "by_roll", "repairs", "voter_pages", "wall_s", "cpu_s", "cpu_s_per_voter_page")}
     rec["additions_without_list_section"] = sum(no_list.values())
+    if group is not None:
+        rec["roll_group"] = group
     rec["pdfs"] = [{k: d.get(k) for k in ("roll", "pdf", "kind", "records", "flag_rate", "hint_matched", "epic_from_2027", "serial_check",
                                           "serial_check_ocr", "post_rules", "additions_without_list_section", "worker_s_total")}
                    for d in summ["pdfs"]]
