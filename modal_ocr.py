@@ -17,6 +17,7 @@ import time
 import modal
 
 COMMIT = os.environ.get("ECI_COMMIT", "9740b69")
+APP = os.environ.get("ECI_MODAL_APP", "eci-ocr")
 CPU = float(os.environ.get("ECI_MODAL_CPU", "16"))           # Modal cores (1 core = 2 vCPU)
 PROCS = int(os.environ.get("ECI_MODAL_PROCS", "8"))            # ocr_task copies per container
 WORKERS = int(os.environ.get("ECI_MODAL_WORKERS", "4"))        # OCR processes per copy: PROCS x WORKERS = 2 x CPU (one per vCPU)
@@ -25,11 +26,11 @@ TOKEN_FILE = os.path.expanduser("~/.config/eci/modal-hub.env")
 
 image = (
     modal.Image.from_registry("ubuntu:24.04", add_python="3.12")
-    .apt_install("git", "ca-certificates", "tesseract-ocr", "tesseract-ocr-hin", "tesseract-ocr-eng")
+    .apt_install("git", "ca-certificates", "tesseract-ocr", "tesseract-ocr-hin", "tesseract-ocr-eng", "tesseract-ocr-tam", "tesseract-ocr-mal")
     .run_commands(f"git clone -q https://github.com/s1d-labs/eci-rolls /app && git -C /app checkout -q {COMMIT}",
                   "pip install -q -r /app/requirements.txt 'scrape-hub-client @ git+https://github.com/s1d-labs/runner@sdk-stable#subdirectory=sdk'")
 )
-app = modal.App("eci-ocr", image=image)
+app = modal.App(APP, image=image)
 
 
 def _secret():
@@ -40,7 +41,8 @@ def _secret():
 
 
 @app.function(cpu=CPU, memory=MEM_MB, timeout=24 * 3600, secrets=[_secret()], retries=modal.Retries(max_retries=3, initial_delay=10.0))
-def worker(idx: int, n: int, hours: float = 20.0):
+def worker(idx: int, n: int, hours: float = 20.0, project: str = "eci-rolls-up-ocr", task: str = "ocr_task.py"):
+    """2026-11-25 (owner: "use modal CPU"): project / task per call, e.g. eci-rolls-hi-ocr + ocr_any_task.py."""
     import threading
     end = time.time() + hours * 3600
     host = os.environ.get("MODAL_TASK_ID", "modal")[-12:]
@@ -49,12 +51,12 @@ def worker(idx: int, n: int, hours: float = 20.0):
     def slot(j):
         empty = 0
         while time.time() < end and empty < 2:
-            env = dict(os.environ, PYTHONUNBUFFERED="1", SCRAPE_POOL_PROJECT="eci-rolls-up-ocr",
+            env = dict(os.environ, PYTHONUNBUFFERED="1", SCRAPE_POOL_PROJECT=project,
                        SCRAPE_MAX_HOURS=f"{max(0.05, min(1.0, (end - time.time()) / 3600)):.3f}",
                        SCRAPE_JOB_INDEX=str(idx * PROCS + j), SCRAPE_TOTAL_JOBS=str(n * PROCS), ECI_OCR_WORKERS=str(WORKERS),
                        SCRAPE_RUN_ID=f"modal-{host}-{j}-{int(time.time())}", HOME="/tmp")
             t = time.time()
-            r = subprocess.run([sys.executable, "ocr_task.py"], cwd="/app", env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            r = subprocess.run([sys.executable, task], cwd="/app", env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             stats["runs"] += 1
             if r.returncode:
                 print(f"slot {j}: ocr_task exit {r.returncode}: {r.stdout[-500:]}", flush=True)
@@ -101,6 +103,8 @@ if __name__ == "__main__":
     # its local client ended: 2026-11-23 19:29.)  modal deploy modal_ocr.py && python modal_ocr.py spawn 75 [hours]
     if sys.argv[1:2] == ["spawn"]:
         n, hours = int(sys.argv[2]), float(sys.argv[3]) if len(sys.argv) > 3 else 20.0
-        f = modal.Function.from_name("eci-ocr", "worker")
-        calls = [f.spawn(i, n, hours) for i in range(n)]
+        project = sys.argv[4] if len(sys.argv) > 4 else "eci-rolls-up-ocr"
+        task = sys.argv[5] if len(sys.argv) > 5 else "ocr_task.py"
+        f = modal.Function.from_name(APP, "worker")
+        calls = [f.spawn(i, n, hours, project, task) for i in range(n)]
         print(f"spawned {len(calls)} containers:", " ".join(c.object_id for c in calls[:3]), "...")
