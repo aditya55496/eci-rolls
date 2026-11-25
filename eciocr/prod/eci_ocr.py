@@ -438,7 +438,10 @@ DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
 ORI_TESS_NUM = os.environ.get('ECI_ORI_TESS_NUM', '1') == '1'   # lang-ori: serial / EPIC from Tesseract only (see decide_box)
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+ORI_TESS_SERIAL = os.environ.get('ECI_ORI_TESS_SERIAL', '0') == '1'   # r2: 0 = CRNNs vote on the serial again (r4: real serial labels)
 ORI_DIGITS = os.environ.get('ECI_ORI_DIGITS', '1') == '1'   # lang-ori r2: house / age in Latin characters by CRNN unanimity
+ORI_FIX = os.environ.get('ECI_ORI_FIX', '1') == '1'   # lang-ori r2: X+subjoined TTA -> X+subjoined BA in names (not after ଟ ଷ ଣ ନ ର)
+_ORI_TTA = re.compile('([\u0b15-\u0b1e\u0b20-\u0b22\u0b24-\u0b27\u0b2a-\u0b2f\u0b32-\u0b33\u0b36\u0b38\u0b39\u0b5f])\u0b4d\u0b1f')
 _ORI_HOUSE_ASCII = re.compile(r'^[0-9A-Za-z][0-9A-Za-z/.\- ]{0,11}$')
 _ORI_AGE = re.compile(r'^(1[89]|[2-9][0-9]|1[01][0-9])$')
 
@@ -461,9 +464,16 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
             if tv:
                 for n, c in zip(names, cands):
                     if not n.startswith('tess'):
-                        c['serial_no'] = tv[0]['serial_no']; c['epic'] = tv[0]['epic']
+                        c['epic'] = tv[0]['epic']
+                        if ORI_TESS_SERIAL: c['serial_no'] = tv[0]['serial_no']
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
+    if lang == 'ORI' and ORI_FIX:
+        # lang-ori r2: subjoined TTA after these consonants does not occur in Odia names; the print's subjoined BA (a small loop)
+        # is read as subjoined TTA by Tesseract and by CRNNs trained on its labels (gold: X+୍ଟ only after ଟ ଷ ଣ; ସ୍ବ 290 / ସ୍ଟ 0)
+        for c in cands:
+            for f in ('name', 'relation_name'):
+                if c.get(f) and '\u0b4d\u0b1f' in c[f]: c[f] = _ORI_TTA.sub('\\1\u0b4d\u0b2c', c[f])
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
     if lang in LATIN_TPL and ENG_NOHINT and hint is None:   # lang-tam: Tamil too
