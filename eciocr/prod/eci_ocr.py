@@ -35,6 +35,7 @@ import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_guj                                    # noqa: E402
+import guj_lex                                      # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -422,6 +423,10 @@ GUJ_HOUSE_DIGIT_FLAG = os.environ.get('ECI_GUJ_HOUSE_DIGIT_FLAG', '1') != '0'
 # equals the merged value (strict rule below).
 GUJ_MERGE = os.environ.get('ECI_GUJ_MERGE', '1') != '0'
 GUJ_MERGE_SAFE = {('ય', 'ચ'), ('ઔ', 'ઓ'), ('ધ્', 'દ')}
+# word-evidence correction of name / relation tokens (ocr/guj_lex.py, lang-guj round 3): missing anusvara, e-/o-matra read as a
+# reph, ફ as ક ... (errors all CRNNs share). Gold r5: name + relation errors 137 -> 82, 0 broken. The field stays flagged unless a
+# Tesseract read equals the corrected value.
+GUJ_LEX = os.environ.get('ECI_GUJ_LEX', '1') != '0'
 
 
 def guj_merge(v, t):
@@ -444,12 +449,14 @@ def guj_agree(out, flags, cands, names):
     for f in GUJ_STRICT + GUJ_CRNN_ONLY:
         cv = {nm(cands[i][f]) for i in ci}
         if len(cv) != 1: 
+            if GUJ_LEX and f in ('name', 'relation_name') and out.get(f): out[f] = guj_lex.correct(nm(out[f]))
             if f not in flags: flags = flags + [f]
             continue
         v = cands[ci[0]][f]
         if GUJ_MERGE and f in ('name', 'relation_name') and v:
             tv = next((cands[i][f] for i in ti if cands[i][f]), '')
             if tv: v = guj_merge(nm(v), nm(tv))
+        if GUJ_LEX and f in ('name', 'relation_name') and v: v = guj_lex.correct(nm(v))
         ok = bool(v) and ensemble2.valid(f, v) if f != 'house_no' else bool(v)
         if f in GUJ_STRICT: ok = ok and any(nm(cands[i][f]) == nm(v) for i in ti)
         if f == 'house_no' and GUJ_HOUSE_DIGIT_FLAG and re.search(r'[0-9\u0AE6-\u0AEF]', v): ok = False
