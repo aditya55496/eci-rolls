@@ -411,6 +411,15 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
         js = [j for j, kk in assign.items() if kk == k] + [j for j, kk in extra_both if kk == k]
         if not js: continue
         m = np.isin(lab, js)
+        if ORI_SLICE and k > 0:
+            # round 2 (2026-11-25): an i-hook of line k merged with a u-sign / subjoined letter of line k-1 stays in that
+            # component (the split row is often inside the u-sign): the pixels of line k-1's components in the zone just
+            # above line k's core top are ALSO given to line k (line k-1 keeps them; gold r3: ବରିହା -> ବରହା, ଜୟକିଶୋର -> ଜୟକଶୋର)
+            tl = cores[k][0]; z0 = max(0, int(round(tl - ORI_SLICE_Z * P))); z1 = int(round(tl))
+            up = [j for j, kk in assign.items() if kk == k - 1]
+            if up and z1 > z0:
+                zm = np.zeros_like(m); zm[z0:z1] = np.isin(lab[z0:z1], up)
+                m = m | zm
         ys, xs = np.where(m)
         if not len(ys): continue
         out.append((int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1, m))
@@ -421,6 +430,8 @@ def ori_lines(body_gray, bw_body, P, max_lines=8):
 ORI_NEAREST = os.environ.get('ECI_ORI_NEAREST', '1') == '1'   # marks between lines -> line of the nearest letter body (core band)
 ORI_SPLIT = os.environ.get('ECI_ORI_SPLIT', '1') == '1'       # split a component that joins two lines at its thinnest gap row
 ORI_BOTH = os.environ.get('ECI_ORI_BOTH', '1') == '1'         # a mark between two lines (touching no core) goes to both
+ORI_SLICE = os.environ.get('ECI_ORI_SLICE', '1') == '1'       # round 2: line k-1 ink just above line k's core also goes to line k
+ORI_SLICE_Z = float(os.environ.get('ECI_ORI_SLICE_Z', '0.2'))  # zone height / pitch
 ORI_PITCH = 0.115   # line pitch / box height (Odia SIR, measured 2026-11-25 on S18 pages: overwritten by the line clusters)
 
 
