@@ -147,7 +147,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                     j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                     if j is not None and vals[j]: out[f] = vals[j]; break
             flags.append(f); continue  # no engine matches 2027: flag
-        if hint and f == 'age' and hint.get('age', '').isdigit():
+        if hint and f == 'age' and (hint.get('age') or '').isdigit():   # a hint without age has None
             ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
             if ok and AGE_HINT_MAJ and names:
                 # 2026-11-25 (ocrv5 review, ECI_AGE_HINT_MAJ=1): an age in the 2027 window was taken even when only Tesseract

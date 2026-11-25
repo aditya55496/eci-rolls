@@ -45,6 +45,10 @@
     "parquet-any": [
       "python",
       "parquet_any_task.py"
+    ],
+    "ssrtext": [
+      "python",
+      "ssrtext_task.py"
     ]
   }
 }
