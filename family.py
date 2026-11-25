@@ -83,8 +83,10 @@ PROJECTS = [
         # model set per item (model_sets.json: v4a with 2027 hints, j2Ps without); hub setting ocr_model_set_map swaps sets for
         # all pending items. Items from plan_hi_ocr.py, seeded from the server. Same target as the UP OCR (its worker limit).
         "name": f"{FAMILY}-hi-ocr", "title": "Hindi-state SIR rolls (2025 Bihar, 2026 others): OCR, model set per item (no LLM)",
+        # max_workers 128 (2026-11-25): a fair share while the fetch projects still run (hi-form 68 jobs, all-form 11,506 items
+        # pending); the main session raises it in the hub when the pool is free.
         "task": "ocr-any", "target": "eci-rolls-ocr", "env": {}, "probe": None,
-        "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 256, "items": [],
+        "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 128, "items": [],
     },
     {
         # the part repairs again on stored ocr-any output (ocr-any runs them itself; this is for outputs older than a fix)

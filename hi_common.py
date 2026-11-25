@@ -25,13 +25,31 @@ def load_model_sets(path=None):
 
 MODEL_SETS = load_model_sets()
 
-try:
-    CODE = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True).stdout.strip()
-    if CODE and subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=HERE, capture_output=True,
-                               text=True).stdout.strip():
-        CODE += "-dirty"      # local tests with uncommitted changes; the runners check out a clean tree
-except OSError:
-    CODE = ""
+def code_commit():
+    """The family checkout's commit (12 hex chars, '-dirty' with uncommitted changes to tracked files), or '' when git cannot
+    tell (no .git, safe.directory, git missing). GITHUB_SHA is no fallback: on the runners it names the runner repository's
+    commit, not this family's."""
+    try:
+        r = subprocess.run(["git", "rev-parse", "--short=12", "HEAD"], cwd=HERE, capture_output=True, text=True, timeout=60)
+        code = r.stdout.strip() if r.returncode == 0 else ""
+        if not re.fullmatch(r"[0-9a-f]{12}", code):
+            return ""
+        if subprocess.run(["git", "status", "--porcelain", "--untracked-files=no"], cwd=HERE, capture_output=True, text=True,
+                          timeout=60).stdout.strip():
+            code += "-dirty"      # local tests with uncommitted changes; the runners check out a clean tree
+        return code
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+# Read once at import: the code that is loaded in this process. ocr_any_task refuses to start when it is '' and compares it with
+# code_commit() after every item (a runner's refetch_family or a server worker's ensure_family can move the checkout under a
+# running worker; the provenance would then name the wrong commit).
+CODE = code_commit()
+
+
+class CodeChanged(Exception):
+    """The family checkout moved to another commit while this worker ran: the item is given back and the worker exits."""
 
 
 class UnknownModelSet(Exception):

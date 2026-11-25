@@ -2,8 +2,9 @@
 Postgres, read-only, through psql); writes the items as JSON for seeding, like plan_hi.py.
 
   plan_hi_ocr.py OUT.json [--dry-run] [--states S12,S07] [--acs 1,2] [--parts 1,10]
-                 [--hint-set v4a] [--nohint-set j2Ps] [--hints-project eci-rolls-ssr-text] [--assume-hints] [--include-fetching]
-  plan_hi_ocr.py OUT.json --parquet [--states ...]       parquet-any items for ACs whose ocr-any items are all done
+                 [--hint-set v4a] [--nohint-set j2Ps] [--state-set S07=j2Psf,S25=j2Ps] [--hints-project eci-rolls-ssr-text]
+                 [--assume-hints] [--include-fetching] [--include-partial] [--resets OUT.sql]
+  plan_hi_ocr.py OUT.json --parquet [--states ...] [--resets OUT.sql]   parquet-any items for ACs whose ocr-any items are all done
 
 OCR items (project eci-rolls-hi-ocr): one per part of one AC of one state, both SIR rolls when both exist. Parts = the PDFs
 stored in the bucket (one hub record "<roll id>/<ac>/<part>" per PDF in eci-rolls-hi-cdn / eci-rolls-hi-form, with its key);
@@ -17,8 +18,17 @@ planned only when its ssrtext record exists (the 2027 text is done; --assume-hin
 the planner again later adds the rest (seed_queue keeps existing keys).
 An AC whose fetch item of one of the state's SIR rolls is not done (Bihar's form route, 2026-11-25: 108 + 75 failed) is held
 too (an item seeded now would keep only the PDFs stored so far); --include-fetching plans it anyway.
+Held states (HOLD): a state there is planned only when --state-set names its set (2026-11-25: S07 Haryana, j2Ps flags 22-38 %
+of the records for the old EPIC format alone, j2Psf 3-4 %, no gold run of j2Psf; S25 West Bengal, Nepali print, 78 % flagged).
+Partial parts: a part whose PDF of one of the state's SIR rolls is missing although that roll's AC record lists the part (or
+the roll's fetch of the AC is not done) is held (seed_queue keeps keys: an item seeded with one roll never gets the other);
+--include-partial seeds it with the rolls stored now. --resets OUT.sql: for items already in the queue whose stored rolls are
+now more than the item's, SQL that gives the item the new payload and sets it pending (the main session runs it; done items
+are OCR'd again for that part).
+Lang: from the AC record ('lang', default HIN); ACs in another language are counted and not planned (ocr-any reads HIN only).
 Partition order: the no-hint states first, then the hint states; within a state by AC and part (an AC finishes together);
-the partition id is the same on every run (state rank x 1,000,000 + AC x 1,000 + part).
+the partition id is the same on every run: RANK[state] x 1,000,000 + AC x 1,000 + part. RANK is a fixed table (a new state
+gets the next free rank; never renumber).
 --dry-run prints the counts per state and writes nothing.
 """
 import collections
@@ -41,6 +51,11 @@ SIR = {
     "S12": ["S12-2026-DR", "S12-2026-FIR"], "S20": ["S20-2026-DR", "S20-2026-FIR"], "S26": ["S26-2026-DR", "S26-2026-FIR"],
     "S28": ["S28-2026-DR", "S28-2026-SIR-FIR-1"], "S04": ["S04-2025-SIR-DR", "S04-2025-SIR-FIR"],
 }
+# Partition rank per state: fixed (a dict order change or a new state must not change the ids of seeded items).
+RANK = {"S07": 0, "S27": 1, "U05": 2, "U02": 3, "S25": 4, "S12": 5, "S20": 6, "S26": 7, "S28": 8, "S04": 9}
+# States planned only when --state-set names their set (the main session / owner decides; see the docstring).
+HOLD = {"S07": "old-format EPICs flagged 22-38 % with j2Ps; j2Psf 3-4 % but not gold-run: choose --state-set S07=j2Ps|j2Psf",
+        "S25": "Nepali print: 78 % of records flagged with j2Ps; hold until a suited set exists (--state-set S25=SET to plan)"}
 HINT_ROLL = {"S04": "S04-2027-DR", "S12": "S12-2027-DR", "S20": "S20-2027-DR", "S26": "S26-2027-DR", "S28": "S28-2027-DR"}
 NAMES = {"S04": "Bihar", "S07": "Haryana", "S12": "Madhya Pradesh", "S20": "Rajasthan", "S25": "West Bengal (Hindi ACs)",
          "S26": "Chhattisgarh", "S27": "Jharkhand", "S28": "Uttarakhand", "U02": "Chandigarh", "U05": "Delhi"}
@@ -99,25 +114,34 @@ def ssr_done(project, roll):
     return {int(r["record_id"].split("/")[1]) for r in rows if r["record_id"].count("/") == 1 and r["record_id"].split("/")[1].isdigit()}
 
 
-def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, assume_hints, include_fetching=False):
-    for s in (hint_set, nohint_set):
+def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, assume_hints, include_fetching=False,
+             state_set=None, include_partial=False):
+    state_set = state_set or {}
+    for s in [hint_set, nohint_set] + list(state_set.values()):
         if s not in H.MODEL_SETS:
             raise SystemExit(f"model set {s} not in model_sets.json")
     items, summ = [], {}
-    order = [s for s in SIR if s not in HINT_ROLL] + [s for s in SIR if s in HINT_ROLL]
+    order = sorted(SIR, key=lambda st: RANK[st])
     for st in order:
         if states and st not in states:
             continue
         hinted = st in HINT_ROLL
+        mset = state_set.get(st) or (hint_set if hinted else nohint_set)
+        if not H.compatible(H.MODEL_SETS[mset], hinted):
+            raise SystemExit(f"model set {mset} ({H.MODEL_SETS[mset].get('hints')} hints) does not fit {st} (hints: {hinted})")
         ready = None
         if hinted and not assume_hints:
             ready = ssr_done(hints_project, HINT_ROLL[st])
         by_ac = collections.defaultdict(lambda: collections.defaultdict(dict))     # ac -> part -> {roll: key}
         extra = collections.defaultdict(lambda: collections.defaultdict(set))      # ac -> part -> {roll}
-        s = {"name": NAMES.get(st), "model_set": hint_set if hinted else nohint_set, "rolls": {}}
+        expect = collections.defaultdict(lambda: collections.defaultdict(set))     # ac -> part -> {roll whose AC record lists it}
+        lang = {}                                                                   # ac -> lang of its AC records
+        s = {"name": NAMES.get(st), "model_set": mset, "rolls": {}}
         fetching = set()      # ACs with a fetch item of one of the state's SIR rolls that is not done (still downloading)
+        roll_fetching = {}    # roll -> ACs whose fetch item of that roll is not done
         for roll in SIR[st]:
-            fetching |= {ac for ac, stt in fetch_status(roll).items() if stt != "done"}
+            roll_fetching[roll] = {ac for ac, stt in fetch_status(roll).items() if stt != "done"}
+            fetching |= roll_fetching[roll]
             rows = roll_rows(roll)
             pdf = [r for r in rows if r["record_id"].count("/") == 2 and r["key"]]
             acr = {r["ac"]: r for r in rows if r["record_id"].count("/") == 1}
@@ -137,11 +161,16 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
                 stored_not_listed += len(have.get(ac, set()) - want)
                 for x in a.get("extra_parts") or []:
                     extra[ac][int(x)].add(roll)
+                for x in want:
+                    expect[ac][int(x)].add(roll)
+                if a.get("lang"):
+                    lang.setdefault(ac, set()).add(a["lang"])
             s["rolls"][roll] = {"acs": len(have), "pdfs": sum(len(v) for v in have.values()), "ac_records": len(acr),
                                 "listed_not_stored": listed_not_stored, "stored_not_listed": stored_not_listed,
                                 "langs": sorted({r["lang"] for r in acr.values() if r.get("lang")})}
-        held = held_fetch = 0
+        held = held_fetch = held_partial = held_lang = 0
         n_items = n_pdfs = 0
+        state_items = []
         for ac in sorted(by_ac):
             if ac in fetching and not include_fetching:
                 # an item seeded now would keep only the PDFs stored so far (seed_queue keeps existing keys): wait for the fetch
@@ -150,24 +179,56 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
             if hinted and ready is not None and ac not in ready:
                 held += len(by_ac[ac])
                 continue
+            langs = lang.get(ac) or {"HIN"}
+            if langs != {"HIN"}:
+                held_lang += len(by_ac[ac])
+                continue
             for part in sorted(by_ac[ac]):
                 keys = by_ac[ac][part]
+                want = expect[ac][part] | {r for r in SIR[st] if ac in roll_fetching[r]}
+                if set(keys) < want and not include_partial:
+                    held_partial += 1       # a listed roll has no PDF yet: the item would never get it (seed_queue keeps keys)
+                    continue
                 pl = {"state": st, "ac": ac, "part": part, "lang": "HIN", "keys": dict(sorted(keys.items())),
                       "hints": f"{hints_project}/hints/{HINT_ROLL[st]}/{ac}.jsonl.gz" if hinted else None,
-                      "model_set": hint_set if hinted else nohint_set}
+                      "model_set": mset}
                 ex = sorted(extra[ac][part] & set(keys))
                 if ex:
                     pl["extra_rolls"] = ex
-                # stable partition id (the same on every planner run, with or without --states): state rank (no-hint states
-                # first), then AC, then part; parts < 1000, ACs < 1000
-                items.append({"key": f"{st}/{ac}/{part}", "partition_id": order.index(st) * 1_000_000 + ac * 1000 + part, "payload": pl})
+                # stable partition id (the same on every planner run, with or without --states): fixed state rank (no-hint
+                # states first), then AC, then part; parts < 1000, ACs < 1000
+                state_items.append({"key": f"{st}/{ac}/{part}", "partition_id": RANK[st] * 1_000_000 + ac * 1000 + part, "payload": pl})
                 n_items += 1
                 n_pdfs += len(keys)
+        on_hold = st in HOLD and st not in state_set
+        if not on_hold:
+            items += state_items
         s.update(acs=len(by_ac), items=n_items, pdfs=n_pdfs, items_waiting_for_hints=held, items_waiting_for_fetch=held_fetch,
-                 acs_fetch_not_done=len(fetching & set(by_ac)),
-                 acs_with_hints=(len(ready & set(by_ac)) if ready is not None else ("assumed" if hinted else None)))
+                 items_partial_held=held_partial, items_other_lang=held_lang, acs_fetch_not_done=len(fetching & set(by_ac)),
+                 acs_with_hints=(len(ready & set(by_ac)) if ready is not None else ("assumed" if hinted else None)),
+                 held_state=HOLD[st] if on_hold else None)
         summ[st] = s
     return items, summ
+
+
+def resets_sql(project, items):
+    """SQL for items already in the queue of `project` whose planned rolls are more than the queued payload's: new payload,
+    status pending, attempts 0. Returns (sql text, {status: count})."""
+    rows = psql_json(f"SELECT key, status, payload FROM queue WHERE project = {lit(project)}")
+    q = {r["key"]: r for r in rows}
+    out, n = [], collections.Counter()
+    for it in items:
+        r = q.get(it["key"])
+        if not r:
+            continue
+        old = set((r["payload"] or {}).get("keys") or (r["payload"] or {}).get("rolls") or [])
+        new = set(it["payload"].get("keys") or it["payload"].get("rolls") or [])
+        if new > old:
+            n[r["status"]] += 1
+            out.append(f"UPDATE queue SET payload = {lit(json.dumps(it['payload'], ensure_ascii=False))}::jsonb, status = 'pending', "
+                       f"attempts = 0, claimed_by = NULL, last_error = '' WHERE project = {lit(project)} AND key = {lit(it['key'])} "
+                       f"AND status <> 'claimed';")
+    return ("BEGIN;\n" + "\n".join(out) + "\nCOMMIT;\n") if out else "", dict(n)
 
 
 def plan_parquet(states):
@@ -183,7 +244,7 @@ def plan_parquet(states):
     for (st, ac), parts in sorted(by.items()):
         if all(s == "done" for _, s, _ in parts):
             rolls = sorted({x for _, _, ks in parts for x in ks}, key=lambda r: (0 if H.is_draft(r) else 1, r))
-            items.append({"key": f"{st}/{ac}", "partition_id": list(SIR).index(st) * 1000 + ac,
+            items.append({"key": f"{st}/{ac}", "partition_id": RANK[st] * 1000 + ac,
                           "payload": {"state": st, "ac": ac, "parts": sorted(p for p, _, _ in parts), "rolls": rolls}})
             summ[st + " ready"] += 1
         else:
@@ -198,15 +259,27 @@ def main():
     if "--parquet" in sys.argv:
         items, summ = plan_parquet(states)
         print(json.dumps(summ, indent=1))
+        project = H.PARQUET_HI_PROJECT
     else:
+        state_set = dict(kv.split("=", 1) for kv in arg("--state-set").split(",")) if arg("--state-set") else {}
         items, summ = plan_ocr(states, ints(arg("--acs")), ints(arg("--parts")), arg("--hint-set", "v4a"), arg("--nohint-set", "j2Ps"),
                                arg("--hints-project", H.SSR_TEXT_PROJECT), "--assume-hints" in sys.argv,
-                               "--include-fetching" in sys.argv)
-        print(f"{'state':5} {'name':24} {'set':6} {'ACs':>5} {'items':>7} {'PDFs':>7} {'w-hint':>6} {'w-fetch':>7}  rolls (ACs / PDFs / listed parts without a PDF / PDFs not in the AC record)")
+                               "--include-fetching" in sys.argv, state_set, "--include-partial" in sys.argv)
+        print(f"{'state':5} {'name':24} {'set':6} {'ACs':>5} {'items':>7} {'PDFs':>7} {'w-hint':>6} {'w-fetch':>7} {'partial':>7}  rolls (ACs / PDFs / listed parts without a PDF / PDFs not in the AC record)")
         for st, s in summ.items():
             rl = "; ".join(f"{r} {v['acs']}/{v['pdfs']}/{v['listed_not_stored']}/{v['stored_not_listed']}" for r, v in s["rolls"].items())
-            print(f"{st:5} {str(s['name'])[:24]:24} {s['model_set']:6} {s['acs']:5} {s['items']:7} {s['pdfs']:7} {s['items_waiting_for_hints']:6} {s['items_waiting_for_fetch']:7}  {rl}")
+            print(f"{st:5} {str(s['name'])[:24]:24} {s['model_set']:6} {s['acs']:5} {s['items']:7} {s['pdfs']:7} {s['items_waiting_for_hints']:6} "
+                  f"{s['items_waiting_for_fetch']:7} {s['items_partial_held']:7}  {rl}" + (f"  other lang: {s['items_other_lang']}" if s['items_other_lang'] else ""))
+            if s["held_state"]:
+                print(f"      HELD (not in the output): {s['held_state']}")
         print(f"total items {len(items)}, PDFs {sum(len(i['payload']['keys']) for i in items)}")
+        project = H.OCR_HI_PROJECT
+    if arg("--resets"):
+        sql, n = resets_sql(project, items)
+        print(f"resets for items already queued in {project}: {n or 'none'}")
+        if sql and not dry:
+            open(arg("--resets"), "w").write(sql)
+            print("wrote", arg("--resets"))
     if out and not dry:
         json.dump({"items": items, "summary": summ}, open(out, "w"), ensure_ascii=False, indent=0)
         print("wrote", out)

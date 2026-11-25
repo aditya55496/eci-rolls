@@ -7,8 +7,11 @@ Queue item (project eci-rolls-hi-ocr, items from plan_hi_ocr.py): key "<state>/<
 Keys and the hints key start with the project that stored them; each file is read through that project's links.
 Model set: model_sets.json (CRNN dirs, eci_ocr env switches, hints mode, stage1). The hub settings of this project can swap the
 set of every pending item at once (hi_common.choose_set): "ocr_model_set_map" {"j2Ps": "newset"} or "ocr_model_set" "newset".
-A set this checkout does not have -> the worker takes no item and exits 3 (the runner waits and asks again; runner jobs that
-start later check out the newer code).
+A set this checkout does not have -> the worker gives the item back untried (status 'pending', the attempt is not counted) and
+exits 3. The runner does not fetch the family again for this (it does so only for a task missing from scrape.json): an older job
+waits 30-300 s, asks again, and idles like this until it ends; jobs that start later check out the newer code.
+Provenance: the worker refuses to start when the family commit is unknown, and gives an item back and exits 3 when the
+checkout moved to another commit during the item (hi_common.code_commit).
 Engine: eciocr/prod/eci_ocr.py, one run per PDF, draft first; the draft's readings are the final roll's cache (as ocr_task.py).
 With hints: --hint-2027 (the whole AC's 2027 SSR records; confirmation, EPIC repair inside eci_ocr) and --stage1 of the set.
 Without hints: all engines on every box, the set's no-hint rules.
@@ -107,6 +110,8 @@ def run_eci(pdfs, hints_path, ms, dirs, year, tmp):
 def do_item(hub, item, settings=None, fetch=None, upload=None):
     """fetch(keys, dest) -> {key: path or None} (default: hub read links); upload(files) (default: hub.upload_many).
     Returns the hub record of the part."""
+    if not H.CODE:
+        raise RuntimeError("the family commit is unknown (git rev-parse failed); no output without its provenance")
     p = item["payload"]
     state, ac, part = str(p["state"]), int(p["ac"]), int(p["part"])
     if (p.get("lang") or "HIN") != "HIN":
@@ -157,6 +162,9 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
         t = time.time()
         recs, summs, cpu = run_eci(pdfs, hpath, ms, dirs, year, tmp)
         secs = time.time() - t
+    now = H.code_commit()
+    if now != H.CODE:     # eci_ocr runs from the checkout for each PDF: the output may mix code; the item is done again
+        raise H.CodeChanged(f"family checkout moved {H.CODE} -> {now or '?'} during the item")
     engines = ["crnn_" + m for m in ms["models"]]
     repairs = H.repair_part(recs, engines)
     prov = {"ocr_model_set": name, "ocr_models": list(ms["models"]), "ocr_code": H.CODE,
@@ -195,6 +203,10 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
 def main():
     stop = stop_flag()
     hub = HubClient(PROJECT, job_index=int(os.environ.get("SCRAPE_JOB_INDEX", 0)), total_jobs=int(os.environ.get("SCRAPE_TOTAL_JOBS", 1)))
+    if not H.CODE:      # every record names its code commit: without it the worker takes no item
+        hub.metric("no_code_commit")
+        hub.close("failed", "family commit unknown: git rev-parse failed in the checkout")
+        sys.exit(2)
     code = 0
     try:
         while time.time() < DEADLINE and not stop.is_set():
@@ -220,7 +232,14 @@ def main():
                 hub.metric("set_" + re.sub(r"[^a-z0-9_-]", "_", rec["ocr_model_set"].lower()))   # metric names: a-z 0-9 - _
                 hub.complete([it["key"]], "done", fetched=rec["records"])
             except H.UnknownModelSet as e:
-                hub.complete([it["key"]], "failed", error=f"model set {e} not in this checkout")
+                # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete)
+                hub.complete([it["key"]], "pending", error=f"model set {e} not in this checkout ({H.CODE})")
+                hub.metric("model_set_unknown")
+                code = 3
+                break
+            except H.CodeChanged as e:
+                hub.complete([it["key"]], "pending", error=str(e))
+                hub.metric("code_changed")
                 code = 3
                 break
             except Exception as e:  # one bad part must not stop the worker

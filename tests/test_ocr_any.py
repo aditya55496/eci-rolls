@@ -104,3 +104,140 @@ def test_epicfix_relative_name_needs_same_person():
     assert epicfix.fix([recs[2]], idx, 1) == 1 and recs[2]["epic"] == "BRA1234567"     # relative + same gender + age in window
     r = dict(epic="BHA1234567", name="y", relation_name="राम लाल", gender="महिला", age="30", flags=[])
     assert epicfix.fix([r], idx, 1) == 0                                                  # age gap 11: no repair
+
+
+# ---- do_item / main with the OCR engine and the hub replaced (2026-11-25, ocrv5 review: these paths had no offline test)
+
+def _fake_item(model_set="v4a", hints=True):
+    return {"key": "S12/1/10", "payload": {
+        "state": "S12", "ac": 1, "part": 10, "lang": "HIN", "model_set": model_set,
+        "keys": {"S12-2026-FIR": "eci-rolls-hi-cdn/pdf/S12-2026-FIR/1/x-FinalRoll-10.pdf",
+                 "S12-2026-DR": "eci-rolls-hi-cdn/pdf/S12-2026-DR/1/x-DraftRoll-10.pdf"},
+        "hints": "eci-rolls-ssr-text/hints/S12-2027-DR/1.jsonl.gz" if hints else None}}
+
+
+def _fake_fetch(keys, dest):
+    import gzip
+    import json
+    got = {}
+    for k in keys:
+        p = os.path.join(dest, k.replace("/", "__"))
+        if k.endswith(".gz"):
+            with gzip.open(p, "wt", encoding="utf-8") as f:
+                f.write(json.dumps({"epic": "ABC1234567", "name": "x"}) + "\n")
+        else:
+            open(p, "wb").write(b"%PDF-")
+        got[k] = p
+    return got
+
+
+def _fake_run_eci(calls):
+    def run(pdfs, hints_path, ms, dirs, year, tmp):
+        calls.append({"rolls": [r for r, _ in pdfs], "hints": hints_path, "env": dict(ms["env"]), "dirs": dirs, "year": year})
+        recs = [{"roll": r, "page": 3, "box": 0, "serial_no": "1", "epic": "ABC1234567", "flags": []} for r, _ in pdfs]
+        summs = [{"roll": r, "voter_pages": 1, "pdfs": [{"pdf": os.path.basename(p), "records": 1}]} for r, p in pdfs]
+        return recs, summs, 12.5
+    return run
+
+
+def test_do_item_output_and_provenance(monkeypatch):
+    import gzip
+    import json
+    import ocr_any_task as O
+    calls, up = [], []
+    monkeypatch.setattr(O, "run_eci", _fake_run_eci(calls))
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {"final_deleted": 0, "serial_gaps": 0})
+    monkeypatch.setattr(H, "CODE", "0123456789ab")
+    monkeypatch.setattr(H, "code_commit", lambda: "0123456789ab")
+    rec = O.do_item(None, _fake_item(), settings={}, fetch=_fake_fetch, upload=up.extend)
+    assert calls[0]["rolls"] == ["S12-2026-DR", "S12-2026-FIR"] and calls[0]["hints"] and calls[0]["year"] == 2026
+    assert calls[0]["env"] == H.MODEL_SETS["v4a"]["env"]
+    assert [u[0] for u in up] == ["ocr/S12/1/10.jsonl.gz", "ocr/S12/1/10.summary.json"]
+    recs = [json.loads(l) for l in gzip.decompress(up[0][1]).decode().splitlines()]
+    for r in recs:
+        assert r["ocr_model_set"] == "v4a" and r["ocr_models"] == H.MODEL_SETS["v4a"]["models"]
+        assert r["ocr_code"] == "0123456789ab" and r["hints_used"] is True
+        assert r["ocr_rules"]["stage1"] == 1 and r["ocr_rules"]["roll_year"] == 2026
+    for k in H.PROVENANCE_KEYS + ("model_set_source", "cpu_s", "by_roll"):
+        assert k in rec, k
+    assert rec["records"] == 2 and rec["model_set_source"] == "payload"
+
+
+def test_do_item_hub_swap_and_no_hint_set(monkeypatch):
+    import ocr_any_task as O
+    calls = []
+    monkeypatch.setattr(O, "run_eci", _fake_run_eci(calls))
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {})
+    monkeypatch.setattr(H, "code_commit", lambda: H.CODE)
+    rec = O.do_item(None, _fake_item("j2Ps", hints=False), settings={"ocr_model_set_map": {"j2Ps": "j2Psf"}},
+                    fetch=_fake_fetch, upload=lambda files: None)
+    assert rec["ocr_model_set"] == "j2Psf" and rec["model_set_source"] == "hub ocr_model_set_map"
+    assert rec["hints_used"] is False and calls[0]["hints"] is None and rec["ocr_rules"]["stage1"] == 0
+    with pytest.raises(RuntimeError, match="needs hints"):
+        O.do_item(None, _fake_item("v4a", hints=False), settings={}, fetch=_fake_fetch, upload=lambda files: None)
+
+
+def test_do_item_code_guards(monkeypatch):
+    import ocr_any_task as O
+    monkeypatch.setattr(O, "run_eci", _fake_run_eci([]))
+    monkeypatch.setattr(H, "repair_part", lambda recs, engines: {})
+    monkeypatch.setattr(H, "CODE", "0123456789ab")
+    monkeypatch.setattr(H, "code_commit", lambda: "ba9876543210")      # the checkout moved during the item
+    with pytest.raises(H.CodeChanged):
+        O.do_item(None, _fake_item(), settings={}, fetch=_fake_fetch, upload=lambda files: None)
+    monkeypatch.setattr(H, "CODE", "")                                  # git could not tell the commit
+    with pytest.raises(RuntimeError, match="commit is unknown"):
+        O.do_item(None, _fake_item(), settings={}, fetch=_fake_fetch, upload=lambda files: None)
+
+
+class _FakeHub:
+    instances = []
+
+    def __init__(self, *a, **k):
+        self.settings, self.completed, self.closed, self.metrics = {}, [], None, []
+        self.items = [_fake_item("nosuchset")]
+        _FakeHub.instances.append(self)
+
+    def claim(self, n, **k):
+        return [self.items.pop()] if self.items else []
+
+    def complete(self, keys, status="done", error="", fetched=None):
+        self.completed.append((list(keys), status, error))
+
+    def metric(self, name, value=1):
+        self.metrics.append(name)
+
+    def close(self, status="done", note=""):
+        self.closed = (status, note)
+
+    def record(self, *a, **k):
+        raise AssertionError("no record for an item that was not run")
+
+    def error(self):
+        pass
+
+    def failure(self, *a, **k):
+        pass
+
+
+def test_main_unknown_set_gives_item_back_untried(monkeypatch):
+    import ocr_any_task as O
+    _FakeHub.instances.clear()
+    monkeypatch.setattr(O, "HubClient", _FakeHub)
+    monkeypatch.setattr(H, "CODE", "0123456789ab")
+    with pytest.raises(SystemExit) as e:
+        O.main()
+    hub = _FakeHub.instances[0]
+    assert e.value.code == 3
+    assert hub.completed == [(["S12/1/10"], "pending", "model set nosuchset not in this checkout (0123456789ab)")]
+
+
+def test_main_refuses_without_code_commit(monkeypatch):
+    import ocr_any_task as O
+    _FakeHub.instances.clear()
+    monkeypatch.setattr(O, "HubClient", _FakeHub)
+    monkeypatch.setattr(H, "CODE", "")
+    with pytest.raises(SystemExit) as e:
+        O.main()
+    hub = _FakeHub.instances[0]
+    assert e.value.code == 2 and hub.completed == [] and hub.closed[0] == "failed" and len(hub.items) == 1
