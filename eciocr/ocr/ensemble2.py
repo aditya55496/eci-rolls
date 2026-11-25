@@ -91,6 +91,39 @@ ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
 ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
 
 
+# lang-mal round 2 (2026-11-25, ECI_MAL_HOUSE=1, default off): Malayalam house_no that no engine reads as in 2027. Held-out (12 SIR
+# PDFs, 9,844 records): house_no was 724 of the flagged fields; in most, every CRNN reads the same value and (T) Tesseract reads it
+# too except for the number separators (it drops '/' or reads it , . : and reads some digits as Malayalam digits), or (P) the 2027
+# house is a cut-off PREFIX of the value (the 2027 roll cuts long house names: '17/41 ...പുത്തന്' for '17/41 ...പുത്തൻവീട്'),
+# with the same number part. Only with >= MAL_HOUSE_MIN CRNNs (4 = the cascade's stage 2: all CRNNs read the box).
+MAL_HOUSE = os.environ.get('ECI_MAL_HOUSE', '0') == '1'
+MAL_HOUSE_MIN = int(os.environ.get('ECI_MAL_HOUSE_MIN', '4'))
+_MDIG = {chr(0x0D66 + i): str(i) for i in range(10)}
+_HSEP = re.compile(r"[/\-,.:;'\"`|\s]")
+
+
+def _hnum(s):
+    m = re.match(r'^\s*([0-9][0-9A-Za-z/\-]*)\s*(.*)$', s or '')
+    return (m.group(1), m.group(2)) if m else ('', s or '')
+
+
+def mal_house(vals, names, hint_v=None):
+    if not (MAL_HOUSE and LANG == 'MAL' and names): return None
+    cr = [v for v, n in zip(vals, names) if n.startswith('crnn')]
+    if len(cr) < MAL_HOUSE_MIN or not cr[0] or len({parse_mal.norm(v) for v in cr}) != 1 or not valid('house_no', cr[0]): return None
+    v = cr[0]
+    # T compare: separators dropped, Malayalam digits = ASCII digits, spaces kept between letters (eye check: all CRNNs read
+    # '13/510 പനയൻ തൊടിക', print, 2027 and Tesseract 'പനയൻതൊടിക': the space is no separator)
+    tf = lambda s: re.sub(r'\s+', ' ', re.sub(r'\s*([0-9]+)\s*', r'\1', _HSEP.sub(lambda m: ' ' if m.group(0).isspace() else '', ''.join(_MDIG.get(c, c) for c in parse_mal.norm(s))))).strip()  # noqa: E731
+    ts = [x for x, n in zip(vals, names) if n.startswith('tess')]
+    if ts and ts[0] and tf(ts[0]) == tf(v): return v                                   # T
+    if hint_v:                                                                          # P
+        hn, ht = _hnum(parse_mal.hint_fold(hint_v)); vn, vt = _hnum(v)
+        a, b = re.sub(r'\s+', ' ', parse_mal.hint_fold(vt)).strip(), re.sub(r'\s+', ' ', ht).strip()   # spaces kept (see T)
+        if hn == vn and 4 <= len(b) < len(a) and (a.startswith(b) or (len(b) >= 5 and a.startswith(b[:-1]))): return v
+    return None
+
+
 def agree_eng(f, vals, names, hv='', full=False):
     if not (ENG_AGREE and LANG in ('ENG', 'MAL') and names and len(vals) >= 2): return False   # lang-mal: Malayalam too
     if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
@@ -455,6 +488,9 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                     out[f] = m; flags.append(f); continue
             if m is not None: out[f] = m; continue
             if agree_eng(f, vals, names, hint[f], full): out[f] = vals[0]; continue
+            if f == 'house_no' and MAL_HOUSE:
+                hv_ = mal_house(vals, names, hint[f])
+                if hv_ is not None: out[f] = hv_; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
                 for p in PREF.get(f, []):
@@ -514,6 +550,9 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             others = [vals[i] for i, nm in enumerate(names) if not nm.startswith('crnn')]
             if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others) and not markvar_suspect(v):
                 out[f] = v; continue
+        if f == 'house_no' and MAL_HOUSE and n < need:
+            hv_ = mal_house(vals, names)
+            if hv_ is not None: out[f] = hv_; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:
         for f in flags:
