@@ -33,7 +33,7 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, segment_pan, segment_pan2, segment_ori, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_pan, segment_pan2, segment_ori, segment_guj, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
@@ -46,6 +46,8 @@ import ctcvar_ben                                   # noqa: E402  (lang-ben)
 _CTCVAR_LINE = re.compile(r'(^|:)\s*[ঀ-৿]')         # name / relation line ('নাম : X', 'পিতার নাম: X') or a wrapped name line
 _CTCVAR_SKIP = re.compile(r'বয়স|লিঙ্গ|বাড়ি|বাড়ী|নং')
 import parse_ori                                    # noqa: E402  (lang-ori)
+import parse_guj                                    # noqa: E402  (lang-guj)
+import guj_lex                                      # noqa: E402  (lang-guj)
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 import ctchint_pan                                  # noqa: E402  (lang-pan r2)
@@ -507,6 +509,12 @@ def parse_heading(lines, lang='HIN'):
             m = re.search(r'(?:പേരും|పేరు)\s*[:;.]?\s*([0-9]+)\s*-\s*(.*)', t)
             if m: return f'{m.group(1)}-{m.group(2).strip()}'
             continue
+        if lang == 'GUJ':   # 'વિભાગનો નંબર અને નામ : 1-<name>' (Tesseract guj)
+            if ':' in t and re.search(r'વિભાગ|નંબર', t):
+                v = t.split(':', 1)[1].strip(' :.-')
+                m = re.match(r'([0-9૦-૯]+)\s*-?\s*(.*)', v)
+                if m: return f"{m.group(1).translate(parse_guj.GUJ2LAT)}-{m.group(2).strip()}"
+            continue
         if lang == 'ENG':   # 'Section No and Name : 1-Lozar ,Aldona'
             m = re.search(r'Sect\w*\s+No\.?\s+and\s+Name\s*[:;.]?\s*([0-9]+)\s*-?\s*(.*)', t)
             if m: return f'{m.group(1)}-{m.group(2).strip()}'
@@ -667,12 +675,13 @@ ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 # 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
 # lang-mal (2026-11-25): Malayalam (S11, U06, U07-29) and Telugu (U07-30) SIR rolls: the same template, Tesseract 'mal' / 'tel',
 # parse_mal (labels / genders of the language in parse_mal.LANG).
-LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL', 'BEN', 'ORI')   # lang-ben/ori: Bengali and Odia use the English SIR box template too
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan', 'BEN': 'ben', 'ORI': 'ori'}
+LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL', 'BEN', 'ORI', 'GUJ')   # lang-ben/ori/guj: Bengali, Odia and Gujarati use the English SIR box template too
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan', 'BEN': 'ben', 'ORI': 'ori', 'GUJ': 'guj'}
 PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam),
            'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal),
            'BEN': (parse_ben, parse_ben.from_lines_ben),
-           'ORI': (parse_ori, parse_ori.from_lines_ori)}
+           'ORI': (parse_ori, parse_ori.from_lines_ori),
+           'GUJ': (parse_guj, parse_guj.from_lines_guj)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -812,6 +821,95 @@ def _ori_inlex(v):
     return bool(t) and all(w in _ORI_LEXSET for w in t)
 
 
+GUJ_AGREE = os.environ.get('ECI_GUJ_AGREE', '1') != '0'
+GUJ_STRICT = ('name', 'relation_name', 'house_no', 'relation_label')   # all CRNNs AND a Tesseract read must agree (label: round 3, gold r5: 11 silent label errors, parts printing 'પિતાનુ' without anusvara; with Tesseract 2 left)
+GUJ_CRNN_ONLY = ('age', 'gender')        # all CRNNs agree (and the value is valid)
+# house numbers with digits: the print mixes Latin and Gujarati digits (~10 % Gujarati); Tesseract guj and the r3 CRNNs read
+# Gujarati digits as Latin (gold r3: 8 of 142 unflagged house fields wrong, all of this kind) -> keep them flagged unless 0
+GUJ_HOUSE_DIGIT_FLAG = os.environ.get('ECI_GUJ_HOUSE_DIGIT_FLAG', '1') != '0'
+# CRNN + Tesseract character merge for name / relation (lang-guj round 2): the CRNNs read the print's ચ as ય (gold r3: 101 of 328
+# wrong CRNN name/relation fields), ઓ as ઔ and દ as ધ્; Tesseract guj reads these right. Where ALL CRNNs agree, an edit
+# (crnn part -> tess part) in GUJ_MERGE_SAFE is taken from the first Tesseract read. Gold r3: 79 fixed, 1 broken (pairs were chosen
+# on the gold error list: a design choice measured on gold, recheck on new gold). The field stays flagged unless a Tesseract read
+# equals the merged value (strict rule below).
+GUJ_MERGE = os.environ.get('ECI_GUJ_MERGE', '1') != '0'
+GUJ_MERGE_SAFE = {('ય', 'ચ'), ('ઔ', 'ઓ'), ('ધ્', 'દ')}
+# word-evidence correction of name / relation tokens (ocr/guj_lex.py, lang-guj round 3): missing anusvara, e-/o-matra read as a
+# reph, ફ as ક ... (errors all CRNNs share). Gold r5: name + relation errors 137 -> 82, 0 broken. The field stays flagged unless a
+# Tesseract read equals the corrected value.
+GUJ_LEX = os.environ.get('ECI_GUJ_LEX', '1') != '0'
+ALL_READINGS = os.environ.get('ECI_ALL_READINGS', '0') == '1'
+# relation_label when the CRNNs disagree (lang-guj round 4): the generic vote lets Tesseract (+ one CRNN) win, and Tesseract drops
+# the anusvara of 'પિતાનું' / 'પતિનું' in 119 of 664 gold boxes -> the label is the CRNN majority (ties: the first CRNN).
+# Gold r11 readings: 9 of 13 wrong 'નુ' outputs came from 2-of-3 CRNN 'નું' splits. The field stays flagged (CRNNs disagree).
+GUJ_LABEL_CRNN = os.environ.get('ECI_GUJ_LABEL_CRNN', '1') != '0'
+# relation-label anusvara from the pixels (lang-guj round 5, ocr/guj_dot.py): the dot of 'પિતાનું' / 'પતિનું' is decided by a
+# small MLP on the relation line crop (CRNNs always write it, Tesseract drops it). The label is unflagged when all CRNNs agree
+# on the label word without the dot and the dot decision is outside the uncertain band; flagged when inside the band.
+GUJ_DOT = os.environ.get('ECI_GUJ_DOT', '0') == '1'   # default OFF: see lang-guj NOTES round 5 (crop loses / gains dots)
+
+
+def guj_dot_fix(out, flags, readings, per_engine, names, cands, segs):
+    lab = parse_guj.norm(out.get('relation_label') or '')
+    ci = [i for i, n in enumerate(names) if n.startswith('crnn')]
+    if not lab or not ci: return out, flags
+    raw = per_engine[names[ci[0]]][0]
+    lk = sorted((k for k in raw if k.startswith('line') and k[4:].isdigit()), key=lambda x: int(x[4:]))
+    k = next((k for k in lk if k != 'line0' and re.match(r'^\s*(પિતા|પતિ)', raw[k] or '')), 'line1')
+    v, ok, p = guj_dot.decide(lab, segs.get(k))
+    if p is None: return out, flags
+    out['relation_label'] = v
+    if ALL_READINGS or not ok: readings.setdefault('relation_label', {}).update(dot_p=round(p, 4), dot_line=k)
+    strip = lambda x: parse_guj.norm(x or '').replace('ં', '')
+    cw = {strip(cands[i]['relation_label']) for i in ci}
+    if ok and len(cw) == 1 and strip(v) in cw: flags = [f for f in flags if f != 'relation_label']
+    elif 'relation_label' not in flags:
+        flags = flags + ['relation_label']
+        rd = readings.setdefault('relation_label', {})
+        for n, c in zip(names, cands): rd.setdefault(n, c['relation_label'])
+    return out, flags
+
+
+def guj_merge(v, t):
+    import difflib
+    out = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, v, t, autojunk=False).get_opcodes():
+        out.append(t[j1:j2] if tag != 'equal' and (v[i1:i2], t[j1:j2]) in GUJ_MERGE_SAFE else v[i1:i2])
+    return ''.join(out)
+
+
+def guj_agree(out, flags, cands, names):
+    """Gujarati (lang-guj 2026-11-25): Tesseract guj misreads most box lines, so the generic vote flags ~100 % of boxes.
+    Line fields: the value of ALL CRNNs is taken; the field is unflagged only when (strict fields) a Tesseract read equals it too,
+    or (label / age / gender) it is valid. Gold r2 measure: name 48/48 and relation 65/67 right when 3 CRNNs + Tesseract agree;
+    age 285/286, gender 70/70, label 19/20 when 3 CRNNs agree. Other cases keep the vote and stay flagged."""
+    ci = [i for i, n in enumerate(names) if n.startswith('crnn')]
+    ti = [i for i, n in enumerate(names) if n.startswith('tess')]
+    if len(ci) < 2: return out, flags
+    nm = parse_guj.norm
+    for f in GUJ_STRICT + GUJ_CRNN_ONLY:
+        cv = {nm(cands[i][f]) for i in ci}
+        if len(cv) != 1: 
+            if GUJ_LEX and f in ('name', 'relation_name') and out.get(f): out[f] = guj_lex.correct(nm(out[f]))
+            if GUJ_LABEL_CRNN and f == 'relation_label':
+                vals = [nm(cands[i][f]) for i in ci if nm(cands[i][f])]
+                if vals: out[f] = max(vals, key=lambda x: (vals.count(x), -vals.index(x)))
+            if f not in flags: flags = flags + [f]
+            continue
+        v = cands[ci[0]][f]
+        if GUJ_MERGE and f in ('name', 'relation_name') and v:
+            tv = next((cands[i][f] for i in ti if cands[i][f]), '')
+            if tv: v = guj_merge(nm(v), nm(tv))
+        if GUJ_LEX and f in ('name', 'relation_name') and v: v = guj_lex.correct(nm(v))
+        ok = bool(v) and ensemble2.valid(f, v) if f != 'house_no' else bool(v)
+        if f in GUJ_STRICT: ok = ok and any(nm(cands[i][f]) == nm(v) for i in ti)
+        if f == 'house_no' and GUJ_HOUSE_DIGIT_FLAG and re.search(r'[0-9\u0AE6-\u0AEF]', v): ok = False
+        out[f] = v
+        if ok: flags = [x for x in flags if x != f]
+        elif f not in flags: flags = flags + [f]
+    return out, flags
+
+
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False, nocv=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
@@ -852,6 +950,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
     hctc = {}
+    if lang == 'GUJ' and GUJ_AGREE:   # lang-guj: strict agreement guard (parse_guj / guj_agree)
+        out, flags = guj_agree(out, flags, cands, names)
     if lang == 'PAN' and PAN_HINTCTC is not None and hint and '_P' in per_engine:
         # lang-pan r2: a flagged hint field takes the 2027 value when every CRNN's line output fits it within PAN_HINTCTC
         # log units of its own reading (ctchint_pan.margin); the field stays flagged unless ECI_PAN_HINTCTC_UNFLAG=1
@@ -1030,6 +1130,8 @@ def process_page(task):
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
         if lang == 'ORI':   # lang-ori: Odia lines from connected components (marks above / below the line core)
             segs_list.append({k: im for k, im in segment_ori(g).items() if im.size}); stamps.append(False)
+        elif lang == 'GUJ':   # lang-guj: Gujarati box (segment_guj band crops)
+            segs_list.append({k: im for k, im in segment_guj(g).items() if im.size}); stamps.append(False)
         elif lang in LATIN_TPL:   # ENG, TAM, MAL, TEL, BEN: the English SIR box template
             if lang == 'BEN':   # lang-ben: Bengali box (top_cells + pitch + component line assignment)
                 seg = segment_eng(g, top_cells=BEN_TOP_CELLS, pitch=BEN_PITCH, comp=BEN_COMP)
@@ -1287,7 +1389,9 @@ def process_page(task):
             reads[i]['tess'][0].update(r2['tess'][0])
         stage1_only = set()
     else:
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, lang=lang)
+        # ECI_GUJ_TESS_LINES=0 (lang-guj round 3, CPU test): Tesseract reads only the number / EPIC cells, not the text lines
+        tg = {'num', 'epic', 'code'} if lang == 'GUJ' and os.environ.get('ECI_GUJ_TESS_LINES', '1') == '0' else None
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, tess_groups=tg, lang=lang)
         stage1_only = set()
     t = time.time()
     if kind is None: kind = 'SUP' if sum('part' in s for s in segs_list) * 2 > len(segs_list) else 'SIR'
@@ -1636,9 +1740,9 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI', 'GUJ'): return opt.upper()
     b = os.path.basename(path).upper()
-    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI'):
+    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN', 'ORI', 'GUJ'):
         if f'-{L}-' in b: return L
     return 'HIN'
 
@@ -1674,7 +1778,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL / PAN / ORI for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* / *-PAN-* / *-ORI-* file names, else HIN), HIN, ENG, TAM, MAL, TEL, PAN or ORI')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL / PAN / ORI / GUJ for *-ENG-* / ... / *-GUJ-* file names, else HIN), HIN, ENG, TAM, MAL, TEL, PAN, ORI or GUJ')
     ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
                     'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')

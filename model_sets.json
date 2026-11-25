@@ -1662,5 +1662,59 @@
    "lang_ori_r11a2_x0": "6a6b3afb4f11d1aa",
    "lang_ori_r11b_x0": "7717a339c8db6429"
   }
+ },
+ "gujR4": {
+  "about": "Gujarat SIR Gujarati (lang-guj round 4, set key gujR4 = r9 models; owner 2026-11-26: DEFINE ONLY, DO NOT SEED - 89.64 % record is well below the 97 % target; every record is flagged). No hints (no 2027 Gujarati roll). 3 int8 CRNNs (r9 = r8 fine-tuned on real pseudo-labels + 29k Opus A==B hard-line labels + synth) + Tesseract guj; no cascade (stage1 0); band segmentation (segment_guj), strict agreement guard (ECI_GUJ_AGREE / guj_agree), CRNN-pair merge (ECI_GUJ_MERGE), word-evidence lexicon correction (ECI_GUJ_LEX guj_lex3.json in the engine), relation_label by CRNN majority (ECI_GUJ_LABEL_CRNN), house digit guards. Native-resolution pages (ECI_RESCALE_H=0). Engine branch lang-guj d1e5644 / 38e880a. Gold v2 (695 boxes, 8 ACs): record 89.64 % (skip-uncertain 92.66 %), EPIC 100 %, 100 % flagged, 0 record-level silent. NOTE: the merged engine's shared decide() flags EPIC on no-Tesseract boxes where the lang-guj branch accepted the CRNN-unanimous value; field VALUES are identical (record accuracy unchanged) and every record is flagged already.",
+  "models": [
+   "lang-guj_r9_a_base_x0",
+   "lang-guj_r9_a_3q_x0",
+   "lang-guj_r9_b_half_x0"
+  ],
+  "sha256_16": {
+   "lang-guj_r9_a_base_x0": "c7f514116b4ac43c",
+   "lang-guj_r9_a_3q_x0": "a19f9fdfd25629a1",
+   "lang-guj_r9_b_half_x0": "3948858e4c017433"
+  },
+  "hints": "none",
+  "stage1": 0,
+  "lang": "GUJ",
+  "env": {
+   "ECI_GUJ_SEG": "band",
+   "ECI_GUJ_EXT": "0.45",
+   "ECI_GUJ_AGREE": "1",
+   "ECI_GUJ_MERGE": "1",
+   "ECI_GUJ_LEX": "1",
+   "ECI_GUJ_LABEL_CRNN": "1",
+   "ECI_GUJ_HOUSE_KEEP_DIGITS": "1",
+   "ECI_GUJ_HOUSE_FIX": "1",
+   "ECI_GUJ_HOUSE_DIGIT_FLAG": "1",
+   "ECI_RESCALE_H": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "tessdata": "guj + eng traineddata (apt tesseract-ocr-guj)",
+  "gold": {
+   "guj_rec": 89.64,
+   "guj_rec_skip_uncertain": 92.66,
+   "guj_flag_pct": 100.0,
+   "guj_epic": 100.0,
+   "boxes": 695,
+   "rec_ci95": [
+    86.06,
+    93.32
+   ],
+   "source": "lang-guj eval r9_x0_lc.json (gold v2, 695 boxes / 8 ACs)"
+  },
+  "charset_sha256_16": {
+   "lang-guj_r9_a_base_x0": "983a5acebc6b2595",
+   "lang-guj_r9_a_3q_x0": "983a5acebc6b2595",
+   "lang-guj_r9_b_half_x0": "983a5acebc6b2595"
+  },
+  "arch_sha256_16": {
+   "lang-guj_r9_a_base_x0": "fe3c5dea313abd43",
+   "lang-guj_r9_a_3q_x0": "2ac5499f83b82e61",
+   "lang-guj_r9_b_half_x0": "bde5a4b2bd68e2d3"
+  }
  }
 }
