@@ -543,7 +543,7 @@ def _valset(recs, segs_list):
                 cr = [v for n, v in rd.items() if n.startswith('crnn') and isinstance(v, str)]
                 if not cr or not cr[0] or len({visual(v) for v in cr}) != 1: continue
                 if ensemble2.marks_strip(rd.get('tess', '')) == ensemble2.marks_strip(cr[0]): continue
-                if all(ensemble2.lex_count_ge(w, ensemble2.NOHINT_NUNF) for w in visual(cr[0]).split()):
+                if all(ensemble2.lex_count_ge(w, ensemble2.NOHINT_NUNF) for w in visual(cr[0]).split()) and not ensemble2.markvar_suspect(cr[0]):
                     r[f] = cr[0]; r['flags'].remove(f); r['readings'].pop(f, None)
 
 

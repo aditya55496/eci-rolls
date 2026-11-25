@@ -182,6 +182,48 @@ def lex_count_ge(word, n):
     return i < len(a) and int(a[i]) == h
 
 
+# job5 r3 2026-11-25 (ECI_NOHINT_MARKVAR=FILE.npz, default unset = off; no 2027 roll): the CRNNs drop printed marks with one
+# voice (nukta: अरोड़ा read अरोडा by all 7 CRNNs of config j5r3G, Tesseract wrong elsewhere -> NUNF un-flagged it; anusvara:
+# दहनीं read दहनी). The name un-flag paths (TESSCLEAN, NUNF) are not taken when a word of the value has a mark variant (nukta,
+# anusvara or candrabindu added / removed / swapped) that the lexicon saw MORE often than the word. FILE: arrays h (sorted
+# blake2b-64 of the visual word) and c (count) of the 2027 UP text words (job2 lexicon, non-gold ACs) that have such a variant
+# in the lexicon (job5 r3/build_markvar.py). Gold sim (j5r3G): 4 more flagged records of 1,283, 1 silent error caught.
+_MV = {}
+_MV_NUK = 'डढजफकखग'
+_MV_VS = set('\u093e\u093f\u0940\u0941\u0942\u0947\u0948\u094b\u094c')
+
+
+def mark_variants(w):
+    out = set()
+    for i, ch in enumerate(w):
+        if ch in ('\u093c', '\u0902', '\u0901'): out.add(w[:i] + w[i + 1:])
+        if ch == '\u0902': out.add(w[:i] + '\u0901' + w[i + 1:])
+        if ch == '\u0901': out.add(w[:i] + '\u0902' + w[i + 1:])
+        nxt = w[i + 1] if i + 1 < len(w) else ''
+        if ch in _MV_NUK and nxt != '\u093c': out.add(w[:i + 1] + '\u093c' + w[i + 1:])
+        if (ch in _MV_VS or '\u0915' <= ch <= '\u0939') and nxt not in ('\u0902', '\u0901', '\u093c', '\u094d') and nxt not in _MV_VS:
+            out.add(w[:i + 1] + '\u0902' + w[i + 1:])
+    out.discard(w)
+    return {visual(v) for v in out}
+
+
+def _mv_count(w):
+    import numpy as np
+    if 'h' not in _MV:
+        z = np.load(os.environ['ECI_NOHINT_MARKVAR']); _MV['h'], _MV['c'] = z['h'], z['c']
+    h = _whash(w); i = int(np.searchsorted(_MV['h'], np.uint64(h)))
+    return int(_MV['c'][i]) if i < len(_MV['h']) and int(_MV['h'][i]) == h else 0
+
+
+def markvar_suspect(val):
+    """True when ECI_NOHINT_MARKVAR is set and a word of val has a mark variant seen more often than the word."""
+    if not os.environ.get('ECI_NOHINT_MARKVAR'): return False
+    for w in visual(val or '').split():
+        c = _mv_count(w)
+        if any(_mv_count(v) > max(c, 1) for v in mark_variants(w)): return True
+    return False
+
+
 def marks_strip(x):
     return re.sub('[\u093c\u0902\u0901\u094d\u0945]', '', visual(x or '').replace('र्', '').replace('\u0949', '\u093e')).replace(' ', '')
 
@@ -339,7 +381,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 and sum(nm.startswith('crnn') for nm in names) >= 4:
             v = _crnn_all_agree(f, vals, vis, names)
             others = [vals[i] for i, nm in enumerate(names) if not nm.startswith('crnn')]
-            if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others):
+            if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others) and not markvar_suspect(v):
                 out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:
