@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Parse UP "SSR DraftRoll 2027" electoral roll PDFs (iText pdfCalligraph text layer) to JSONL.
+"""Parse Hindi "SSR DraftRoll 2027" electoral roll PDFs (iText pdfCalligraph text layer) to JSONL.
+
+States (2026-11-25, branch hinvar): UP S24, Uttarakhand S28, Bihar S04, MP S12, Rajasthan S20, Chhattisgarh S26. The states
+print different labels (see LABEL VARIANTS below); every variant gives the same output fields.
 
 One JSON record per voter box. No OCR: every field comes from the PDF text layer.
 
@@ -12,6 +15,10 @@ How it works
   the box edge stays with the box of the preceding character in the same span.
 - Inside a box, characters are grouped into rows by baseline, and each row is identified by its
   label ('नाम :', '<पिता|पति|माता> का नाम:', 'अन्य:', 'मकान संख्या :', 'आयु : .. लिंग :').
+  LABEL VARIANTS: name 'निर्वाचक का नाम :' (Bihar, MP, Rajasthan, Chhattisgarh); house 'गृह संख्या :' (MP, Rajasthan);
+  age 'उम्र :' (Bihar, MP, Rajasthan, Chhattisgarh); Bihar doubles colons ('पिता का नाम::', 'लिंग: :').
+  'निर्वाचक का नाम' is the voter's name, not a relative (before 2026-11-25 it was read as relation_type 'निर्वाचक').
+  The PDF meta gets 'label_sets': boxes per printed label set ('नाम/मकान/आयु', ...), for checks per state.
   The 'फोटो उपलब्ध है' placeholder is its own span and is removed by span, so it can not
   bleed into the house number.
 - Repairs of known pdfCalligraph /ActualText artifacts (each one counted per record):
@@ -38,6 +45,9 @@ import pymupdf
 EPIC_NEW = re.compile(r'^[A-Z]{3}[0-9]{7}$')
 EPIC_OLD = re.compile(r'^[A-Z]{2}/[0-9]{1,3}/[0-9]{1,4}/[0-9]{5,7}$')
 EPIC_ANY = re.compile(r'^([A-Z]{2,3}[0-9]{6,8}|[A-Z]{2}/[0-9]+/[0-9]+/[0-9]+)$')
+# EPIC printed in a non-standard form (2026-11-25, Bihar/Rajasthan 2027: 'MVK/1234567A', 'XNJ//1234567', 'BR/06/035//762069',
+# 'RJ/21/160/022098B'): kept as printed in 'epic' (validate() lists it under epic_bad), warning 'epic_nonstandard'
+EPIC_ODD = re.compile(r'^[A-Z]{2,3}[A-Z0-9/]*[0-9][A-Z0-9/]*$')
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 VIRAMA, ZWJ, ZWNJ = '्', '‍', '‌'
 DEP_SIGNS = '[ा-ौॢॣँ-ः]'   # matras, candrabindu, anusvara, visarga
@@ -78,9 +88,9 @@ def repair(s, counts):
 
 
 def letters(s):
-    """Multiset used for the glyph cross-check (order-free, no spaces/joiners)."""
+    """Multiset used for the glyph cross-check (order-free, no spaces/joiners/colons: Bihar prints label colons twice)."""
     return collections.Counter(c for c in unicodedata.normalize('NFD', s)
-                               if not c.isspace() and c not in (ZWJ, ZWNJ))
+                               if not c.isspace() and c not in (ZWJ, ZWNJ, ':'))
 
 
 # --------------------------------------------------------------------------- fonts
@@ -267,7 +277,12 @@ def page_lines(lines, boxes):
     return sorted(out)
 
 
-SECTION_RE = re.compile(r'अनुभाग संख्या और नाम\s*:\s*(\d+)\s*-\s*(.*)')
+# section line: UP 'अनुभाग संख्या और नाम :', Bihar 'प्रभाग संख्या एवं नाम :', MP/Raj 'अनुभाग की संख्या व नाम :',
+# CG 'अनुभाग संख्या एवं नाम :', Uttarakhand 'अनुभाग संख्या व नाम' (no colon)
+SECTION_RE = re.compile(r'(?:अनुभाग|प्रभाग)\s+(?:की\s+)?संख्या\s+(?:और|एवं|व)\s+नाम\s*:?\s*(\d+)\s*-\s*(.*)')
+# 'कुल पृष्ठ 33 - का पृष्ठ 3' (printed page total); some Bihar files spell it 'पर्ष्ठ' in the text layer
+FOOTER_RE = re.compile(r'कुल\s+प\S{0,2}ष्ठ\s+(\d+)\s*-\s*(?:का\s+)?प\S{0,2}ष्ठ\s+(\d+)')
+SUMMARY_TITLES = ('निर्वाचकों का सार', 'निर्वाचकों का विवरण', 'मतदाताओं की संक्षिप्त विवरणी')
 
 
 def parse_cover(page):
@@ -302,18 +317,23 @@ def parse_cover(page):
 
 
 def parse_summary(page):
-    """Last page 'निर्वाचकों का सार': rows of male / female / third / total. Returns the last 4-number row (net)."""
+    """Last page (title 'निर्वाचकों का सार' / 'निर्वाचकों का विवरण' / 'मतदाताओं की संक्षिप्त विवरणी'): rows of male / female /
+    third / total. Returns the last row whose 4 right-most numbers add up (net). Other numbers on the row (a year such as
+    2027 at x 330-340 in MP, Rajasthan, Chhattisgarh; a row number) are ignored."""
     words = page.get_text('words')
     rows = collections.defaultdict(list)
     for w in words:
-        if re.fullmatch(r'\d+', w[4]) and w[0] > 300:
+        if re.fullmatch(r'\d+', w[4]) and w[0] > 380:
             rows[round(w[1] / 4)].append(w)
     res = []
     for k in sorted(rows):
         r = sorted(rows[k], key=lambda w: w[0])
         if len(r) == 4:
-            res.append([int(w[4]) for w in r])
-    if not res or 'निर्वाचकों का सार' not in page.get_text():
+            v = [int(w[4]) for w in r]
+            if v[0] + v[1] + v[2] == v[3]:
+                res.append(v)
+    text = page.get_text()
+    if not res or not any(t in text for t in SUMMARY_TITLES):
         return None
     v = res[-1]
     return dict(male=v[0], female=v[1], third_gender=v[2], total=v[3], rows=res)
@@ -321,10 +341,10 @@ def parse_summary(page):
 
 # --------------------------------------------------------------------------- box parsing
 
-REL_RE = re.compile(r'^(?:(\S+)\s+का\s+नाम|(अन्य))\s*:\s*(.*)$')
-NAME_RE = re.compile(r'^नाम\s*:\s*(.*)$')
-HOUSE_RE = re.compile(r'^मकान\s+संख्या\s*:\s*(.*)$')
-AGE_RE = re.compile(r'^आयु\s*:\s*(\S*)\s*लिंग\s*:\s*(.*)$')
+REL_RE = re.compile(r'^(?:(?!निर्वाचक\s)(\S+)\s+का\s+नाम|(अन्य))\s*:[\s:]*(.*)$')
+NAME_RE = re.compile(r'^(निर्वाचक\s+का\s+)?नाम\s*:[\s:]*(.*)$')
+HOUSE_RE = re.compile(r'^(मकान|गृह)\s+संख्या\s*:[\s:]*(.*)$')
+AGE_RE = re.compile(r'^(आयु|उम्र)\s*:[\s:]*(\S*)\s*लिंग\s*:[\s:]*(.*)$')
 
 
 def parse_box(box, chars, tchars, fixes):
@@ -368,6 +388,9 @@ def parse_box(box, chars, tchars, fixes):
                     rec['serial_no'] = int(tok)
                 elif EPIC_ANY.match(tok) and 'epic' not in rec:
                     rec['epic'] = tok
+                elif len(tok) >= 6 and EPIC_ODD.match(tok) and 'epic' not in rec:
+                    rec['epic'] = tok
+                    warn.append('epic_nonstandard')
                 else:
                     extra.append(('top', tok))
             continue
@@ -385,21 +408,29 @@ def parse_box(box, chars, tchars, fixes):
                 extra.append(('row', t))
             continue
         if lab != 'age' and ':' in raw:              # count repairs on the value only
-            t = t.split(':', 1)[0] + ': ' + repair(raw.split(':', 1)[1], rep)
+            v = raw.split(':', 1)[1]
+            if lab is not None and v.lstrip().startswith(':'):   # Bihar 'पिता का नाम:: X': the second colon is part of the label
+                v = v.lstrip()[1:]
+            t = t.split(':', 1)[0] + ': ' + repair(v, rep)
         fields[lab] = (t, r['c'])
         last_label = lab
+    labs = []
     if 'name' in fields:
-        rec['name'] = NAME_RE.match(fields['name'][0]).group(1).strip()
+        m = NAME_RE.match(fields['name'][0])
+        rec['name'] = m.group(2).strip(); labs.append('निर्वाचक का नाम' if m.group(1) else 'नाम')
     if 'rel' in fields:
         m = REL_RE.match(fields['rel'][0])
         rec['relation_type'] = m.group(1) or m.group(2)
         rec['relation_name'] = m.group(3).strip()
     if 'house' in fields:
-        rec['house_no'] = HOUSE_RE.match(fields['house'][0]).group(1).strip()
+        m = HOUSE_RE.match(fields['house'][0])
+        rec['house_no'] = m.group(2).strip(); labs.append(m.group(1))
     if 'age' in fields:
         m = AGE_RE.match(fields['age'][0])
-        rec['age'] = int(m.group(1)) if m.group(1).isdigit() else m.group(1)
-        rec['gender'] = m.group(2).strip()
+        rec['age'] = int(m.group(2)) if m.group(2).isdigit() else m.group(2)
+        rec['gender'] = m.group(3).strip(); labs.append(m.group(1))
+    if labs:
+        rec['labels'] = '/'.join(labs)
     for k in ('name', 'relation_type', 'relation_name', 'house_no', 'age', 'gender', 'serial_no', 'epic'):
         if k not in rec or rec[k] in ('', None):
             warn.append('missing:' + k)
@@ -429,7 +460,10 @@ def parse_box(box, chars, tchars, fixes):
             plus, minus = a - b, b - a
             # known texttrace quirk: i-matra+reph ligature ('र्ति') carries the code of 'ं' in ToUnicode
             k = len(RE_REPH_I.findall(t))
-            if not (k and plus == collections.Counter({'र': k, VIRAMA: k}) and minus == collections.Counter({'ं': k})):
+            # and the reverse (Bihar 2027 fonts, 2026-11-25): the i-matra+anusvara glyph ('लिंग', 'सिंह') carries 'र्'
+            k2 = t.count('\u093f\u0902')
+            if not (k and plus == collections.Counter({'र': k, VIRAMA: k}) and minus == collections.Counter({'ं': k})) and \
+                    not (k2 and plus == collections.Counter({'ं': k2}) and minus == collections.Counter({'र': k2, VIRAMA: k2})):
                 warn.append('glyph_mismatch:%s:+%s:-%s' % (lab, ''.join(sorted(plus.elements())),
                                                              ''.join(sorted(minus.elements()))))
         sa, sb = len(t.split()), len(re.sub(r'\s+', ' ', gl).strip().split())
@@ -464,10 +498,15 @@ def parse_pdf(path):
     ac_f, part_f = (int(m.group(2)), int(m.group(3))) if m else (None, None)
     meta = parse_cover(doc[0])
     meta['file'] = fn
-    summ = parse_summary(doc[-1])
+    summ = None
+    for pg in range(len(doc) - 1, max(0, len(doc) - 4), -1):   # last page; some Rajasthan files put a section list after it
+        summ = parse_summary(doc[pg])
+        if summ: break
     if summ:
         meta['summary'] = summ
     records = []
+    printed_pages = []
+    label_sets = collections.Counter()
     repairs = collections.Counter()      # records needing each repair
     section = (None, None)
     for pno, page in enumerate(doc):
@@ -479,6 +518,9 @@ def parse_pdf(path):
         lines = page_lines(plines, boxes)
         sec_marks = []
         for y, x, t in lines:
+            fm = FOOTER_RE.search(t)
+            if fm:
+                printed_pages.append(int(fm.group(1)))
             sm = SECTION_RE.search(t)
             if sm:
                 rr = collections.Counter()
@@ -513,6 +555,7 @@ def parse_pdf(path):
                       'gender', 'status_code', 'extra_text', 'box_marks'):
                 if k in rec:
                     out[k] = rec[k]
+            label_sets[rec.get('labels')] += 1   # per PDF only (not per record: the output columns stay as they were)
             if rep:
                 out['repairs'] = sorted(rep)
             if warn:
@@ -521,8 +564,11 @@ def parse_pdf(path):
                 repairs[k] += 1
             records.append(out)
     meta['pages'] = len(doc)
+    if printed_pages:
+        meta['printed_pages'] = collections.Counter(printed_pages).most_common(1)[0][0]
     meta['seconds'] = round(time.time() - t0, 3)
     meta['repairs'] = dict(repairs)
+    meta['label_sets'] = dict(label_sets)
     return records, meta
 
 
@@ -539,6 +585,8 @@ def validate(records, meta):
     if meta.get('summary'):
         s = meta['summary']
         v['summary_match'] = (s['total'] == n and s['male'] == g['पुरुष'] and s['female'] == g['महिला'])
+    if meta.get('printed_pages'):
+        v['pages_match'] = meta['printed_pages'] == meta.get('pages')
     ser = [r.get('serial_no') for r in records]
     v['serial_continuous'] = ser == list(range(1, n + 1))
     if not v['serial_continuous']:
@@ -554,7 +602,8 @@ def validate(records, meta):
     v['gender_bad'] = [(r.get('serial_no'), r.get('gender')) for r in records if r.get('gender') not in GENDERS][:20]
     v['with_warnings'] = sum(1 for r in records if r.get('text_warnings'))
     v['warning_kinds'] = dict(collections.Counter(w.split(':')[0] for r in records for w in r.get('text_warnings', [])))
-    v['ok'] = (v['count_match'] and v['serial_continuous'] and not bad_epic and not v['age_bad'] and not v['gender_bad'])
+    v['ok'] = (v['count_match'] and v['serial_continuous'] and not bad_epic and not v['age_bad'] and not v['gender_bad']
+               and v.get('summary_match', True) and v.get('pages_match', True))
     return v
 
 

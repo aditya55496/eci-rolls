@@ -9,8 +9,15 @@ Rule: a record whose EPIC is not in the AC's 2027 roll gets the 2027 EPIC with t
 2027 record has the same name or relative's name (visual comparison as in the benchmark). The OCR value is kept in
 'epic_ocr' and the record gets 'epic_from_2027': true. Nothing else changes.
 """
+import os
 import re
 import unicodedata
+
+# lang-tam 2026-11-25 (ECI_EPICFIX2_GUARD=1, default off): fix2 changed a RIGHT Tamil EPIC (YIG0009506 -> ZHN0009506, held-out
+# U07-7: the voter is not in the 2027 roll; another 2027 voter has the same 7 digits, gender, age gap and the label 'father').
+# Tamil SIR has few relation labels, so the label is no evidence. With the guard, fix2 changes the EPIC only when the name or the
+# relative's name is close (rapidfuzz ratio >= 60 on the visual forms); else the EPIC stays and the record gets the flag 'epic'.
+FIX2_GUARD = os.environ.get('ECI_EPICFIX2_GUARD', '0') == '1'
 
 
 def _visual(s):
@@ -60,6 +67,13 @@ def fix2(recs, idx, age_gap=1):
         same_house = _visual(h.get('house_no')) == _visual(r.get('house_no'))
         same_label = bool(_label(h)) and _visual(_label(h)) == _visual(r.get('relation_label'))
         if _visual(h.get('gender')) == _visual(r.get('gender')) and gap in (age_gap - 1, age_gap) and (same_house or same_label):
+            if FIX2_GUARD:
+                from rapidfuzz import fuzz
+                close = any(_visual(r.get(k)) and fuzz.ratio(_visual(r.get(k)), _visual(h.get(k))) >= 60 for k in ('name', 'relation_name'))
+                if not close:
+                    if 'epic' not in (r.get('flags') or []):
+                        r['flags'] = list(r.get('flags') or []) + ['epic']
+                    continue
             r['epic_ocr'], r['epic'], r['epic_from_2027'] = e, h['epic'], True
             if 'epic' in (r.get('flags') or []):
                 r['flags'] = [f for f in r['flags'] if f != 'epic']

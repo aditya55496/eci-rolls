@@ -6,6 +6,7 @@ Box layout (SIR roll and supplement):
 We find the inner ruled cells from the line mask, then text lines by a
 horizontal ink profile. Works at any resolution.
 """
+import os
 import cv2
 import numpy as np
 
@@ -32,13 +33,18 @@ def cells(gray):
     return bw, (photo[0] if photo else None), small
 
 
-def trim(im, margin=4):
-    """Cut a field crop to its ink (plus a margin); ruled lines removed first."""
+def trim(im, margin=4, dark=None):
+    """Cut a field crop to its ink (plus a margin); ruled lines removed first.
+    dark (job4, 2026-11-25, English lines): only pixels darker than this count as ink for the cut. English SIR pages are JPEG
+    with a light grey haze (values 200-250) next to some lines; the mask took it as ink, so name crops kept a long empty tail and
+    the English CRNNs read a '1' / "'" / '7' there (gold: 132 of 2,058 names of one model, all in the same box positions)."""
     if im.size == 0: return im
     bw = _mask(im)
     lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(8, im.shape[1] // 3), 1)))
     lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(6, int(im.shape[0] * 0.8)))))
     ink = cv2.subtract(bw, lines)
+    if dark is not None:
+        ink[im >= dark] = 0
     cols = np.where(ink.sum(0) > 0)[0]; rows = np.where(ink.sum(1) > 0)[0]
     if not len(cols): return im
     # 2026-11-23: a thin sliver of ink (<= 6 px wide) at either end, >= 20 px away from the rest, is a frame edge or noise
@@ -69,6 +75,7 @@ STAMP_CHECK = False
 TEMPLATE_OVERRIDE = None
 LAST_CENTRES = None
 LAST_STAMP = None
+DASH_IDS = set()   # id() of the dash-line crops of the current page (segment_eng dash=True); eci_ocr reads them as '-'
 
 
 def stamp_below(gray, xl, px):
@@ -187,6 +194,7 @@ def segment(gray):
 # lines 1 and 2 as one ink run), so the cut points come from the grid, each moved to the emptiest rows near it.
 ENG_PITCH = 0.1035      # line pitch / box height
 ENG_MAX_LINES = 8
+ENG_DARK = int(os.environ.get('ECI_ENG_DARK', '170')) or None   # job4: ink threshold of the English line cut (0 = off)
 
 
 def _runs_min(prof, c0, c1):
@@ -202,8 +210,38 @@ def _runs_min(prof, c0, c1):
     return c0 + (r0 + r1 + 1) // 2
 
 
-def segment_eng(gray):
-    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom)."""
+# job3 (2026-11-25): the grid cut between two touching English lines often goes through the descenders of the upper line (j, y,
+# g, p, q): 'Indrajit' -> 'Indraiit', 'Piyarun' -> 'Pivarun', 'Begum' -> 'Bequm', and CRNN + Tesseract then agree on the wrong
+# text (held-out check, 12 S05/S14 parts: 8 of 12 wrong 'agreeing' values). ECI_ENG_DESC = F (> 0): each line crop reaches F x the
+# line pitch below its cut; ink components that start below the cut (the next line) are whitened, components that cross the cut
+# (this line's descenders) are kept. Default 0 = engpipe crops (the CRNNs are trained on the crops of the setting in use).
+ENG_DESC = float(os.environ.get('ECI_ENG_DESC', '0') or 0)
+
+
+def _with_descenders(gray, y0, y1, x0, x1, ext):
+    y2 = min(gray.shape[0] - 3, y1 + ext)
+    if y2 <= y1 or y1 <= y0: return gray[y0:y1, x0:x1]
+    m = min(y0, max(2, ext // 2))                       # rows above the band: to see what continues from the line above
+    band = gray[y0 - m:y2, x0:x1].copy()
+    bw = _mask(band); cut = y1 - y0 + m
+    n, lab, st, _ = cv2.connectedComponentsWithStats(bw, 8)
+    keep = np.zeros(bw.shape, np.uint8)
+    for j in range(1, n):
+        x, y, w, h, _a = st[j]
+        if y >= cut - 1: continue                       # starts below the cut: the next line
+        if y == 0 and y + h <= m + 0.35 * (cut - m): continue  # reaches above the margin and ends high: the upper line's descender
+        if y + h <= m: continue                         # entirely above the band
+        keep[lab == j] = 1
+    keep = cv2.dilate(keep, np.ones((3, 3), np.uint8)) > 0
+    band[~keep & ((bw > 0) | (band > 140))] = 255     # removed components and their grey edges -> white
+    ext_ = band[cut:]; ext_[~keep[cut:]] = 255          # below the cut: only this line's descenders (+ their grey edge)
+    return band[m:]
+
+
+def segment_eng(gray, dash=False):
+    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
+    dash=True (lang-tam 2026-11-25, Tamil rolls): a band with only a short flat mark right after the name or relative line is
+    kept as a line (the SIR print wraps the ' -' after a long name to its own line; the band test below dropped it)."""
     h, w = gray.shape
     bw, photo, small = cells(gray)
     out = {}
@@ -252,10 +290,22 @@ def segment_eng(gray):
         band = prof[a:b]
         # a text line: enough ink rows (>= 30 % of the pitch) - stamps and stray marks in the empty lower part are thinner
         if (band > thr).sum() < 0.3 * P:
+            if dash and k in (1, 2) and (band > thr).sum() >= 1:
+                sub = body[a:b]
+                ys, xs = np.where(sub > 0)
+                if len(xs) and ys.max() - ys.min() <= 0.3 * P and xs.max() - xs.min() <= 0.8 * P and xs.min() < 0.5 * sub.shape[1]:
+                    y0, y1 = y_body + a, y_body + min(b, len(prof))
+                    out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
+                    DASH_IDS.add(id(out[f'line{k}']))
+                    k += 1
+                    continue
             if k >= 4: break     # empty band after >= 4 lines: end of the text block
             continue
         y0, y1 = y_body + a, y_body + min(b, len(prof))
-        out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]))
+        if ENG_DESC:
+            out[f'line{k}'] = trim(clean_edges(_with_descenders(gray, y0, y1, xl, px, int(ENG_DESC * P))), dark=ENG_DARK)
+        else:
+            out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
         k += 1
         if k >= ENG_MAX_LINES: break
     return out

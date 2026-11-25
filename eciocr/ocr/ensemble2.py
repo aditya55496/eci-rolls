@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
 from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
+import parse_tam
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -51,14 +52,50 @@ LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters o
 LANG = 'HIN'
 
 
+_visual_hin = visual
+
+
+def visual(s):   # lang-tam: Tamil sequences that print the same (ௌ = ெள, ஂ = ்) are one value
+    v = _visual_hin(s)
+    return v.replace('\u0bcc', '\u0bc6\u0bb3').replace('\u0b82', '\u0bcd') if LANG == 'TAM' else v
+
+
 def valid(f, v):
+    if LANG == 'TAM': return parse_tam.valid_tam(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
 def hvis(f, v):
     """visual form used to compare an engine value with the 2027 hint"""
     if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
+    if LANG == 'TAM' and f == 'relation_label': return parse_tam.rel_canon(v)
+    if LANG == 'TAM' and f in ('name', 'relation_name'):   # SIR prints 'ராமசாமி -' (empty 2nd part), the 2027 roll 'ராமசாமி'
+        return re.sub(r'(\s*-)+$', '', visual(v))
     return visual(v)
+
+
+# 2026-11-25 (job3): English rolls, hinted box, a hint field (or age) that no engine reads as in the 2027 roll: when every engine
+# reads the SAME valid value and the engines include at least one CRNN and Tesseract (independent readers), take it unflagged:
+# the print differs from 2027 (new spelling, house number, age) - the same evidence the no-hint rule accepts. ECI_ENG_AGREE=1.
+# ECI_ENG_AGREE=2 (held-out check with Opus reads, 12 non-gold S05/S14 parts): agreeing engines were wrong in 12 of 117 boxes, all
+# where the value is CLOSE to the 2027 value (1-2 letters: clipped descenders j/y/g -> i/v/q, I/l) or a truncated part of it
+# (a wrap line lost); ages and clearly different values were right (82 of 83). Mode 2 takes only ages and values whose
+# normalised edit distance to the 2027 value is >= 0.34 and that are not a prefix / suffix of it (or it of them).
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)
+ENG_CODE = os.environ.get('ECI_ENG_CODE', '0') != '0'
+
+
+def agree_eng(f, vals, names, hv=''):
+    if not (ENG_AGREE and LANG == 'ENG' and names and len(vals) >= 2): return False
+    if not any(n.startswith('crnn') for n in names) or not any(n.startswith('tess') for n in names): return False
+    v = [visual(x) for x in vals]
+    if not (v[0] and all(x == v[0] for x in v) and valid(f, vals[0])): return False
+    if ENG_AGREE >= 2 and f != 'age':
+        from rapidfuzz.distance import Levenshtein
+        a, b = v[0].lower(), visual(str(hv or '')).lower()
+        if not b or a.startswith(b) or b.startswith(a) or a.endswith(b) or b.endswith(a): return False
+        if Levenshtein.normalized_distance(a, b) < 0.34: return False
+    return True
 
 
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
@@ -78,7 +115,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             # the field stays flagged. gold_v3 (GE 2024): 20 of 82 stamped boxes had S/E/R read as '#'. Only for boxes with a
             # DELETED stamp (stamp=True from segment.LAST_STAMP): on unstamped boxes the CRNN reads real '#' codes as R/E
             # (gold_v3 measured run: 4 such errors without this condition).
-            if CODE_CRNN and stamp and pix and all(t in ('', '#') for t in tv) and names:
+            # job3 (ECI_ENG_CODE=1): English rolls have no stamp test; when the pixel test says a code is printed and NO Tesseract
+            # reading gave anything (not even '#'), the first CRNN's letter code is taken (the field stays flagged)
+            eng_code = ENG_CODE and LANG in ('ENG', 'TAM') and pix and all(t == '' for t in tv)
+            if ((CODE_CRNN and stamp) or eng_code) and pix and all(t in ('', '#') for t in tv) and names:
                 j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
                 if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
                     out[f] = vals[j]
@@ -110,7 +150,16 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         if hint and f in HINT_FIELDS and hint.get(f):
             h = hvis(f, hint[f])
             m = next((v for v in vals if hvis(f, v) == h), None)
+            if m is not None and LANG == 'TAM' and f in ('name', 'relation_name'):
+                # lang-tam: the hint compare ignores a final ' -' (SIR prints it, 2027 not): the hyphen itself is voted among the
+                # matching engines; a tie is flagged (Tesseract drops the hyphen: 3 silent errors in the Tesseract-only gold run)
+                ms = [v for v in vals if hvis(f, v) == h]
+                hy = collections.Counter(v for v in ms)
+                (m, k), *rest = hy.most_common()
+                if rest and rest[0][1] == k:
+                    out[f] = m; flags.append(f); continue
             if m is not None: out[f] = m; continue
+            if agree_eng(f, vals, names, hint[f]): out[f] = vals[0]; continue
             out[f] = collections.Counter(vals).most_common(1)[0][0]
             if names and collections.Counter(vals).most_common(1)[0][1] * 2 <= len(vals):
                 for p in PREF.get(f, []):
@@ -120,6 +169,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
         if hint and f == 'age' and hint.get('age', '').isdigit():
             ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
+            if agree_eng(f, vals, names, hint['age']): out[f] = vals[0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue
         c = collections.Counter(vis); top, n = c.most_common(1)[0]
@@ -145,10 +195,65 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
                 if not v: continue
+                if ENG_CODE and LANG in ('ENG', 'TAM') and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
                 w[visual(v)] += (cf.get(LINE_OF[f], CONFW) if nm.startswith('crnn') else CONFW)
             if w:
                 top = w.most_common(1)[0][0]
                 out[f] = next(c[f] for c in cands if visual(c[f]) == top)
+    return out, flags
+
+
+# ---------------------------------------------------------------- job4 (2026-11-25): English rolls WITHOUT a 2027 roll
+# Measured on the job4 dev gold (440 boxes of 11 states, non-gold; rules chosen there, then tested once on the English gold):
+# requiring ALL engines to agree (decide() without a hint) flags 24-38 % of English boxes, because Tesseract misreads names /
+# houses that the English CRNNs read right. decide_eng_nohint():
+#   stage 1 (stage1=True, the first 2 CRNNs, trained on different data): a field is accepted when both CRNNs read the same
+#            valid value. A box with every field accepted is done; otherwise stage 2.
+#   stage 2: accepted when all CRNNs agree on a valid value and a Tesseract reading equals it; or when more than half of the
+#            CRNNs and a Tesseract reading agree on a valid value. Else flagged (value: majority of all engines, CRNN order on
+#            ties). An EPIC / serial flagged only for missing Tesseract support is settled per PDF (eci_ocr: EPIC prefix
+#            seen in >= 3 other records of the PDF; serial: sequence_confirm).
+#   plausibility (both stages): gender Male with a Husband label / Female with a Wife label, age outside 18..120 -> flag.
+NOHINT_SUPPORT = {}   # last decide_eng_nohint call: {field: 'crnn_unanimous'} for fields flagged only for missing Tesseract support
+
+
+def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
+    global NOHINT_SUPPORT
+    NOHINT_SUPPORT = {}
+    out, flags = {}, []
+    ci = [i for i, nm in enumerate(names) if nm.startswith('crnn')]
+    ti = [i for i, nm in enumerate(names) if nm.startswith('tess')]
+    if stage1: ci = ci[:2]
+    for f in FIELDS:
+        vals = [c[f] for c in cands]
+        if f == 'code':
+            tv = [vals[i] for i in ti] or vals
+            out[f] = (next((v for v in tv if v), '#') if pix else '')
+            if pix and not any(tv): flags.append(f)
+            continue
+        cv = [visual(vals[i]) for i in ci]; tvv = [visual(vals[i]) for i in ti]
+        allc = collections.Counter(v for v in cv + tvv if v)
+        if allc:
+            top_all = max(allc, key=lambda v: (allc[v], -(cv.index(v) if v in cv else 99)))
+            out[f] = next(vals[i] for i in ci + ti if visual(vals[i]) == top_all)
+        else:
+            out[f] = vals[ci[0]] if ci else ''
+        c = collections.Counter(cv); top, n = c.most_common(1)[0] if cv else ('', 0)
+        if f == 'part_no' and not top: continue
+        ok = False
+        if n == len(cv) and cv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            if stage1: ok = len(cv) >= 2
+            elif top in tvv: ok = True
+            else: NOHINT_SUPPORT[f] = 'crnn_unanimous'
+            if ok or f in NOHINT_SUPPORT: out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        elif not stage1 and n * 2 > len(cv) and top in tvv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        if not ok and f in CORE: flags.append(f)
+    lab = (out.get('relation_label') or '').lower()
+    if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female') \
+            or (lab.startswith('கணவ') and out.get('gender') == 'ஆண்') or (lab.startswith('மனைவி') and out.get('gender') == 'பெண்'):
+        if 'gender' not in flags: flags.append('gender')
+    if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags
 
 

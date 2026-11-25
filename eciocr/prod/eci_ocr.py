@@ -34,6 +34,7 @@ from segment import segment, segment_eng, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
+import parse_tam                                    # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -168,7 +169,10 @@ class Engines:
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
     def _crnn_batch(sess, inp, CH, ims):
-        H = 48; xs = []
+        # job4: input height from the model (48 = all production models; 32 = height-32 students)
+        H = sess.get_inputs()[0].shape[2]
+        H = H if isinstance(H, int) else 48
+        xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
             w = min(800, max(8, int(im.shape[1] * H / im.shape[0])))
@@ -262,7 +266,7 @@ class Engines:
                 f[k] = txt; cf[k] = round(c, 4)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
-        groups = {'line': ('eng' if lang == 'ENG' else 'hin', 7, None), 'num': ('eng', 7, '0123456789'),
+        groups = {'line': (TESS_LANG.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
                   'epic': ('eng', 7, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/'), 'code': ('eng', 7, '#SERMQ0123456789')}
         gk = {g: [] for g in groups}
         for b, k in keys:
@@ -286,6 +290,13 @@ class Engines:
                     txts = self.tess_many([prep(segs_list[b][k]) for b, k in gk[g]], tl, psm, wl, tmp)
                 for (b, k), txt in zip(gk[g], txts): res[b][tn][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
+        if _segmod.DASH_IDS:   # lang-tam: a band with only a flat short mark (segment_eng dash=True) is the wrapped ' -': text '-'
+            for b, segs in enumerate(segs_list):
+                for k, im in segs.items():
+                    if id(im) in _segmod.DASH_IDS:
+                        for nm in res[b]:
+                            res[b][nm][0][k] = '-'
+                            if k in res[b][nm][1]: res[b][nm][1][k] = 1.0
         return res
 
 
@@ -298,7 +309,7 @@ def code_pixel(box_gray, lang='HIN'):
     if not small: return False
     x, y, cw, ch = small[0]
     m = _mask(box_gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
-    if lang == 'ENG' and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
+    if lang in LATIN_TPL and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
         n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
         H, W = m.shape
         for j in range(1, n):
@@ -358,6 +369,12 @@ def parse_heading(lines, lang='HIN'):
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
+        if lang == 'TAM':   # 'பிரிவு எண் மற்றும் பெயர் : 1-<name>' (Tesseract tam)
+            if ':' in t and re.search(r'பிரிவு|எண்', t):
+                v = t.split(':', 1)[1].strip(' :.-')
+                m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
+                if m: return f'{m.group(1)}-{m.group(2).strip()}'
+            continue
         if lang == 'ENG':   # 'Section No and Name : 1-Lozar ,Aldona'
             m = re.search(r'Sect\w*\s+No\.?\s+and\s+Name\s*[:;.]?\s*([0-9]+)\s*-?\s*(.*)', t)
             if m: return f'{m.group(1)}-{m.group(2).strip()}'
@@ -381,6 +398,13 @@ _OPT = {}
 
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
+ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)   # see ensemble2.agree_eng and sequence_confirm
+ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,line').split(',')))
+# lang-tam (2026-11-25): Tamil SIR rolls (S22, U07) use the English SIR box template: segment_eng, the ENG code-cell test, Tesseract
+# 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
+LATIN_TPL = ('ENG', 'TAM')
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam'}
+PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -402,20 +426,31 @@ def load_hints(path):
     return H
 
 
-def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
+DUMP = os.environ.get('ECI_DUMP', '0') == '1'
+# job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
+ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
+CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+
+
+def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
-    if lang == 'ENG':
-        # English: line roles voted over all engines, then every engine parsed with the same roles (parse_eng)
+    if lang in LATIN_TPL:
+        # English / Tamil: line roles voted over all engines, then every engine parsed with the same roles (parse_eng / parse_tam)
+        P, from_l = PARSERS[lang]
         nl = max([int(k[4:]) + 1 for n in names for k in per_engine[n][0] if k.startswith('line')], default=0)
-        roles = parse_eng.box_roles([per_engine[n][0] for n in names], nl)
-        per_engine = {n: (parse_eng.canonical(per_engine[n][0], roles), parse_eng.canonical_conf(per_engine[n][1], roles)) for n in names}
-        cands = [parse_eng.from_lines_eng(per_engine[n][0]) for n in names]
+        roles = P.box_roles([per_engine[n][0] for n in names], nl)
+        per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
+        cands = [from_l(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
-    out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if lang in LATIN_TPL and ENG_NOHINT and hint is None:   # lang-tam: Tamil too
+        out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
+    else:
+        out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
@@ -438,9 +473,10 @@ def process_page(task):
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
+    _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang == 'ENG':
-            segs_list.append({k: im for k, im in segment_eng(g).items() if im.size}); stamps.append(False)
+        if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
+            segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM').items() if im.size}); stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
@@ -450,26 +486,47 @@ def process_page(task):
     for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
-        if lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
-            heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], 'eng' if lang == 'ENG' else 'hin', 7), lang)))
+        if lang in LATIN_TPL or not _E.crnn:   # English / Tamil headings: Tesseract reads the print well (and runs without CRNNs)
+            heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], TESS_LANG.get(lang, 'hin'), 7), lang)))
         else:
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
-    if K and _OPT['hints']:
+    if lang in LATIN_TPL and ENG_NOHINT and not _OPT['hints'] and K >= 2:
+        # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
+        # boxes where the 2 CRNNs do not agree on every field
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
+        names1 = _E.names[:2] + _E.tnames
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]]
+        if need:
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
+                                 tess_groups={'line', 'num', 'epic'}, lang=lang)
+            for i, r2 in zip(need, more):
+                for tn in _E.tnames:
+                    t1 = reads[i][tn]; t2 = r2.pop(tn)
+                    t1[0].update(t2[0])
+                reads[i].update(r2)
+        tm['stage2_boxes'] = len(need)
+        stage1_only = set(range(len(reads))) - set(need)
+        K = -2   # marker: names of stage-1 boxes = the first 2 CRNNs, decided with stage1=True
+    # job4 (2026-11-25): ECI_CASCADE_NOHINT=1 runs the cascade without 2027 hints too: stage 2 only for boxes stage 1 flags
+    elif K and (_OPT['hints'] or CASCADE_NOHINT):
         # cascade: stage 1 = first K CRNNs + Tesseract Latin fields; the rest only for boxes stage 1 cannot settle
         # ENG: the Tesseract text lines are read in stage 1 too (the English CRNNs are not yet trusted alone; the roles of
         # the wrap lines come from all engines)
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)),
-                              tess_groups={'num', 'epic', 'code'} | ({'line'} if lang == 'ENG' else set()), lang=lang)
+        # ENG_S1_TESS (job3, 2026-11-25): Tesseract groups of stage 1 for English rolls (env ECI_ENG_S1_TESS, comma list of
+        # num/epic/code/line; default all four = engpipe behaviour). With trusted English CRNNs, 'num,code' keeps Tesseract
+        # text lines (95 % of the Tesseract time) for the stage-2 boxes only.
+        s1t = ENG_S1_TESS if lang in LATIN_TPL else {'num', 'epic', 'code'}
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t, lang=lang)
         names1 = _E.names[:K] + _E.tnames
         need = []
         for i, r in enumerate(reads):
             _, fl, _, hinted, _ = decide_box(r, names1, pix[i], _OPT['hints'], stamps[i], lang)
-            if fl or not hinted: need.append(i)
+            if fl or (not hinted and not CASCADE_NOHINT): need.append(i)
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))),
-                                 tess_groups=set() if lang == 'ENG' else {'line'}, lang=lang)
+                                 tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang in LATIN_TPL else {'line'}, lang=lang)
             for i, r2 in zip(need, more):
                 for tn in _E.tnames:
                     t1 = reads[i][tn]; t2 = r2.pop(tn)
@@ -487,13 +544,22 @@ def process_page(task):
     for i, (b, r) in enumerate(zip(boxes, reads)):
         for y, h in heads:
             if y <= b[1] + 5 and h: section = h
-        nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
-        out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
+        if K == -2:
+            nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
+            out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
+        else:
+            nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
+            out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
+        if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
+            readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, lang=lang, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
+            rec['cands'] = {n: c for n, c in zip(nm, cands)}
+            rec['confs'] = decide_box.confs
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     tm['total'] = round(time.time() - t0, 3)
@@ -515,9 +581,29 @@ def sequence_confirm(recs):
         if 'serial_no' not in r['flags'] or s[i] is None: continue
         prev_ok = (s[i - 1] is not None and s[i - 1] + 1 == s[i]) if i > 0 else s[i] == 1
         next_ok = (s[i + 1] is not None and s[i + 1] - 1 == s[i]) if i + 1 < len(s) else prev_ok and i > 0
+        if (ENG_AGREE and r.get('lang') == 'ENG' and i + 2 < len(s) and (i == 0 or recs[i - 1]['page'] < r['page'] - 1)
+                and s[i + 1] is not None and s[i + 2] is not None and s[i + 1] - 1 == s[i] == s[i + 2] - 2
+                and recs[i + 2]['page'] == r['page']):
+            # job3 (2026-11-25, ECI_ENG_AGREE): first record after pages that were not read (--pages): the next two records
+            # of the same page confirm it (no previous neighbour exists)
+            prev_ok = next_ok = True
         if prev_ok and next_ok:
             r['flags'].remove('serial_no'); r['readings'].pop('serial_no', None)
             r['serial_by_sequence'] = True; n += 1
+    return n
+
+
+def eng_epic_prefix(recs, min_other=3):
+    """job4 (English, no hints): an EPIC flagged only because no Tesseract reading confirmed it (all CRNNs read the same
+    valid EPIC) is accepted when its 3-letter prefix is the prefix of >= 3 OTHER unflagged EPICs of the same PDF."""
+    pf = collections.Counter(r['epic'][:3] for r in recs if 'epic' not in r['flags'] and ensemble2.valid('epic', r['epic'] or ''))
+    n = 0
+    for r in recs:
+        un = r.get('readings', {}).get('_nohint_crnn_unanimous', [])
+        if 'epic' in r['flags'] and 'epic' in un and pf[r['epic'][:3]] >= min_other:
+            r['flags'].remove('epic'); r['readings'].pop('epic', None); r['epic_by_prefix'] = True; n += 1
+    for r in recs:
+        r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
     return n
 
 
@@ -557,13 +643,14 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:HIN|ENG)-(\d+)-', b)
+    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:[A-Z]{3})-(\d+)-', b)
     return dict(state=f'{m.group(1)}{m.group(2)}', ac=int(m.group(3)), roll_part=int(m.group(4))) if m else {}
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG'): return opt.upper()
-    return 'ENG' if '-ENG-' in os.path.basename(path).upper() else 'HIN'
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM'): return opt.upper()
+    b = os.path.basename(path).upper()
+    return 'ENG' if '-ENG-' in b else 'TAM' if '-TAM-' in b else 'HIN'
 
 
 def parse_pages(spec, n):
@@ -597,7 +684,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-* file names, else HIN), HIN or ENG')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, TAM for *-TAM-* file names, else HIN), HIN, ENG or TAM')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
     a = ap.parse_args()
     crnn = a.crnn or [os.environ.get('ECI_CRNN', '/data/models/crnn/c1')]
@@ -674,6 +761,8 @@ def main():
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
+            if ENG_NOHINT and not _HINTS and recs:
+                info['epic_by_prefix'] = eng_epic_prefix(recs)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
