@@ -203,7 +203,9 @@ class Engines:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
             w = min(int(800 * xst), max(8, int(im.shape[1] * H / im.shape[0] * xst)))
             xs.append((255 - cv2.resize(im, (w, H), interpolation=cv2.INTER_CUBIC)).astype(np.float32) / 255.0)
-        W = (max(x.shape[1] for x in xs) + 3) // 4 * 4
+        # job1 speed: notrim models (trim=False) emit the last character late, inside the padding: every crop gets at least
+        # NOTRIM_PAD px of blank on the right (else a batch without padding, e.g. a small ECI_CRNN_BATCH, drops it)
+        W = (max(x.shape[1] for x in xs) + (0 if trim else NOTRIM_PAD) + 3) // 4 * 4
         X = np.zeros((len(xs), 1, H, W), np.float32)
         for i, x in enumerate(xs): X[i, 0, :, :x.shape[1]] = x
         Y = sess.run(None, {inp: X})[0]
@@ -499,6 +501,7 @@ _OPT = {}
 # job1 speed (2026-11-25): ECI_CRNN_BATCH = crops per CRNN batch after the width sort (default 64 = unchanged). Smaller batches pad
 # less (a crop of a batch is padded to the widest one) and use the CPU caches better; readings change only by the padding.
 CRNN_BATCH = max(1, int(os.environ.get('ECI_CRNN_BATCH') or 64))
+NOTRIM_PAD = int(os.environ.get('ECI_NOTRIM_PAD') or 32)   # px of blank right of each crop for 'notrim' models (see _crnn_batch)
 # job1 speed (2026-11-25): ECI_TESS_LAZY=1 (Hindi cascade with 2027 hints; default off): stage 1 reads the Tesseract EPIC only for
 # boxes whose stage-1 CRNN EPIC is not an EPIC of the 2027 roll, and the Tesseract code only where the pixel test finds a code;
 # stage-2 boxes get the EPIC read they skipped. Output identical: with a 2027 match by a CRNN EPIC, decide() takes the 2027 EPIC
