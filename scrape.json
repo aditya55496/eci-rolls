@@ -33,6 +33,22 @@
     "fetch-hi": [
       "python",
       "fetch_hi_task.py"
+    ],
+    "ocr-any": [
+      "python",
+      "ocr_any_task.py"
+    ],
+    "repair-any": [
+      "python",
+      "repair_any_task.py"
+    ],
+    "parquet-any": [
+      "python",
+      "parquet_any_task.py"
+    ],
+    "ssrtext": [
+      "python",
+      "ssrtext_task.py"
     ]
   }
 }

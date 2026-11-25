@@ -2,14 +2,36 @@
 
 pp=True applies cheap, safe rules: Latin digits for serial/part/age, EPIC
 character fixes, closed sets for gender and relation label.
+
+Printed label variants (2026-11-25, branch hinvar; collected from the 2027 text layers of 5 states and SIR page images of
+11 Hindi-script states/UTs, see models2/hinvar/NOTES.md):
+  name     'नाम :' (UP, Uttarakhand, Haryana, Chandigarh) | 'निर्वाचक का नाम :' (Bihar, MP, Rajasthan, Chhattisgarh,
+           Jharkhand, Delhi) | 'नाँउ :' (West Bengal Darjeeling ACs, Nepali)
+  relative '<पिता|पति|माता> का नाम:' | 'अन्य:' | 'पिता:' (Chandigarh) | 'पिताको नाँउ:' (Nepali); Bihar prints 'पिता का नाम::'
+  house    'मकान संख्या :' | 'गृह संख्या :' (MP, Rajasthan, Jharkhand) | 'मकान नं. :' (Chandigarh) | 'घर संख्या :' (Nepali)
+  age      'आयु :' | 'उम्र :' (Bihar, MP, Rajasthan, Chhattisgarh, Jharkhand) | 'उमेर :' (Nepali); Bihar prints 'लिंग: :'
+  gender   'पुरुष' | 'महिला' | 'तृतीय लिंग' | 'स्त्री' (Nepali, = महिला)
+The values always come after the label colon, so the colon split works for every variant. Without a readable colon the
+known label words are cut off (before 2026-11-25: the first word only, which left 'का नाम ...' of 'निर्वाचक का नाम').
+Relation labels and genders are given in the canonical (UP) form, so the 2027 hints and the validators work unchanged.
 """
 import re, unicodedata
 from rapidfuzz import process, fuzz
 
 LABELS = ['पिता का नाम', 'पति का नाम', 'माता का नाम', 'अन्य']
 GENDERS = ['पुरुष', 'महिला', 'तृतीय लिंग']
+# printed relation labels of other states -> canonical label (snap() runs over the keys, then maps)
+REL_VARIANTS = {**{l: l for l in LABELS}, 'पिता': 'पिता का नाम', 'पति': 'पति का नाम', 'माता': 'माता का नाम',
+                'पिताको नाँउ': 'पिता का नाम', 'पतिको नाँउ': 'पति का नाम', 'आमाको नाँउ': 'माता का नाम', 'माताको नाँउ': 'माता का नाम',
+                'अरु': 'अन्य'}
+GENDER_VARIANTS = {**{g: g for g in GENDERS}, 'स्त्री': 'महिला'}
 DEV2LAT = str.maketrans('०१२३४५६७८९', '0123456789')
 CODE_RE = re.compile(r'^\s*([#A-Z][0-9A-Z]?)\s+([0-9०-९]+)\s*$')
+# label words at the start of a line (used only when the line has no colon)
+NAME_LAB = re.compile(r'^\s*(?:निर्वाचक\s*का\s*)?(?:नाम|नाँउ|नांउ|नाउ)\s*[:;ः]?\s*')
+HOUSE_LAB = re.compile(r'^\s*(?:मकान|गृह|घर)\s*(?:संख्या|नं\.?)\s*[:;ः]?\s*')
+AGE_LAB = r'(?:आयु|उम्र|उमेर)'
+REL_LAB = re.compile(r'^\s*((?:पिता|पति|माता|आमा)(?:\s*का\s*नाम|\s*को\s*नाँउ)?|अन्य)\s+(?=\S)')
 
 
 def norm(s):
@@ -18,9 +40,20 @@ def norm(s):
     return re.sub(r'\s+', ' ', s).strip(' :;_')
 
 
-def after_colon(s):
+def after_colon(s, lab=None):
+    """Value after the label colon. No colon: cut the label words `lab` (regex) when they match, else the first word."""
     s = s.replace('：', ':')
-    return s.split(':', 1)[1] if ':' in s else re.sub(r'^\S+\s*', '', s)
+    if ':' in s: return s.split(':', 1)[1]
+    if lab is not None:
+        m = lab.match(s)
+        if m and m.end(): return s[m.end():]
+    return re.sub(r'^\S+\s*', '', s)
+
+
+def canon(v, variants, cutoff=60):
+    """Snap to the closest printed variant, return its canonical form (unchanged if nothing is close)."""
+    m = process.extractOne(v, list(variants), scorer=fuzz.ratio)
+    return variants[m[0]] if m and m[1] >= cutoff else v
 
 
 def snap(v, choices, cutoff=60):
@@ -39,7 +72,7 @@ def fix_epic(e):
     return e
 
 
-LABEL_COLON = re.compile(r'(नाम|संख्या|आयु|लिंग|लिग|अन्य)\s*[;ःः:]')
+LABEL_COLON = re.compile(r'(नाम|नाँउ|संख्या|नं\.|आयु|उम्र|उमेर|लिंग|लिग|अन्य|पिता|पति|माता)\s*[;ःः:]')
 
 
 def fix_raw(t):
@@ -64,15 +97,19 @@ def from_lines(f, pp=True):
         if pre and not out['code']: out['code'] = pre.replace(' ', '')
     out['part_no'] = norm(f.get('part', ''))
     out['epic'] = norm(f.get('epic', ''))
-    out['name'] = norm(after_colon(f.get('line0', '')))
+    out['name'] = norm(after_colon(f.get('line0', ''), NAME_LAB))
     l1 = f.get('line1', '')
     if ':' in l1:
         a, b = l1.split(':', 1); out['relation_label'], out['relation_name'] = norm(a), norm(b)
     else:
-        out['relation_name'] = norm(l1)
-    out['house_no'] = norm(after_colon(f.get('line2', '')))
+        m = REL_LAB.match(l1)   # colon not read (CRNNs drop it after Chandigarh's short label 'पिता:')
+        if m: out['relation_label'], out['relation_name'] = norm(m.group(1)), norm(l1[m.end():])
+        else: out['relation_name'] = norm(l1)
+    out['house_no'] = norm(after_colon(f.get('line2', ''), HOUSE_LAB))
     l3 = norm(f.get('line3', ''))
     m = re.search(r':\s*([0-9०-९OoIl]+)', l3)
+    if not m: m = re.search(AGE_LAB + r'\s*[;ः]?\s*([0-9०-९]+)(?=\s|$)', l3)   # colon not read
+    if not m: m = re.match(r'([0-9०-९]+)(?=\s|$)', l3)   # label not read, colon stripped by norm(): ': 19 लिंग' (c3q on 'उम्र')
     if m: out['age'] = m.group(1)
     parts = l3.split(':')
     if len(parts) >= 3: out['gender'] = norm(parts[-1])
@@ -86,8 +123,8 @@ def from_lines(f, pp=True):
         for k in ('serial_no', 'part_no', 'age'):
             out[k] = re.sub(r'[^0-9]', '', out[k].translate(DEV2LAT).translate(str.maketrans('OoIl', '0011')))
         out['epic'] = fix_epic(out['epic'])
-        if out['gender']: out['gender'] = snap(out['gender'], GENDERS)
-        if out['relation_label']: out['relation_label'] = snap(out['relation_label'], LABELS)
+        if out['gender']: out['gender'] = canon(out['gender'], GENDER_VARIANTS)
+        if out['relation_label']: out['relation_label'] = canon(out['relation_label'], REL_VARIANTS)
     return out
 
 
@@ -100,9 +137,10 @@ def from_box_lines(lines, box_w=None, pp=True):
         t = norm(l['text'])
         if not t or re.fullmatch(r'(फोटो|उपलब्ध|है|फोटो उपलब्ध|फोटो उपलब्ध है|उपलब्ध है)', t): continue
         if re.search(r'[A-Z]{2,3}\s*[0-9]{6,8}|[A-Z]{2}/[0-9]+/', t) and 'epic' not in f: f['epic'] = re.search(r'([A-Z]{2,3}\s*[0-9]{6,8}|[A-Z]{2}/[0-9/]+)', t).group(1); continue
-        if 'आयु' in t or 'लिंग' in t: f['line3'] = t; continue
-        if 'मकान' in t or 'संख्या' in t: f['line2'] = t; continue
-        if 'का नाम' in t or t.startswith('अन्य'): f['line1'] = t; continue
+        if re.search(AGE_LAB, t) or 'लिंग' in t: f['line3'] = t; continue
+        if HOUSE_LAB.match(t) or 'मकान' in t or 'संख्या' in t: f['line2'] = t; continue
+        if t.startswith('निर्वाचक') or t.startswith('नाँउ'): f.setdefault('line0', t); continue
+        if 'का नाम' in t or 'को नाँउ' in t or t.startswith('अन्य') or re.match(r'(पिता|पति|माता)\s*:', t): f['line1'] = t; continue
         if t.startswith('नाम') or ('नाम' in t and ':' in t): f.setdefault('line0', t); continue
         rest.append(t)
     nums = [t for t in rest if re.fullmatch(r'([#A-Z][0-9A-Z]?\s+)?[0-9०-९]+', t)]

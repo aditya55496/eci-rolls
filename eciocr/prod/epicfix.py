@@ -6,12 +6,27 @@ XGF3242062); with 3-4 CRNNs agreeing, the vote takes the wrong prefix without a 
 the same 7 digits and the same name.
 
 Rule: a record whose EPIC is not in the AC's 2027 roll gets the 2027 EPIC with the same last 7 characters when exactly one such
-2027 record has the same name or relative's name (visual comparison as in the benchmark). The OCR value is kept in
+2027 record has the same name, or the same relative's name together with the same gender and an age in the 2027 window
+(visual comparison as in the benchmark; the gender + age condition since 2026-11-25). The OCR value is kept in
 'epic_ocr' and the record gets 'epic_from_2027': true. Nothing else changes.
 """
 import collections
+import os
 import re
 import unicodedata
+
+# lang-tam 2026-11-25 (ECI_EPICFIX2_GUARD=1, default off): fix2 changed a RIGHT Tamil EPIC (YIG0009506 -> ZHN0009506, held-out
+# U07-7: the voter is not in the 2027 roll; another 2027 voter has the same 7 digits, gender, age gap and the label 'father').
+# Tamil SIR has few relation labels, so the label is no evidence. With the guard, fix2 changes the EPIC only when the name or the
+# relative's name is close (rapidfuzz ratio >= ECI_EPICFIX2_MIN, default 60, on the visual forms); else the EPIC stays and the
+# record gets the flag 'epic' (the 2027 candidate in readings.epic.fix2_candidate).
+# ocrv5 review 2026-11-25 (Hindi, the same fault): 'पिता का नाम' is the label of most men, so the old test was gender + age only.
+# S20 AC 14 part 70 serial 937: printed UIO1338565 (all 4 CRNNs and Tesseract), changed to HSD1338565 of another voter (name
+# ratio 11, relative 50); S20 AC 72 part 10 serial 622: printed RJ/09/070/198129 -> RJ/09/071/198129 (name 56, relative 21). All
+# right fix2 repairs in the ocrv5 test runs (Bihar 8R/BR, 8P/BR: 4 boxes) have name and relative ratios 95-97. Set v4a: guard on,
+# minimum 70.
+FIX2_GUARD = os.environ.get('ECI_EPICFIX2_GUARD', '0') == '1'
+FIX2_MIN = float(os.environ.get('ECI_EPICFIX2_MIN', '60'))
 
 
 def _visual(s):
@@ -61,6 +76,16 @@ def fix2(recs, idx, age_gap=1):
         same_house = _visual(h.get('house_no')) == _visual(r.get('house_no'))
         same_label = bool(_label(h)) and _visual(_label(h)) == _visual(r.get('relation_label'))
         if _visual(h.get('gender')) == _visual(r.get('gender')) and gap in (age_gap - 1, age_gap) and (same_house or same_label):
+            if FIX2_GUARD:
+                from rapidfuzz import fuzz
+                close = any(_visual(r.get(k)) and fuzz.ratio(_visual(r.get(k)), _visual(h.get(k))) >= FIX2_MIN for k in ('name', 'relation_name'))
+                if not close:
+                    if 'epic' not in (r.get('flags') or []):
+                        r['flags'] = list(r.get('flags') or []) + ['epic']
+                    rd = r.setdefault('readings', {}).setdefault('epic', {})
+                    if isinstance(rd, dict):
+                        rd['fix2_candidate'] = h['epic']
+                    continue
             r['epic_ocr'], r['epic'], r['epic_from_2027'] = e, h['epic'], True
             if 'epic' in (r.get('flags') or []):
                 r['flags'] = [f for f in r['flags'] if f != 'epic']
@@ -68,8 +93,22 @@ def fix2(recs, idx, age_gap=1):
     return n
 
 
-def fix(recs, idx):
-    """Repair EPICs in place. Returns the number of records changed."""
+def _same_person(r, h, age_gap):
+    """Same gender and an age gap in the 2027 window (age_gap - 1 .. age_gap years). Unknown values do not pass."""
+    try:
+        gap = int(h.get('age')) - int(r.get('age'))
+    except (TypeError, ValueError):
+        return False
+    return bool(_visual(r.get('gender'))) and _visual(h.get('gender')) == _visual(r.get('gender')) and gap in (age_gap - 1, age_gap)
+
+
+def fix(recs, idx, age_gap=1):
+    """Repair EPICs in place. Returns the number of records changed.
+    A 2027 record matches by the same name, or by the same relative's name AND the same person (_same_person: gender and age
+    window). 2026-11-25 (ocrv5 review): the relative's name alone is common in a village (S12 AC 222 part 23 page 24 box 7:
+    printed ZAX1463645, read right by all engines, changed to LWP1463645, a male 63-year-old in 2027, for a female of 64; only
+    the relative's name matched). In the review sample: 126 repairs, 124 right (Bihar 8R -> BR, name matches), 2 wrong (that
+    voter, draft + final), both relative-only matches."""
     epics, by = idx
     n = 0
     for r in recs:
@@ -78,7 +117,8 @@ def fix(recs, idx):
             continue
         cands = by.get(e[-7:], [])
         nm, rn = _visual(r.get('name')), _visual(r.get('relation_name'))
-        m = [h for h in cands if (nm and _visual(h.get('name')) == nm) or (rn and _visual(h.get('relation_name')) == rn)]
+        m = [h for h in cands if (nm and _visual(h.get('name')) == nm)
+             or (rn and _visual(h.get('relation_name')) == rn and _same_person(r, h, age_gap))]
         if len({h['epic'] for h in m}) == 1:
             r['epic_ocr'], r['epic'], r['epic_from_2027'] = e, m[0]['epic'], True
             if 'epic' in (r.get('flags') or []):
@@ -91,14 +131,17 @@ _DIGITS = str.maketrans({'I': '1', 'l': '1', 'O': '0', 'o': '0'})
 DRAFT_FIELDS = ('epic', 'name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
 
 
-def final_deleted(recs):
+def final_deleted(recs, engines=None):
     """SIR final roll (2026-11-23): voters deleted after the draft keep their box in the final roll, with status code Q and a
     "DELETED" stamp across the text. The SIR models never saw the stamp: they misread the box, it gets >= 6 flags and the
     not_voter_box rule takes it for page noise, so it falls out of the counts (AC 37 part 344: 30 of 727 voters).
     The same voter, same serial, is in the draft roll of the part without a stamp. A final-roll record marked not_voter_box
     whose serial is a draft voter's serial AND whose EPIC ends in the same 6 digits (misread I/O mapped to 1/0) becomes a voter
     record with the draft's fields: 'deleted_in_final': True, 'from_draft': True, the final roll's own readings in 'final_ocr'.
-    recs: all records of one part file (draft and final). Returns the number of records changed."""
+    recs: all records of one part file (draft and final). engines: the reading names of the first two CRNNs (default the
+    production SIR set's crnn_c11q, crnn_c9q; other model sets pass theirs, e.g. ['crnn_c11g9s', 'crnn_c9g9s'], or a function
+    record -> names for a file of several sets).
+    Returns the number of records changed."""
     draft = {}
     for r in recs:
         if 'DraftRoll' in (r.get('source') or '') and not r.get('not_voter_box') and str(r.get('serial_no') or '').isdigit():
@@ -118,7 +161,8 @@ def final_deleted(recs):
         # the status code (deletion reason, e.g. Q / S / E) is only in the final roll; under the stamp the vote is often
         # undecided ('#'): take the letter when c11 and c9 agree (as CODE_CRNN for GE 2024), the field stays flagged
         rc = (r.get('readings') or {}).get('code') or {}
-        a, b = rc.get('crnn_c11q'), rc.get('crnn_c9q')
+        e1, e2 = ((engines(r) if callable(engines) else engines) or ('crnn_c11q', 'crnn_c9q'))[:2]
+        a, b = rc.get(e1), rc.get(e2)
         if r.get('code') in ('#', '', None) and a and a == b and a.isalpha():
             r['code'] = a
             r['flags'].append('code')

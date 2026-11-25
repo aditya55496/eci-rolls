@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""OCR of image-only electoral roll PDFs (UP, Hindi): SIR rolls and supplements -> one JSONL record per voter box.
+"""OCR of image-only electoral roll PDFs (Hindi script): SIR rolls and supplements -> one JSONL record per voter box.
+
+States: built on UP; the printed label variants of Bihar, MP, Rajasthan, Chhattisgarh, Uttarakhand, Haryana, Jharkhand, Delhi,
+Chandigarh and the Nepali parts of West Bengal are parsed by parse.from_lines (2026-11-25, see parse.py).
 
 Usage:
   eci_ocr.py INPUT.pdf [INPUT2.pdf ...] --out OUT.jsonl [--crnn DIR ...] [--hint-2027 hints.jsonl] [--workers 4]
@@ -347,18 +350,85 @@ def text_lines(band):
     return out
 
 
+# section line: 'अनुभाग संख्या और नाम :' (UP, Haryana), 'अनुभाग संख्या एवं नाम :' (Bihar, CG), 'अनुभाग की संख्या व नाम :'
+# (MP, Rajasthan, Jharkhand, Delhi), 'अनुभाग संख्या व नाम' without colon (Uttarakhand, Chandigarh), 'खण्डको संख्या अनि नाँउ'
+# without colon (West Bengal, Nepali; c11q reads 'ख्डको ... नाँठ 1-...').
+# 2026-11-25 (ocrv5 review): at the scaled 1679 px pages the v4a / j2Ps CRNN reads 'अनुभाग' as 'अनुभान' (S04, S07, S26, S28,
+# U02: section empty in every box), the hyphen of '1-' as 'न' / 'न्' ('1न्ग्राम-कालुखेडा' for '1-ग्राम-कालुखेडा', S04, S12),
+# and sometimes drops the number ('-जैनपुर खुर्द', 'न्ग्राम मलोया' for '1-...'; S25, S28, U02); a colon read after the word
+# ('अनुभाग: संख्या व नाम 3-...') left the label in the value. Checked on 68 PDFs of 10 states (page crops, ocrv5 README).
+# The word must start the line (the AC line 'विधान सभा क्षेत्र की संख्या व नाम : 175-खंडवा' is no section). The value is the
+# first 'N-name' after the label; without a number it is '?-name' and the per-PDF pass gives it a number (section_no_inferred).
+SECTION_WORD = re.compile(r'(?:अनु|प्र)भा[^\s:]*|ख[ण्ं]*ड[^\s:]*')
+SECTION_LABEL_END = re.compile(r'\s(?:की\s+)?सं[^\s:]*\s+(?:\S+\s+)?ना[^\s:0-9-]*\s*:?')   # ' (की) संख्या व नाम :'
+SECTION_VALUE = re.compile(r'([0-9]+)(?:\s*-|न्?(?=[\u0915-\u0939\u0958-\u095f]))?\s*(.*)')
+LOST_HYPHEN = re.compile(r'^(?:-|न्(?=[\u0915-\u0937\u0939\u0958-\u095f])(?<!य)\s*)')    # '-name' / 'न्name' with no number
+LEAD_MARKS = '\u093c\u094d\u0901\u0902\u0903'   # a heading read as '1-्गोटेगांव': marks cannot start a name
+
+
 def parse_heading(lines):
-    """Heading lines (CRNN text) -> section: 'N-name' for SIR sections, or one of LISTS. Last match in the band wins."""
+    """Heading lines (CRNN text) -> section: 'N-name' for SIR sections ('?-name' when the number was not read), or one of
+    LISTS. Last match in the band wins."""
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
-        if 'अनुभाग' in t and ':' in t:
-            v = t.split(':', 1)[1].strip(' :.-')
-            m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
-            return f'{m.group(1)}-{m.group(2)}' if m else v
+        w = SECTION_WORD.search(t)
+        if w and w.start() <= 3:
+            rest = t[w.end():]
+            m = SECTION_VALUE.search(rest)
+            if m and m.group(2).lstrip(LEAD_MARKS).strip(' :.-'):
+                return f'{m.group(1)}-{m.group(2).lstrip(LEAD_MARKS).strip()}'
+            e = SECTION_LABEL_END.match(rest)
+            v = (rest[e.end():] if e else rest.split(':', 1)[1] if ':' in rest else '').strip(' :.')
+            v = LOST_HYPHEN.sub('', v).lstrip(LEAD_MARKS).strip(' :.-')
+            if v: return f'?-{v}'
+            continue
         m = process.extractOne(' '.join(t.split()[:3]), LISTS, scorer=fuzz.ratio)
         if m and m[1] >= 75: return m[0]
+        lw = list_word(t)
+        if lw: return lw
     return None
+
+
+# 2026-11-25 (ocrv5 review 3): the final rolls of Bihar, MP, Rajasthan and Chhattisgarh head the addition list
+# 'घटक I - परिवर्धन सूची 1 (dates)'; the CRNN reads 'पटका : परिवर्धन सूची 1 /23-12-2025 से 21-02-2026 तक' (S12, S20, S26) or
+# 'पटक ा : परिवर्धन सूची 1 /01-08-2025 ...' (S04). The 3-word match above takes only 'परिवर्धन की सूची' at the line start (UP,
+# Uttarakhand, Chandigarh), so every addition record kept the last main-list section (review: 71 of 71 addition records).
+# A list word in the first 6 words, followed within 2 words by 'सूची', is the list heading.
+LIST_WORDS = {'परिवर्धन': LISTS[0], 'विलोपन': LISTS[1], 'संशोधन': LISTS[2]}
+
+
+def list_word(t):
+    from rapidfuzz import process, fuzz
+    w = t.split()[:6]
+    for i, x in enumerate(w):
+        m = process.extractOne(x, list(LIST_WORDS), scorer=fuzz.ratio)
+        if m and m[1] >= 80 and any(fuzz.ratio(y, 'सूची') >= 75 for y in w[i + 1: i + 3]):
+            return LIST_WORDS[m[0]]
+    return None
+
+
+def number_sections(recs):
+    """'?-name' sections of one PDF (records in reading order) get a number: the previous section's when the name is the same
+    (fuzzy, the CRNN reads the same heading a little differently on each page), else the previous number + 1 (1 at the
+    start). Marked section_no_inferred. Returns the number of records changed."""
+    from rapidfuzz import fuzz
+    prev_no, prev_name, raw, val, n = None, None, None, None, 0
+    for r in recs:
+        s = r.get('section')
+        if s != raw:
+            raw, val = s, None
+            m = re.match(r'([0-9]+)-(.*)', s or '')
+            if m:
+                prev_no, prev_name = int(m.group(1)), m.group(2)
+            elif s and s.startswith('?-'):
+                name = s[2:]
+                no = prev_no if prev_no is not None and prev_name and fuzz.ratio(name, prev_name) >= 85 else (prev_no or 0) + 1
+                val, prev_no, prev_name = f'{no}-{name}', no, name
+        if val:
+            r['section'], r['section_no_inferred'] = val, True
+            n += 1
+    return n
 
 
 # ---------------------------------------------------------------- one page
@@ -367,6 +437,18 @@ _E = None
 _OPT = {}
 
 
+RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
+# 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
+# the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
+# ECI_CODE_VALID=1: decide() takes Tesseract's code without a check; a code that is not '#' or S E R Q M (with an optional digit,
+# as '#2', 'R3' in the UP gold) is flagged 'code' (Bihar final rolls: '#' read '7', 'S' read 'SS', unflagged).
+# ECI_PARTNO_LIST=1: in an SIR roll (file name '-SIR-') a box has a part_no cell only in the supplement lists (section = one of
+# LISTS); outside them part_no is junk read from the serial cell ('91', '14118', '1119'): the value moves to
+# 'part_no_outside_list', part_no = '', flagged. Not for other rolls: the GE 2024 rolls print supplement boxes with a part_no
+# under headings that parse_heading does not know (GE gold run: 548 such boxes with section None).
+CODE_VALID = os.environ.get('ECI_CODE_VALID', '0') == '1'
+PARTNO_LIST = os.environ.get('ECI_PARTNO_LIST', '0') == '1'
+CODE_RE = re.compile(r'(?:#|[SERQM])[0-9]?')
 _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / collect new readings (--cache-in/--cache-out)
 _EPIC_IDX = None
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
@@ -465,7 +547,7 @@ def _valset(recs, segs_list):
 
 # job2 2026-11-25 (ECI_TOFU=1, default off): missing-glyph boxes after names (Haryana SIR: the roll font has no glyph for a
 # character stored after many names, the print shows an empty rectangle; 26 of 90 S07 ACs, 8.5 % of the boxes) are found on the
-# page image as stored, painted white before the boxes are cut, and named in the record: 'missing_glyph' = {field: count}
+# page image as stored (before the rescale), painted white there before the boxes are cut, and named in the record: 'missing_glyph' = {field: count}
 # (eciocr/ocr/tofu.py). Only boxes inside a voter box's text column; without such boxes the output is unchanged.
 TOFU = os.environ.get('ECI_TOFU', '0') == '1'
 
@@ -477,14 +559,25 @@ def process_page(task):
     tm['extract'] = round(time.time() - t0, 3)
     if gray is None: return dict(pdf=pdf, page=pno, boxes=0, skip='no image', timing=tm)
     tofus = _tofu.find_tofu(gray) if TOFU else []
+    gray0 = gray
+    scale = 1.0
+    if RESCALE_H and gray.shape[0] > RESCALE_H * 1.25:
+        # 2026-11-25: Uttarakhand, Haryana, Jharkhand, Delhi and Chandigarh SIR pages are 2806 px high (240 dpi; UP: 1679 px,
+        # 144 dpi). At 240 dpi the EPIC and line crops hold the cell borders and much white space, the CRNNs read e.g.
+        # 'UPI127760' for URG1127760 and the code pixel test fires on every left-column box. Pages above 1.25 x 1679 px are
+        # scaled to 1679 px (INTER_AREA) before layout; bbox in the output is in the scaled page (record 'page_scale').
+        scale = RESCALE_H / gray.shape[0]
+        gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     t = time.time()
     boxes = find_boxes(gray)
     tm['layout'] = round(time.time() - t, 3)
     if not boxes: return dict(pdf=pdf, page=pno, boxes=0, skip='no voter boxes', timing=tm, size=gray.shape[::-1])
     tofu_at = {}
     if tofus:
-        keep, tofu_at = _tofu.select(tofus, boxes)
-        if keep: gray = _tofu.erase(gray, keep)
+        keep, tofu_at = _tofu.select(tofus, boxes, scale)
+        if keep:
+            gray = _tofu.erase(gray0, keep)
+            if scale != 1.0: gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
@@ -569,8 +662,12 @@ def process_page(task):
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, section=section, **{f: out[f] for f in OUT_FIELDS})
+        if CODE_VALID and out['code'] and not CODE_RE.fullmatch(out['code']) and 'code' not in flags:
+            rec['code_invalid'] = True      # flag added by post_rules (after the not_voter_box rule)
+            readings['code'] = {n: c['code'] for n, c in zip(nm, cands)}
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
         if tofu_at.get(i): rec['missing_glyph'] = tofu_at[i]
+        if scale != 1.0: rec['page_scale'] = round(scale, 4)
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     if _E.vcrnn and not _OPT['hints']:
@@ -584,6 +681,22 @@ def process_page(task):
 
 
 # ---------------------------------------------------------------- per-PDF checks
+
+def post_rules(recs, sir_roll):
+    """ECI_CODE_VALID / ECI_PARTNO_LIST (see the switches above) on the records of one PDF, after sections are final and after
+    the not_voter_box rule. sir_roll: the PDF is an SIR roll ('-SIR-' in its file name). Idempotent. Returns {rule: records
+    changed}."""
+    n = collections.Counter()
+    for r in recs:
+        if r.get('code_invalid') and 'code' not in r['flags']:
+            r['flags'].append('code'); n['code_invalid'] += 1
+        if PARTNO_LIST and sir_roll and r.get('kind') == 'SIR' and r.get('part_no') and r.get('section') not in LISTS:
+            r['part_no_outside_list'] = r['part_no']; r['part_no'] = ''
+            r.setdefault('readings', {})['part_no'] = {'outside_list': r['part_no_outside_list']}
+            if 'part_no' not in r['flags']: r['flags'].append('part_no')
+            n['part_no_outside_list'] += 1
+    return dict(n)
+
 
 def sequence_confirm(recs):
     """SIR: a serial_no flagged only by engine disagreement is confirmed when BOTH neighbours in reading order
@@ -636,8 +749,8 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-S(\d+)-(\d+)-.*-HIN-(\d+)-', b)
-    return dict(state=f'S{m.group(1)}', ac=int(m.group(2)), roll_part=int(m.group(3))) if m else {}
+    m = re.search(r'-([SU]\d+)-(\d+)-.*-HIN-(\d+)-', b)   # S = state, U = union territory (Delhi U05, Chandigarh U02)
+    return dict(state=m.group(1), ac=int(m.group(2)), roll_part=int(m.group(3))) if m else {}
 
 
 def parse_pages(spec, n):
@@ -722,19 +835,21 @@ def main():
             for r in recs:  # a page without a heading continues the previous section
                 if r['section']: sec = r['section']
                 else: r['section'] = sec
+            number_sections(recs)
             # A "box" found on a page that is not a voter page (cover, map, photo page) reads as garbage: no valid EPIC and most
             # fields flagged. It is kept in the output, marked, and left out of the counts and the serial check (2026-11-22;
             # 0 of 2,578 records of 3 checked voter PDFs marked, 6 page-3 boxes marked).
             for r in recs:
                 if not ensemble2.valid('epic', r['epic'] or '') and len(r['flags']) >= 6:
                     r['not_voter_box'] = True
+            post = post_rules(recs, '-SIR-' in os.path.basename(pdf))
             allrecs, recs = recs, [r for r in recs if not r.get('not_voter_box')]
             if _HINTS:   # EPIC prefixes the CRNNs never saw: repaired from the 2027 roll (epicfix.py; hand check 2026-11-22)
                 import epicfix
                 global _EPIC_IDX
                 if _EPIC_IDX is None:
                     _EPIC_IDX = epicfix.index(_HINTS.values())
-                epic_fixed = epicfix.fix(recs, _EPIC_IDX) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
+                epic_fixed = epicfix.fix(recs, _EPIC_IDX, ensemble2.AGE_GAP) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
             else:
                 epic_fixed = 0
                 if os.environ.get('ECI_EPIC_PREFIX', '0') != '0':   # job2: no 2027 roll -> rare-prefix check (epicfix.prefix_check)
@@ -744,7 +859,7 @@ def main():
             kind = m['kind'] or (collections.Counter(p['kind'] for p in pages if p.get('kind')).most_common(1) or [(None,)])[0][0]
             info = dict(pdf=os.path.basename(pdf), kind=kind, **{k: v for k, v in m.items() if k != 'kind'},
                         voter_pages=sum(1 for p in pages if p['boxes']), skipped_pages=[p['page'] + 1 for p in pages if not p['boxes']],
-                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
+                        records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed, post_rules=post)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)

@@ -1,0 +1,177 @@
+{
+  "_about": "OCR model sets of task ocr-any (ocr_any_task.py). name -> CRNN model dirs under models/ (in voting order: the first 'stage1' models are the cascade's stage 1 when hints exist), env switches of eciocr/prod/eci_ocr.py (all set explicitly, so the provenance is exact), hints mode ('required': the item must carry a hints key; 'none': run without hints even when the item has some; 'optional'), and the gold results at adoption. A new set = one entry here + its model dirs (crnn.onnx + charset.json) committed; sha256_16 / charset_sha256_16 = first 16 hex chars of the sha256 of crnn.onnx / charset.json (both checked by the task before the first item). FROZEN ONCE DEPLOYED: after the first item of a set has run on the pool, its entry (models, sha256_16, env, stage1) is never changed; a change is a new set (new name), so ocr_model_set + ocr_code name the exact rules and models of every record (model_sha256_16 is only in the part summary). The sets below are not deployed yet (2026-11-25 ocrv5 review fixes went into v4a before the first run). Every set names every eci_ocr decision switch (ECI_* read by eciocr/prod and eciocr/ocr), also those without effect for its hints mode; ECI_RESCALE_H and ECI_DIGIT_CRNN are listed with the values that are the code defaults ('' = off). ocr-any removes every other ECI_* variable; only ECI_OCR_WORKERS and ECI_TESS_CLI pass (speed / call path); ECI_CRNN is only the default when no --crnn is given (ocr-any always gives them). Review 3 (2026-11-25, before any deploy): ECI_CODE_VALID=1 and ECI_PARTNO_LIST=1 added to every set (see eci_ocr.post_rules).",
+  "v4a": {
+    "about": "Hindi SIR with 2027 SSR hints (owner plan 2026-11-25 03:49): v4a students (half-width CRNNs distilled from g8, all convs int8) + Hindi label-variant fix (branch hinvar 2bc0673). 5x less CPU than production c11q..c3q. Review fixes 2026-11-25 (before any deploy): ECI_EPICFIX2_GUARD=1 + ECI_EPICFIX2_MIN=70 (epicfix.fix2 swaps the EPIC only when the name or the relative's name is close to the 2027 voter's, else flag 'epic'; two wrong unflagged swaps in Rajasthan) and ECI_AGE_HINT_MAJ=1 (an age in the 2027 window is taken without a flag only when a CRNN read it and no majority of the readings is outside the window; S20/14/70 serial 135).",
+    "models": [
+      "c11g9s",
+      "c9g9s",
+      "c4g9s",
+      "c3g9s"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "c9g9s": "37df347aa2a5e1e6",
+      "c4g9s": "1749043685aa2146",
+      "c3g9s": "c9e0ebab641980c3"
+    },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "c9g9s": "f022b1ee76aacbfb",
+      "c4g9s": "28b7fa05b3bd0679",
+      "c3g9s": "28b7fa05b3bd0679"
+    },
+    "hints": "required",
+    "stage1": 1,
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "0",
+      "ECI_EPIC_PREFIX": "0",
+      "ECI_EPIC_FMT": "0",
+      "ECI_EPIC_OLDFMT": "0",
+      "ECI_EPICFIX2_GUARD": "1",
+      "ECI_EPICFIX2_MIN": "70",
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
+    },
+    "gold": {
+      "g26_rec": 98.74,
+      "g26_unflagged": 99.5,
+      "g26_flag_pct": 3.44,
+      "hc_rec": 98.01,
+      "hc_unflagged": 99.22,
+      "hc_flag_pct_all": 4.4,
+      "ge_rec": 97.56,
+      "ge_unflagged": 99.51,
+      "ge_flag_pct": 19.1,
+      "ge_cpu_s": 2026,
+      "source": "ocrv5 review-2 gold run 2026-11-25 07:55 (Modal, code ocrv5 48c9ef7 with ECI_EPICFIX2_GUARD/MIN and ECI_AGE_HINT_MAJ; env exactly as above; models2/ocrv5/gold/out/o6v4a_*, scored with gold/score6.py): G26 / HC / GE numbers identical to the 06:05 run of 99c69e1 without these switches (GE CPU 2139 -> 2026 s, noise). Output differences: G26 1, HC 2, GE 15 boxes, none a gold box: 10 GE fix2 swaps refused (value as read, flagged 'epic'), the rest flag changes after a stage-2 read.",
+      "earlier": "speed study 2026-11-24 (branch speed-students 41f1d10): same G26 / HC / GE record numbers",
+      "review3": "2026-11-25 review 3: ECI_CODE_VALID + ECI_PARTNO_LIST replayed on the stored gold outputs of the run above (gold/replay7.py -> gold/out/o7v4a_*, scored with gold/score6.py; exact: both rules run after decide(), the cascade and the not_voter_box rule, and section is no gold field). Record accuracy unchanged on G26 / HC / GE; boxes newly flagged: code G26 3, HC 2, GE 12, part_no HC 1; before: {\"g26_unflagged\": 99.47, \"g26_flag_pct\": 3.42, \"ge_unflagged\": 99.39, \"ge_flag_pct\": 19.1}"
+    }
+  },
+  "j2Ps": {
+    "about": "Hindi SIR without 2027 hints (owner plan 2026-11-25 03:49): job2's best set: s11h3 (= c11g9s) + job2_r1_s9m + job2_r2_s4m + job2_r2_s3m (int8 x0), no-hint rules NOHINT_DIGITS + EPIC_PREFIX + EPIC_FMT, EPIC_PAIR 1 (job2 NOTES 03:10, queue job2_j2Ps). 3.3x less CPU than production. ECI_EPICFIX2_* and ECI_AGE_HINT_MAJ act only with hints: no effect for this set (listed for exact provenance).",
+    "models": [
+      "c11g9s",
+      "job2_r1_s9mx0",
+      "job2_r2_s4mx0",
+      "job2_r2_s3mx0"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "job2_r1_s9mx0": "fc0c19c4654453a2",
+      "job2_r2_s4mx0": "0a385332a0bbed7d",
+      "job2_r2_s3mx0": "18a33b47eff5a62d"
+    },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "job2_r1_s9mx0": "f022b1ee76aacbfb",
+      "job2_r2_s4mx0": "28b7fa05b3bd0679",
+      "job2_r2_s3mx0": "28b7fa05b3bd0679"
+    },
+    "hints": "none",
+    "stage1": 1,
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "1",
+      "ECI_EPIC_PREFIX": "1",
+      "ECI_EPIC_FMT": "1",
+      "ECI_EPIC_OLDFMT": "0",
+      "ECI_EPICFIX2_GUARD": "1",
+      "ECI_EPICFIX2_MIN": "70",
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
+    },
+    "gold": {
+      "g26_rec": 98.23,
+      "g26_unflagged": 99.82,
+      "g26_flag_pct": 8.33,
+      "hc_rec": 97.01,
+      "hc_unflagged": 99.73,
+      "hc_flag_pct_all": 11.5,
+      "ge_rec": 97.28,
+      "ge_unflagged": 99.39,
+      "ge_flag_pct": 28.3,
+      "ge_cpu_s": 4254,
+      "val_rec": 99.73,
+      "val_unflagged": 100.0,
+      "val_flag_pct": 4.56,
+      "source": "ocrv5 gold run 2026-11-25 06:05 (Modal, code ocrv5 99c69e1 = this set's code incl. hinvar rules, section and epicfix fixes; env exactly as above; models = the files here, sha256 checked against eci-eval:/models; paired: the 3 sets of one PDF in one container; models2/ocrv5/gold/report.jsonl)",
+      "pre_hinvar": "job2 NOTES 03:10, branch job2 code without hinvar (rule 3 ECI_EPIC_TESS_NOHINT, label variants, 240-dpi scaling): G26 98.26 / 99.79 / 7.95 %, HC 97.01 / 99.73 / 9.8 %, GE 97.27 / 99.26 / 26.8 %, val 99.75 / 100 / 4.54 %. On ocrv5 code rule 3 adds flags (G26 +0.36 pt, HC +1.7 pt, GE +1.4 pt); unflagged accuracy holds (ISA noise +-0.05)",
+      "review3": "2026-11-25 review 3: ECI_CODE_VALID + ECI_PARTNO_LIST replayed on the stored gold outputs of the run above (gold/replay7.py -> gold/out/o7j2Ps_*, scored with gold/score6.py; exact: both rules run after decide(), the cascade and the not_voter_box rule, and section is no gold field). Record accuracy unchanged on G26 / HC / GE; boxes newly flagged: code G26 3, HC 2, GE 12, val 1, part_no HC 1; before: {\"g26_unflagged\": 99.79, \"g26_flag_pct\": 8.31, \"ge_unflagged\": 99.25, \"ge_flag_pct\": 28.2}"
+    }
+  },
+  "j2Psf": {
+    "about": "j2Ps + ECI_EPIC_OLDFMT=1 (ocrv5 2026-11-25): old-format EPICs of other states (Haryana HR/01/01/0000369, 2 letters / 1-3 / 2-3 / 6-7 digits) count as valid, so they are not flagged for the format alone. Same models and other rules as j2Ps. NOT gold-run (the UP gold sets have no such EPICs); local test: see models2/ocrv5/README.md. For a hot swap of the no-hint states: hub setting ocr_model_set_map {\"j2Ps\": \"j2Psf\"}. ECI_EPICFIX2_* and ECI_AGE_HINT_MAJ act only with hints: no effect for this set (listed for exact provenance).",
+    "models": [
+      "c11g9s",
+      "job2_r1_s9mx0",
+      "job2_r2_s4mx0",
+      "job2_r2_s3mx0"
+    ],
+    "sha256_16": {
+      "c11g9s": "0c4cf0ab04cb6b98",
+      "job2_r1_s9mx0": "fc0c19c4654453a2",
+      "job2_r2_s4mx0": "0a385332a0bbed7d",
+      "job2_r2_s3mx0": "18a33b47eff5a62d"
+    },
+    "charset_sha256_16": {
+      "c11g9s": "f022b1ee76aacbfb",
+      "job2_r1_s9mx0": "f022b1ee76aacbfb",
+      "job2_r2_s4mx0": "28b7fa05b3bd0679",
+      "job2_r2_s3mx0": "28b7fa05b3bd0679"
+    },
+    "hints": "none",
+    "stage1": 1,
+    "env": {
+      "ECI_EPIC_PAIR": "1",
+      "ECI_CODE_CRNN": "1",
+      "ECI_EPIC_CONFIRM": "1",
+      "ECI_EPIC_TESS_NOHINT": "1",
+      "ECI_STAMP_TEMPLATE": "1",
+      "ECI_NOHINT_DIGITS": "1",
+      "ECI_EPIC_PREFIX": "1",
+      "ECI_EPIC_FMT": "1",
+      "ECI_EPIC_OLDFMT": "1",
+      "ECI_EPICFIX2_GUARD": "1",
+      "ECI_EPICFIX2_MIN": "70",
+      "ECI_AGE_HINT_MAJ": "1",
+      "ECI_CODE_VALID": "1",
+      "ECI_PARTNO_LIST": "1",
+      "ECI_RESCALE_H": "1679",
+      "ECI_DIGIT_CRNN": ""
+    },
+    "gold": {
+      "g26_rec": 98.23,
+      "g26_unflagged": 99.82,
+      "g26_flag_pct": 8.33,
+      "hc_rec": 97.01,
+      "hc_unflagged": 99.73,
+      "hc_flag_pct_all": 11.5,
+      "ge_rec": 97.28,
+      "ge_unflagged": 99.39,
+      "ge_flag_pct": 28.3,
+      "ge_cpu_s": 4208,
+      "val_rec": 99.73,
+      "val_unflagged": 100.0,
+      "val_flag_pct": 4.56,
+      "source": "ocrv5 gold run 2026-11-25 06:05 (Modal, code ocrv5 99c69e1 = this set's code incl. hinvar rules, section and epicfix fixes; env exactly as above; models = the files here, sha256 checked against eci-eval:/models; paired: the 3 sets of one PDF in one container; models2/ocrv5/gold/report.jsonl)",
+      "note": "identical output to j2Ps on every gold set (UP gold has no old-format EPICs of the HR/01/01/0000369 kind), so the gold does NOT test the switch. Local test 2026-11-25 (S07 AC 1 parts 1+10, AC 3 parts 81+116): Haryana flags 21.7 -> 3.6 % and 33-38 -> 3.0 %; BUT review 2 (S07 AC 28 parts 58+195): 44.0 / 49.5 % -> 40.2 / 48.3 % (names printed with a missing-glyph box, read as '0' or ']', all flagged); 8 more parts (ACs 12 40 66 88): 3.4-6.9 % in ACs 12 40 66, 22.2 / 33.0 % in AC 88: see models2/ocrv5/README.md 'Review 2', values identical to j2Ps, 360 EPIC flags removed, Tesseract agrees in 360 of 360; 4 of 4 EPICs checked on the page right. Risk not measured: a misread with a lost digit that fits the old format is not flagged.",
+      "review3": "2026-11-25 review 3: ECI_CODE_VALID + ECI_PARTNO_LIST replayed on the stored gold outputs of the run above (gold/replay7.py -> gold/out/o7j2Ps_*, scored with gold/score6.py; exact: both rules run after decide(), the cascade and the not_voter_box rule, and section is no gold field). Record accuracy unchanged on G26 / HC / GE; boxes newly flagged: code G26 3, HC 2, GE 12, val 1, part_no HC 1; before: {\"g26_unflagged\": 99.79, \"g26_flag_pct\": 8.31, \"ge_unflagged\": 99.25, \"ge_flag_pct\": 28.2}"
+    }
+  }
+}

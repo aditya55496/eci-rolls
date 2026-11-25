@@ -43,6 +43,7 @@ AGE_GAP = 1
 EPIC_CONFIRM = os.environ.get('ECI_EPIC_CONFIRM', '1') != '0'
 EPIC_PAIR = os.environ.get('ECI_EPIC_PAIR', '1') != '0'    # rule 1 (2026-11-23), see decide()
 CODE_CRNN = os.environ.get('ECI_CODE_CRNN', '1') != '0'    # rule 2 (2026-11-23), see decide()
+EPIC_TESS_NOHINT = os.environ.get('ECI_EPIC_TESS_NOHINT', '1') != '0'   # rule 3 (2026-11-25), see decide()
 LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters only)
 NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
 # job2 2026-11-25 (no 2027 roll): house_no and age are not flagged only because Tesseract disagrees when ALL CRNNs read the same
@@ -50,6 +51,7 @@ NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.
 # caused ~11,000 of ~11,400 house_no flags on the no-hint gold runs). Set on a non-gold validation set (14 UP ACs outside every
 # gold set). ECI_NOHINT_DIGITS=1 = on (default off).
 NOHINT_DIGITS = os.environ.get('ECI_NOHINT_DIGITS', '0') != '0'
+AGE_HINT_MAJ = os.environ.get('ECI_AGE_HINT_MAJ', '0') == '1'   # 2026-11-25 ocrv5, see decide() (default off: UP output unchanged)
 # job2 2026-11-25 (ECI_EPIC_FMT=1, default off): (a) the CRNNs have no backslash and read the old-format separator '\\' as '1':
 # a reading 'UP' [+ one separator] + 14 digits with '1' at digit 3 and digit 7 is rewritten to UP\\dd\\ddd\\ddddddd (field flagged);
 # (b) the majority EPIC is not valid but the two first CRNNs agree on a valid one -> take it (field flagged). With the relaxed
@@ -241,6 +243,17 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 if len(cr) == 2 and vals[cr[0]] and visual(vals[cr[0]]) == visual(vals[cr[1]]) and valid(f, vals[cr[0]]):
                     out[f] = vals[cr[0]]; fmt_flag = True
             if f in CORE and (n < 2 or not valid(f, out[f]) or fmt_flag): flags.append(f)
+            elif f == 'epic' and hint is None and EPIC_TESS_NOHINT and names and any(nm.startswith('tess') for nm in names) \
+                    and visual(vals[next(i for i, nm in enumerate(names) if nm.startswith('tess'))]) != visual(out[f]):
+                # 2026-11-25 (rule 3): without a 2027 record nothing confirms the EPIC. The CRNNs know only the EPIC prefixes of
+                # their training ACs and turn others into them with one voice (eye check of 4 boxes per part: Jharkhand KDF/KKD ->
+                # XGF in 5 of 8, Delhi ZIP -> ZSY in 3 of 4, West Bengal IBN -> BLN in 1 of 4, all unflagged; Tesseract had
+                # all 9 right). Tesseract reads letters as printed:
+                # when it disagrees with the chosen EPIC, flag (value unchanged: taking Tesseract's value when only the prefix
+                # differs fixed 9 of 9 such boxes of other states but cost UP bench gold without hints 95.19 -> 95.15).
+                # Bench gold (UP, 4,266 boxes): with hints unchanged (97.80 / 99.632 / 4.57 %); without hints flagged
+                # 60.97 -> 61.18 %, unflagged 99.700 -> 99.698 %, record 95.19 unchanged.
+                flags.append(f)
             continue
         if hint and f in HINT_FIELDS and hint.get(f):
             h = visual(hint[f])
@@ -252,8 +265,22 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                     j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                     if j is not None and vals[j]: out[f] = vals[j]; break
             flags.append(f); continue  # no engine matches 2027: flag
-        if hint and f == 'age' and hint.get('age', '').isdigit():
+        if hint and f == 'age' and (hint.get('age') or '').isdigit():   # a hint without age has None
             ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
+            if ok and AGE_HINT_MAJ and names:
+                # 2026-11-25 (ocrv5 review, ECI_AGE_HINT_MAJ=1): an age in the 2027 window was taken even when only Tesseract
+                # read it (S20 AC 14 part 70 final roll, page 7 box 14: printed 21, c11 c9 c4 c3 all '21', Tesseract '24',
+                # 2027 age 24 -> 24 without a flag). Now the window value is taken without a flag only when a CRNN read it AND
+                # no strict majority of the readings is outside the window; else the field is flagged (value: the outside
+                # majority when there is one, else the window value). In the cascade's stage 1 (c11 + Tesseract) a
+                # Tesseract-only match is flagged, so the box gets all engines.
+                maj, m = collections.Counter(v for v in vals if v).most_common(1)[0] if any(vals) else ('', 0)
+                crnn_ok = any(v in ok for v, nm in zip(vals, names) if nm.startswith('crnn'))
+                if m * 2 > len(vals) and maj not in ok:
+                    out[f] = maj; flags.append(f); continue
+                out[f] = collections.Counter(ok).most_common(1)[0][0]
+                if not crnn_ok: flags.append(f)
+                continue
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue

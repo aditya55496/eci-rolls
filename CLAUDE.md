@@ -213,6 +213,8 @@ per thread. `HubClient` is thread-safe for `record`, `metric`, `failure`, `uploa
 - Many Indian government sites (most `.gov.in` / `.nic.in`) refuse requests from outside India. GitHub runners are in the US/EU.
   For a site that refuses GitHub's runners, use `proxy="IN"` (next section). For a site that answers them, use neither.
 - Run the **Setup** workflow after a change to `set_pool`.
+  In this family the Setup workflow asks for `projects` (comma list, or `all`); `all` sets threads, env and max_workers of every
+  project back to `family.py`, also for live projects whose values were raised in the hub (setup_family.py).
 - The team boxes are on dev-vps-3 in Mumbai (since 2026-11-12). Many India-only sites answer there. For a site that refuses it,
   use `myproxy` (next section).
 - Testing: parse saved pages offline (`tests/pages/` + `tests/test_parse.py`); `myproxy run scrape-check --items 2` checks a

@@ -1,0 +1,101 @@
+"""Printed label variants of the Hindi-script SIR states (2026-11-25): the OCR line parser and the 2027 text-layer row regexes
+give the same fields for every variant. Lines as printed (checked on page images and 2027 text layers, models2/hinvar/NOTES.md)."""
+import os
+import sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path[:0] = [os.path.join(ROOT, "eciocr", "ocr"), os.path.join(ROOT, "eciocr", "textlayer"), os.path.join(ROOT, "eciocr", "prod")]
+from parse import from_lines  # noqa: E402
+
+BOX = {  # state: (line0, line1, line2, line3) -> expected (name, relation_label, relation_name, house_no, age, gender)
+    "UP": (("नाम : राम कुमार", "पिता का नाम: श्याम लाल", "मकान संख्या : 12", "आयु : 40 लिंग : पुरुष"),
+           ("राम कुमार", "पिता का नाम", "श्याम लाल", "12", "40", "पुरुष")),
+    "Bihar": (("निर्वाचक का नाम : निखिल कुमार", "पिता का नाम:: संजीव कुमार सिंह", "मकान संख्या : 00", "उम्र : 26 लिंग: : पुरुष"),
+              ("निखिल कुमार", "पिता का नाम", "संजीव कुमार सिंह", "00", "26", "पुरुष")),
+    "MP": (("निर्वाचक का नाम : सुषमा जैन", "पति का नाम: अजित कुमार", "गृह संख्या : 1", "उम्र : 67 लिंग : महिला"),
+           ("सुषमा जैन", "पति का नाम", "अजित कुमार", "1", "67", "महिला")),
+    "Chandigarh": (("नाम : सतीश कुमार", "पिता: पिरथी राम", "मकान नं. : 4141", "आयु : 40 लिंग : पुरुष"),
+                   ("सतीश कुमार", "पिता का नाम", "पिरथी राम", "4141", "40", "पुरुष")),
+    "WB-Nepali": (("नाँउ : कल्पना सुब्बा", "पिताको नाँउ: आशबहादुर सुब्बा", "घर संख्या : n0065", "उमेर : 35 लिंग : स्त्री"),
+                  ("कल्पना सुब्बा", "पिता का नाम", "आशबहादुर सुब्बा", "n0065", "35", "महिला")),
+    "no-colon": (("निर्वाचक का नाम सुषमा जैन", "पति का नाम: अजित कुमार", "गृह संख्या 1", "उम्र 67 लिंग : महिला"),
+                 ("सुषमा जैन", "पति का नाम", "अजित कुमार", "1", "67", "महिला")),
+}
+
+
+def test_ocr_lines_all_variants():
+    for st, (lines, want) in BOX.items():
+        r = from_lines(dict(serial="5", epic="ABC1234567", **{f"line{i}": t for i, t in enumerate(lines)}))
+        got = tuple(r[k] for k in ("name", "relation_label", "relation_name", "house_no", "age", "gender"))
+        assert got == want, (st, got)
+
+
+def test_textlayer_rows_all_variants():
+    import parse_textlayer as T
+    m = T.NAME_RE.match("निर्वाचक का नाम : गीता देवी"); assert m and m.group(2) == "गीता देवी"
+    assert not T.REL_RE.match("निर्वाचक का नाम : गीता देवी")           # the voter's own name, not a relative
+    m = T.REL_RE.match("पिता का नाम:: महंत शर्मा"); assert m.group(1) == "पिता" and m.group(3) == "महंत शर्मा"
+    m = T.HOUSE_RE.match("गृह संख्या : 244"); assert m.group(2) == "244"
+    m = T.AGE_RE.match("उम्र : 53 लिंग: : महिला"); assert (m.group(2), m.group(3)) == ("53", "महिला")
+    m = T.AGE_RE.match("आयु : 36 लिंग : महिला"); assert (m.group(2), m.group(3)) == ("36", "महिला")
+    for t, no in (("अनुभाग संख्या और नाम : 1-मालवीय नगर", 1), ("प्रभाग संख्या एवं नाम : 2-फरसाहनी", 2),
+                  ("अनुभाग की संख्या व नाम : 3-सुभाष वार्ड", 3), ("अनुभाग संख्या व नाम 4-कक्ष", 4)):
+        assert int(T.SECTION_RE.search(t).group(1)) == no
+
+
+def test_ocr_headings_and_meta():
+    import eci_ocr as E
+    assert E.parse_heading(["अनुभाग संख्या और नाम : 1-मालवीय नगर ऐशबाग"]) == "1-मालवीय नगर ऐशबाग"
+    assert E.parse_heading(["अनुभाग संख्या व नाम 1-हरचन्दपुर"]) == "1-हरचन्दपुर"
+    assert E.parse_heading(["खण्डको संख्या अनि नाँउ 1-रंगपु फरेष्ट बस्ती"]) == "1-रंगपु फरेष्ट बस्ती"
+    assert E.pdf_meta("2026-EROLLGEN-U05-10-SIR-DraftRoll-Revision1-HIN-10-WI.pdf") == dict(state="U05", ac=10, roll_part=10)
+    assert E.pdf_meta("2026-EROLLGEN-S24-174-SIR-DraftRoll-Revision1-HIN-1-WI.pdf") == dict(state="S24", ac=174, roll_part=1)
+
+
+def test_ocr_headings_as_read_at_1679px():
+    """CRNN readings of the section line on scaled 240-dpi pages (ocrv5 review 2026-11-25, page crops checked by eye)."""
+    import eci_ocr as E
+    cases = {
+        "अनुभान संख्या एवं नाम : 1-बाला विगहा": "1-बाला विगहा",                 # S04: 'अनुभाग' read 'अनुभान'
+        "अनुभान संख्या और नाम : 1-बड़ागढ़": "1-बड़ागढ़",                          # S07
+        "अनुभान संख्या आर नाम : 1-नवा नगर": "1-नवा नगर",
+        "अनुभान संख्या एवां नाम : 1-सुरगुजिहापारा": "1-सुरगुजिहापारा",          # S26
+        "अनुभान संख्या व नाम 1-माहिग्रान भारत नगर ऑ": "1-माहिग्रान भारत नगर ऑ",  # S28 (no colon)
+        "अनुभाग: संख्या व नाम 3-डी.ए.वी.कालेज सैक्टर-10": "3-डी.ए.वी.कालेज सैक्टर-10",   # U02: colon after the word
+        "अनुभाग की संख्या वा नाम : 1न्ग्राम-कालुखेडा भाग 3": "1-ग्राम-कालुखेडा भाग 3",   # S12: hyphen read 'न्'
+        "अनुभान संख्या एवं नाम : 1नद्वाशय दक्षिण टोला": "1-द्वाशय दक्षिण टोला",       # S04: hyphen read 'न'
+        "अनुभान संख्या एवां नाम : 2-नबैल": "2-नबैल",                              # a real 'न' after the hyphen stays
+        "अनुभान संख्या व नाम -जैनपुर खुर्द": "?-जैनपुर खुर्द",                   # number not read
+        "अनुभाग संख्या व नाम न्ग्राम मलोया": "?-ग्राम मलोया",
+        "खण्डको संख्या अनि नाउ -तीन घरे": "?-तीन घरे",
+        "अनुभान संख्या व नाम 1-्मलोया कालोनी": "1-मलोया कालोनी",
+    }
+    for line, want in cases.items():
+        assert E.parse_heading([line]) == want, line
+    # AC lines are no sections (the section word must start the line)
+    for line in ("विधान सभा क्षेत्र की संख्या व नाम : 175-खंडवा", " संख्या वा नाम : 34 - लक्सर सामान्य",
+                 "विधानसभा निर्वाचन क्षेत्र का नाम और संख्या : 23-पाली - तानाखार"):
+        assert E.parse_heading([line]) is None, line
+
+
+def test_ocr_list_headings_review3():
+    """The final rolls of S04 S12 S20 S26 head the addition list 'घटक I - परिवर्धन सूची 1 (dates)' (CRNN readings at 1679 px,
+    ocrv5 review 3); UP, S28, U02 print 'परिवर्धन की सूची' / 'परिवर्धन सूची 1 ...'."""
+    import eci_ocr as E
+    for line in ("पटका : परिवर्धन सूची 1 16-12-2025 से 21-02-2026 तकJ", "पटका : परिवर्धन सूची 1 /24-12-2025 21-02-20261",
+                 "पटक ा : परिवर्धन सूची 1 /01-08-2025 से 01-09-2025 तक प्राप्त दावो के आधार परा",
+                 "परिवर्धन सूची 1 /15-07-2026 28-09-20261", "1 परिवर्धन सूची 1 /01-01-2026 28-02-20261", "परिवर्धन की सूची"):
+        assert E.parse_heading([line]) == E.LISTS[0], line
+    assert E.parse_heading(["घटक II - विलोपन सूची"]) == E.LISTS[1]
+    # the section line still wins in its own band order (last match), and a section name is no list
+    assert E.parse_heading(["पटका : परिवर्धन सूची 1", "अनुभाग संख्या व नाम 2-परिवर्धन नगर"]) == "2-परिवर्धन नगर"
+    assert E.parse_heading(["विधान सभा क्षेत्र की संख्या व नाम : 175-राजसमन्द"]) is None
+    assert E.parse_heading(["परिवर्तन के बाद"]) is None                    # no 'सूची' after the word
+
+
+def test_number_sections():
+    import eci_ocr as E
+    recs = [dict(section=s) for s in ("?-जैनपुर खुर्द", "?-जैनपुर खुर्द", "?-जैनपुर खुद", "2-कासमपुर", "?-नया गांव", None)]
+    assert E.number_sections(recs) == 4
+    assert [r["section"] for r in recs] == ["1-जैनपुर खुर्द", "1-जैनपुर खुर्द", "1-जैनपुर खुद", "2-कासमपुर", "3-नया गांव", None]
+    assert [bool(r.get("section_no_inferred")) for r in recs] == [True, True, True, False, True, False]

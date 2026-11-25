@@ -64,7 +64,7 @@ def do_item(hub, item):
                 a, b = 0, epicfix.serial_gaps(recs)
             else:
                 voters = [r for r in recs if not r.get("not_voter_box")]
-                a = epicfix.fix(voters, idx)
+                a = epicfix.fix(voters, idx, 1)
                 b = epicfix.fix2(voters, idx, 1)          # SIR 2026 vs the 2027 roll: age gap 0 or 1
             if a or b:
                 n_changed += 1
