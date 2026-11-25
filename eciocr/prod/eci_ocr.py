@@ -540,6 +540,8 @@ NOHINT_EARLY = int(os.environ.get('ECI_NOHINT_EARLY') or 0)   # job1 speed: no-h
 # ECI_NOHINT_EARLY_CONF=tau (default 0 = no floor): a box is settled in stage 1 only when every stage-1 CRNN line confidence
 # (minimum character probability, all crops but the code) is >= tau. ECI_EARLY_DUMP=1 (evaluation): stage-1 boxes get 's1_conf'.
 EARLY_CONF = float(os.environ.get('ECI_NOHINT_EARLY_CONF') or 0)
+# ECI_NOHINT_EARLY_IDX=i,j,k: which CRNNs (0-based, set order) form stage 1 (default the first K); voting order is unchanged
+EARLY_IDX = sorted(int(x) for x in os.environ.get('ECI_NOHINT_EARLY_IDX', '').split(',') if x.strip())
 EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') in ('1', '2')
 
 
@@ -841,6 +843,7 @@ def process_page(task):
     K = _OPT.get('stage1', 0)
     stampbox = set()
     stamp_nm = {}   # ECI_STAMP_SET: box -> engine names it is decided with
+    s1nm = None     # ECI_NOHINT_EARLY: names of the stage-1 CRNNs
     if lang in LATIN_TPL and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
@@ -970,13 +973,14 @@ def process_page(task):
         # a box whose stage-1 decision has no flag (all K+1 engines agree on every field and the validators pass) is settled
         # there; the other CRNNs read only the remaining boxes, which are decided with all engines as before.
         K = NOHINT_EARLY
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), lang=lang)
+        S1I = EARLY_IDX or list(range(K)); s1nm = [_E.names[j] for j in S1I]; REST = set(range(len(_E.crnn))) - set(S1I)
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(S1I), lang=lang)
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
-        names1 = _E.names[:K] + [e[0] for e in _E.pcrnn] + _E.tnames
-        s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
+        names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
+        s1c = [_s1_conf(r, s1nm) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
-            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set(), lang=lang)
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang)
             for i, r2 in zip(need, more):
                 for tn in _E.tnames: r2.pop(tn, None)
                 reads[i].update(r2)
@@ -988,7 +992,8 @@ def process_page(task):
         # stage-1 flag are settled; for the others the other CRNNs read, the TESS_SKIP rule is computed again on all CRNNs and the
         # Tesseract lines it no longer skips are read, so a stage-2 box gets exactly the reads of the TESS_SKIP path.
         K = NOHINT_EARLY
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups={'num', 'epic', 'code'})
+        S1I = EARLY_IDX or list(range(K)); s1nm = [_E.names[j] for j in S1I]; REST = set(range(len(_E.crnn))) - set(S1I)
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(S1I), tess_groups={'num', 'epic', 'code'})
 
         def _skips(r, crn):
             cs = [from_lines(r[n][0]) for n in crn]; skip = set()
@@ -1004,14 +1009,14 @@ def process_page(task):
                 reads[i]['tess'][0].update(r2['tess'][0])
             return sum(len(x) for x in sub)
 
-        sk1 = [_skips(r, _E.names[:K]) for r in reads]
+        sk1 = [_skips(r, s1nm) for r in reads]
         nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
-        names1 = _E.names[:K] + [e[0] for e in _E.pcrnn] + _E.tnames
-        s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
+        names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
+        s1c = [_s1_conf(r, s1nm) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
-            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set())
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set())
             for i, r2 in zip(need, more):
                 for tn in _E.tnames: r2.pop(tn, None)
                 reads[i].update(r2)
@@ -1055,7 +1060,7 @@ def process_page(task):
             nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
         else:
-            nm = stamp_nm.get(i) or ((_E.names[:K] + _E.tnames) if i in stage1_only else (_E.names[K:] if S1_SCREEN and K > 0 and _OPT['hints'] else _E.names))
+            nm = stamp_nm.get(i) or (((s1nm or _E.names[:K]) + _E.tnames) if i in stage1_only else (_E.names[K:] if S1_SCREEN and K > 0 and _OPT['hints'] else _E.names))
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
         if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
             readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
@@ -1077,9 +1082,9 @@ def process_page(task):
         if K and _OPT['hints'] and i in seq_ok: rec['serial_s1_seq'] = True
         if i in stampbox: rec['stampbox'] = True
         if EARLY_DUMP and NOHINT_EARLY and not _OPT['hints']:
-            rec['s1_conf'] = round(_s1_conf(r, _E.names[:NOHINT_EARLY]), 4); rec['stage1_only'] = i in stage1_only
+            rec['s1_conf'] = round(_s1_conf(r, s1nm or _E.names[:NOHINT_EARLY]), 4); rec['stage1_only'] = i in stage1_only
             if os.environ.get('ECI_EARLY_DUMP') == '2':   # per crop: CRNN confidences and raw reads of the stage-1 engines
-                rec['s1_reads'] = {n: [r[n][0], r[n][1]] for n in _E.names[:NOHINT_EARLY] + _E.tnames if n in r}
+                rec['s1_reads'] = {n: [r[n][0], r[n][1]] for n in (s1nm or _E.names[:NOHINT_EARLY]) + _E.tnames if n in r}
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
             rec['cands'] = {n: c for n, c in zip(nm, cands)}
             rec['confs'] = decide_box.confs
