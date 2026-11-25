@@ -27,6 +27,7 @@ import numpy as np
 from layout import find_boxes, crop                 # noqa: E402
 from segment import segment, _mask, cells           # noqa: E402
 import segment as _segmod                           # noqa: E402
+import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
@@ -462,16 +463,28 @@ def _valset(recs, segs_list):
                     r[f] = cr[0]; r['flags'].remove(f); r['readings'].pop(f, None)
 
 
+# job2 2026-11-25 (ECI_TOFU=1, default off): missing-glyph boxes after names (Haryana SIR: the roll font has no glyph for a
+# character stored after many names, the print shows an empty rectangle; 26 of 90 S07 ACs, 8.5 % of the boxes) are found on the
+# page image as stored, painted white before the boxes are cut, and named in the record: 'missing_glyph' = {field: count}
+# (eciocr/ocr/tofu.py). Only boxes inside a voter box's text column; without such boxes the output is unchanged.
+TOFU = os.environ.get('ECI_TOFU', '0') == '1'
+
+
 def process_page(task):
     pdf, pno, kind = task
     t0 = time.time(); tm = {}
     gray = page_gray(pdf, pno)
     tm['extract'] = round(time.time() - t0, 3)
     if gray is None: return dict(pdf=pdf, page=pno, boxes=0, skip='no image', timing=tm)
+    tofus = _tofu.find_tofu(gray) if TOFU else []
     t = time.time()
     boxes = find_boxes(gray)
     tm['layout'] = round(time.time() - t, 3)
     if not boxes: return dict(pdf=pdf, page=pno, boxes=0, skip='no voter boxes', timing=tm, size=gray.shape[::-1])
+    tofu_at = {}
+    if tofus:
+        keep, tofu_at = _tofu.select(tofus, boxes)
+        if keep: gray = _tofu.erase(gray, keep)
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
@@ -557,6 +570,7 @@ def process_page(task):
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if tofu_at.get(i): rec['missing_glyph'] = tofu_at[i]
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     if _E.vcrnn and not _OPT['hints']:
