@@ -1716,5 +1716,57 @@
    "lang-guj_r9_a_3q_x0": "2ac5499f83b82e61",
    "lang-guj_r9_b_half_x0": "bde5a4b2bd68e2d3"
   }
+ },
+ "telH2": {
+  "about": "Telugu SIR (U07-30 Yanam, 84 parts; owner 2026-11-26 deploy) WITH the Telugu 2027 Yanam hints. 4 int8 CRNNs trained on synthetic Telugu SIR pages (free fonts, no gold text) + Tesseract tel; cascade stage1 2 (2 CRNNs + Tesseract num/code). Same lang-mal engine family (ECI_ENG_* path, lang=TEL). Gold (90 boxes): record 97.78 %, unflagged 100 %, flag 4.44 %, 0 silent (small gold: only Yanam). Engine from the lang-mal merge (already on main). Hints = 2027 Yanam roll (hints/gold27/U07-30.jsonl).",
+  "models": [
+   "lang_mal_tel2b_3q_q0",
+   "lang_mal_tel2a_half_q0",
+   "lang_mal_tel2b_base_q0",
+   "lang_mal_tel2a_quarter_q0"
+  ],
+  "sha256_16": {
+   "lang_mal_tel2b_3q_q0": "bd205584c7ee1a33",
+   "lang_mal_tel2a_half_q0": "cded9373d0ce912f",
+   "lang_mal_tel2b_base_q0": "543ec537ce3e9893",
+   "lang_mal_tel2a_quarter_q0": "f93c831ac33c6358"
+  },
+  "hints": "required",
+  "stage1": 2,
+  "lang": "TEL",
+  "env": {
+   "ECI_ENG_DARK": "170",
+   "ECI_ENG_DESC": "0",
+   "ECI_ENG_AGREE": "2",
+   "ECI_ENG_NOHINT": "1",
+   "ECI_ENG_S1_TESS": "num,code",
+   "ECI_ENG_CODE": "0",
+   "ECI_CASCADE_NOHINT": "0",
+   "ECI_RESCALE_H": "1679",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "tessdata": "tel + eng traineddata (apt tesseract-ocr-tel)",
+  "gold": {
+   "tel_rec": 97.78,
+   "tel_unflagged": 100.0,
+   "tel_flag_pct": 4.44,
+   "tel_silent": 0,
+   "boxes": 90,
+   "source": "lang-mal eval tel2ab_s2"
+  },
+  "charset_sha256_16": {
+   "lang_mal_tel2b_3q_q0": "e80ddaffc774509d",
+   "lang_mal_tel2a_half_q0": "e80ddaffc774509d",
+   "lang_mal_tel2b_base_q0": "e80ddaffc774509d",
+   "lang_mal_tel2a_quarter_q0": "e80ddaffc774509d"
+  },
+  "arch_sha256_16": {
+   "lang_mal_tel2b_3q_q0": "37d86c08430c0cb5",
+   "lang_mal_tel2a_half_q0": "168aa33937df9d29",
+   "lang_mal_tel2b_base_q0": "4574c224b3740d16",
+   "lang_mal_tel2a_quarter_q0": "ca53b73492b08313"
+  }
  }
 }
