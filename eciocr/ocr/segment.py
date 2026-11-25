@@ -259,3 +259,132 @@ def segment_eng(gray):
         k += 1
         if k >= ENG_MAX_LINES: break
     return out
+
+
+# ---------------------------------------------------------------- Odia rolls (2026-11-25, job lang-ori)
+# Odia SIR boxes have the English layout (4 labelled lines + wrap lines), but the Odia glyphs reach far above and below the
+# line core (i/ii matras, chandrabindu, subjoined consonants, u/uu matras): a band cut between two lines takes the marks of the
+# neighbour line or loses its own. So the lines are built from connected components: the large components (letter bodies)
+# are clustered by their vertical centre into lines; every other component (marks, dots, colon) goes to the line whose
+# core (rows of its large components) is nearest. Each line crop = the gray pixels of its own components only, rest white.
+
+def _body_components(bw_body, P):
+    n, lab, st, cen = cv2.connectedComponentsWithStats(bw_body, 8)
+    comps = []
+    for j in range(1, n):
+        x, y, w_, h_, a = st[j]
+        if a < 3: continue
+        comps.append((j, x, y, w_, h_, a))
+    return lab, comps
+
+
+def ori_lines(body_gray, bw_body, P, max_lines=8):
+    """body_gray/bw_body: text column of the box body (gray / ink mask without rules). -> list of (y0, y1, x0, x1, mask)."""
+    lab, comps = _body_components(bw_body, P)
+    big = [c for c in comps if 0.33 * P <= c[4] <= 1.7 * P and c[3] <= 6 * P]
+    if not big: return []
+    big.sort(key=lambda c: c[2] + c[4] / 2)
+    groups = [[big[0]]]
+    for c in big[1:]:
+        cy = c[2] + c[4] / 2
+        g = groups[-1]
+        gy = np.median([d[2] + d[4] / 2 for d in g])
+        if cy - gy > 0.5 * P: groups.append([c])
+        else: g.append(c)
+    # a line needs real text: >= 2 large components or one wide one (stamps / stray marks are dropped later by the parser)
+    groups = [g for g in groups if len(g) >= 2 or g[0][3] >= 0.8 * P]
+    cores = []
+    for g in groups:
+        tops = sorted(d[2] for d in g); bots = sorted(d[2] + d[4] for d in g)
+        cores.append([float(np.median(tops)), float(np.median(bots)), g])
+    assign = {}
+    for c in comps:
+        j, x, y, w_, h_, a = c
+        best, bd = None, None
+        for k, (t, b, g) in enumerate(cores):
+            if y + h_ < t: d = t - (y + h_)
+            elif y > b: d = y - b
+            else:   # overlap: prefer the core with most overlap
+                d = -min(y + h_, b) + max(y, t)
+            if bd is None or d < bd: best, bd = k, d
+        if best is not None and bd <= 0.9 * P: assign[j] = best
+    out = []
+    for k in range(len(cores)):
+        js = [j for j, kk in assign.items() if kk == k]
+        if not js: continue
+        m = np.isin(lab, js)
+        ys, xs = np.where(m)
+        if not len(ys): continue
+        out.append((int(ys.min()), int(ys.max()) + 1, int(xs.min()), int(xs.max()) + 1, m))
+        if len(out) >= max_lines: break
+    return out
+
+
+ORI_PITCH = 0.115   # line pitch / box height (Odia SIR, measured 2026-11-25 on S18 pages: overwritten by the line clusters)
+
+
+def segment_ori(gray, margin=4):
+    """Odia box -> dict: serial (+ code), epic, line0..lineN (top to bottom), cut by connected components."""
+    h, w = gray.shape
+    out = segment_eng_top(gray)
+    bw, photo, small = cells(gray)
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    px = photo[0] - 3 if photo else int(0.72 * w)
+    xl = max(6, int(0.018 * w))
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    lines |= cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(8, h // 4))))
+    y_body = top_bottom + 2
+    bwb = cv2.subtract(bw, lines)[y_body: h - 3, xl:px]
+    gb = gray[y_body: h - 3, xl:px]
+    if bwb.size == 0: return out
+    P = ORI_PITCH * h
+    for k, (y0, y1, x0, x1, m) in enumerate(ori_lines(gb, bwb, P)):
+        keep = cv2.dilate(m.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        im = np.where(keep, gb, 255).astype(np.uint8)
+        Y0, Y1 = max(0, y0 - margin), min(gb.shape[0], y1 + margin)
+        X0, X1 = max(0, x0 - margin), min(gb.shape[1], x1 + margin)
+        out[f'line{k}'] = np.ascontiguousarray(im[Y0:Y1, X0:X1])
+    return out
+
+
+def segment_eng_top(gray):
+    """serial (+ code), part, epic crops of a box (the top band; same as segment_eng)."""
+    h, w = gray.shape
+    bw, photo, small = cells(gray)
+    out = {}
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    for i, (x, y, cw, ch) in enumerate(small[:2]):
+        cell = _drop_rule_slivers(gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
+        if i == 0:
+            ink = (_mask(cell) > 0).sum(0) > 0
+            left = ink[: int(0.4 * len(ink))]
+            if left.sum() > 2:
+                cols = np.where(ink)[0]
+                gaps = [(cols[j + 1] - cols[j], cols[j]) for j in range(len(cols) - 1)]
+                g, at = max(gaps) if gaps else (0, 0)
+                if g > 0.12 * len(ink):
+                    out['code'] = trim(cell[:, : at + 2]); out['serial'] = trim(cell[:, at + 2:])
+                    continue
+            out['serial'] = trim(cell)
+        else:
+            out['part'] = trim(cell)
+    ex0 = (small[-1][0] + small[-1][2] + 4) if small else int(0.55 * w)
+    ex0 = max(ex0, int(0.45 * w))
+    out['epic'] = trim(gray[3: top_bottom + 1, ex0: w - 4])
+    return out
+
+
+def _drop_rule_slivers(cell):
+    """Whiten remains of the cell's rules: components that touch the crop edge and are thin (<= 4 px) or flat (<= 4 px high).
+    In the Odia print the serial cell's left rule left a 1-3 px sliver that the code test read as a status code."""
+    if cell.size == 0: return cell
+    m = _mask(cell)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
+    H, W = m.shape
+    out = cell.copy()
+    for j in range(1, n):
+        x0, y0, w0, h0, _a = st[j]
+        edge = x0 <= 1 or y0 <= 1 or x0 + w0 >= W - 1 or y0 + h0 >= H - 1
+        if (edge and (w0 <= 4 or h0 <= 4)) or _a <= 2: out[lab == j] = 255
+    return out
