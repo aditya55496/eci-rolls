@@ -19,7 +19,7 @@ PASS = {"ECI_OCR_WORKERS", "ECI_TESS_CLI", "ECI_CRNN"}
 # keep every older set's behaviour (batch 64, no lazy Tesseract / hints, no stamp set, no screening, headings by CRNN 0)
 PASS |= {"ECI_CRNN_BATCH", "ECI_NOTRIM_PAD", "ECI_TESS_LAZY", "ECI_HINTS_LAZY", "ECI_STAMP_SET", "ECI_S1_SCREEN", "ECI_HEAD_CRNN",
          "ECI_NOHINT_EARLY", "ECI_NOHINT_EARLY_CONF", "ECI_EARLY_DUMP",
-         "ECI_NOHINT_EARLY_IDX", "ECI_NOHINT_PROXY", "ECI_NOHINT_EARLY_TESSQ"}
+         "ECI_NOHINT_EARLY_IDX", "ECI_NOHINT_PROXY", "ECI_NOHINT_EARLY_TESSQ", "ECI_NOHINT_EARLY_CHECK"}
 
 
 def _code_switches():

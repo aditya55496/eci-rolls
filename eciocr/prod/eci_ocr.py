@@ -572,6 +572,24 @@ EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') in ('1', '2')
 EARLY_TESSQ = set(os.environ.get('ECI_NOHINT_EARLY_TESSQ', ''))
 
 
+# ECI_NOHINT_EARLY_CHECK=KEYS (e.g. line2; default '' = off): the CRNNs left out of stage 1 still read these crops of EVERY box in
+# stage 1; a box is settled only when their reading of the field equals the stage-1 value (and, with TESS_SKIP, the house line is
+# skipped for Tesseract only when all CRNNs agree, as in the all-engine run).
+EARLY_CHECK = [k for k in os.environ.get('ECI_NOHINT_EARLY_CHECK', '').split(',') if k]
+_KEY_FIELDS = {'line0': ('name',), 'line1': ('relation_label', 'relation_name'), 'line2': ('house_no',), 'line3': ('age', 'gender')}
+
+
+def _check_ok(out, chk, names):
+    """chk: {engine: (raw fields of the EARLY_CHECK crops, confs)} -> True when every engine agrees with the stage-1 values."""
+    for n in names:
+        if n not in chk: continue
+        f = from_lines(chk[n][0])
+        for k in EARLY_CHECK:
+            for fld in _KEY_FIELDS.get(k, ()):
+                if k in chk[n][0] and visual(f[fld]) != visual(out[fld]): return False
+    return True
+
+
 def _tess_q(r):
     if not EARLY_TESSQ: return False
     t = r.get('tess')
@@ -1011,7 +1029,15 @@ def process_page(task):
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
         names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, s1nm) for r in reads]
-        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or _tess_q(r) or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        chk = [{} for _ in reads]
+        if EARLY_CHECK and REST:
+            chk = _E.read_boxes([{k: sg[k] for k in EARLY_CHECK if k in sg} for sg in segs_list], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang)
+            chk = [{n: v for n, v in c.items() if n not in _E.tnames} for c in chk]
+        need = []
+        for i, r in enumerate(reads):
+            if s1c[i] < EARLY_CONF or _tess_q(r): need.append(i); continue
+            o1, f1 = decide_box(r, names1, pix[i], {}, stamps[i], lang)[:2]
+            if f1 or (EARLY_CHECK and chk[i] and not _check_ok(o1, chk[i], [n for n in _E.names if n in chk[i]])): need.append(i)
         if need:
             more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), lang=lang, only=set(need))
             for i in need:
@@ -1041,12 +1067,27 @@ def process_page(task):
                 reads[i]['tess'][0].update(r2['tess'][0])
             return sum(len(x) for x in sub)
 
-        sk1 = [_skips(r, s1nm) - ({'line2'} if EARLY_TESSQ else set()) for r in reads]   # TESSQ: Tesseract reads every house line
+        chk = [{} for _ in reads]
+        if EARLY_CHECK and REST:
+            chk = _E.read_boxes([{k: sg[k] for k in EARLY_CHECK if k in sg} for sg in segs_list], _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set())
+            chk = [{n: v for n, v in c.items() if n not in _E.tnames} for c in chk]
+        rest_nm = [_E.names[j] for j in sorted(REST)]
+        sk1 = []
+        for i, r in enumerate(reads):
+            sk = _skips(r, s1nm) - ({'line2'} if EARLY_TESSQ else set())   # TESSQ: Tesseract reads every house line
+            if 'line2' in sk and 'line2' in EARLY_CHECK and chk[i]:
+                h0 = visual(from_lines(r[s1nm[0]][0])['house_no'])
+                if any(visual(from_lines(chk[i][n][0])['house_no']) != h0 for n in rest_nm if n in chk[i]): sk.discard('line2')
+            sk1.append(sk)
         nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
         names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, s1nm) for r in reads]
-        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or _tess_q(r) or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        need = []
+        for i, r in enumerate(reads):
+            if s1c[i] < EARLY_CONF or _tess_q(r): need.append(i); continue
+            o1, f1 = decide_box(r, names1, pix[i], {}, stamps[i], lang)[:2]
+            if f1 or (EARLY_CHECK and chk[i] and not _check_ok(o1, chk[i], [n for n in _E.names if n in chk[i]])): need.append(i)
         if need:
             more = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=REST, tess_groups=set(), only=set(need))
             for i in need:
