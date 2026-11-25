@@ -15,7 +15,7 @@ import collections, re, unicodedata
 from rapidfuzz import fuzz, process
 
 NAME_LABEL = 'મતદારનું નામ'
-LABELS = ['પિતાનું નામ', 'પતિનું નામ', 'માતાનું નામ', 'અન્ય', 'પત્નીનું નામ']
+LABELS = ['પિતાનું નામ', 'પતિનું નામ', 'માતાનું નામ', 'અન્ય', 'પત્નીનું નામ', 'પિતાનુ નામ', 'પતિનુ નામ', 'માતાનુ નામ']   # some parts print no anusvara (gold: part 214 of AC 60)
 GENDERS = ['પુરુષ', 'સ્ત્રી', 'ત્રીજી જાતિ', 'અન્ય']
 HOUSE_LABEL = 'ઘર નંબર'
 AGE_LABEL = 'ઉંમર'
@@ -44,9 +44,11 @@ def line_role(text):
             and re.search(r'[0-9૦-૯]', t):
         return 'age'
     if fuzz.ratio(p, HOUSE_LABEL) >= 70 or t.startswith('ઘર'): return 'house'
-    if fuzz.ratio(p, NAME_LABEL) >= 72 or t.startswith('મતદાર'): return 'name'
-    m = process.extractOne(p, LABELS, scorer=fuzz.ratio)
-    if m and m[1] >= 70: return 'rel'
+    # 'પિતાનું નામ' scores ~75 against 'મતદારનું નામ' (shared 'નું નામ'): the better of the two label scores decides
+    sn = fuzz.ratio(p, NAME_LABEL)
+    m = process.extractOne(p, LABELS, scorer=fuzz.ratio); sr = m[1] if m else 0
+    if t.startswith('મતદાર') or (sn >= 72 and sn > sr): return 'name'
+    if sr >= 70: return 'rel'
     if re.match(r'^(પિતા|પતિ|માતા|પત્ની)', t) and 'નામ' in t[:16]: return 'rel'
     if t.startswith('અન્ય') and COLON.search(t[:8] + ' '): return 'rel'
     return None

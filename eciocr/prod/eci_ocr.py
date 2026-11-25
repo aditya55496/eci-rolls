@@ -409,6 +409,34 @@ def load_hints(path):
     return H
 
 
+GUJ_AGREE = os.environ.get('ECI_GUJ_AGREE', '1') != '0'
+GUJ_STRICT = ('name', 'relation_name', 'house_no')          # all CRNNs AND a Tesseract read must agree
+GUJ_CRNN_ONLY = ('relation_label', 'age', 'gender')        # all CRNNs agree (and the value is valid)
+
+
+def guj_agree(out, flags, cands, names):
+    """Gujarati (lang-guj 2026-11-25): Tesseract guj misreads most box lines, so the generic vote flags ~100 % of boxes.
+    Line fields: the value of ALL CRNNs is taken; the field is unflagged only when (strict fields) a Tesseract read equals it too,
+    or (label / age / gender) it is valid. Gold r2 measure: name 48/48 and relation 65/67 right when 3 CRNNs + Tesseract agree;
+    age 285/286, gender 70/70, label 19/20 when 3 CRNNs agree. Other cases keep the vote and stay flagged."""
+    ci = [i for i, n in enumerate(names) if n.startswith('crnn')]
+    ti = [i for i, n in enumerate(names) if n.startswith('tess')]
+    if len(ci) < 2: return out, flags
+    nm = parse_guj.norm
+    for f in GUJ_STRICT + GUJ_CRNN_ONLY:
+        cv = {nm(cands[i][f]) for i in ci}
+        if len(cv) != 1: 
+            if f not in flags: flags = flags + [f]
+            continue
+        v = cands[ci[0]][f]
+        ok = bool(v) and ensemble2.valid(f, v) if f != 'house_no' else bool(v)
+        if f in GUJ_STRICT: ok = ok and any(nm(cands[i][f]) == nm(v) for i in ti)
+        out[f] = v
+        if ok: flags = [x for x in flags if x != f]
+        elif f not in flags: flags = flags + [f]
+    return out, flags
+
+
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
@@ -424,6 +452,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
     out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    if lang == 'GUJ' and GUJ_AGREE:
+        out, flags = guj_agree(out, flags, cands, names)
     readings = {}
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
