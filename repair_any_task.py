@@ -5,7 +5,7 @@ roll runs inside eci_ocr when hints exist). This task is for outputs written bef
 repair_task.py was for UP, in the layout ocr/<state>/<ac>/<part>.jsonl.gz.
 Queue item (project eci-rolls-hi-repair): key "<fix>/<state>/<ac>", payload {"state", "ac", "p": [parts], "fix": "parts" |
 "epic", "hints": key or null}. fix "parts" = final_deleted + serial_gaps; fix "epic" = epicfix.fix + fix2 against the 2027
-hints (only for items with a hints key). A changed file is written back to eci-rolls-hi-ocr (one file per call); the file it
+hints (only for items with a hints key), fix2 with the guard switches recorded in the records' ocr_rules. A changed file is written back to eci-rolls-hi-ocr (one file per call); the file it
 replaced is kept once under ocr_prev/<fix>/<state>/<ac>/<part>.jsonl.gz in this project. Records changed by this task get
 "repaired_by": [<fix>, ...] (the record's ocr_* provenance stays that of the OCR run). One hub record per item: counts.
 """
@@ -83,6 +83,11 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
                 c = {"epic_fix1": 0, "epic_fix2": 0}
                 for roll, vs in by_roll.items():
                     gap = 2027 - H.roll_year(roll) if roll else 1
+                    # fix2 with the guard switches of the OCR run (ocr_rules), not of this process: without them the unguarded
+                    # fix2 would put back the swaps the run refused (ocrv5 review 2: S20/14/70 serial 937)
+                    rules = vs[0].get("ocr_rules") or {}
+                    epicfix.FIX2_GUARD = str(rules.get("ECI_EPICFIX2_GUARD", "0")) == "1"
+                    epicfix.FIX2_MIN = float(rules.get("ECI_EPICFIX2_MIN", "60"))
                     c["epic_fix1"] += epicfix.fix(vs, idx, gap)
                     c["epic_fix2"] += epicfix.fix2(vs, idx, gap)
             n = _mark(recs, before, fix)

@@ -381,3 +381,33 @@ def test_planner_holds_incomplete_hints(monkeypatch):
     assert ready == {1, 4} and set(bad) == {2, 3, 4} and "not held" in bad[4]
     ready, bad = P.ssr_done("eci-rolls-ssr-text", "S12-2027-DR", strict=True)
     assert ready == {1}
+
+
+def test_repair_any_epic_keeps_the_runs_fix2_guard():
+    """ocrv5 review 2: repair-any 'epic' ran fix2 without the guard of the OCR run and put back the refused swap."""
+    import gzip
+    import json
+    import repair_any_task as RA
+    hints = [dict(epic="HSD1338565", name="मुकेशकुमार", relation_name="बजरंगलाल", relation_label="पिता का नाम", gender="पुरुष", age="34")]
+    rec = dict(roll="S20-2026-DR", source="x.pdf", page=35, box=10, epic="UIO1338565", name="पिंटू राम", relation_name="जय गोपाल",
+               relation_label="पिता का नाम", gender="पुरुष", age="34", flags=["epic"], readings={"epic": {"fix2_candidate": "HSD1338565"}},
+               ocr_rules={"ECI_EPICFIX2_GUARD": "1", "ECI_EPICFIX2_MIN": "70"})
+    files = {"eci-rolls-ssr-text/hints/S20-2027-DR/14.jsonl.gz": gzip.compress("".join(json.dumps(h) + "\n" for h in hints).encode()),
+             "eci-rolls-hi-ocr/ocr/S20/14/70.jsonl.gz": gzip.compress((json.dumps(rec, ensure_ascii=False) + "\n").encode())}
+
+    def fetch(keys, dest):
+        out = {}
+        for k in keys:
+            p = os.path.join(dest, k.replace("/", "__"))
+            open(p, "wb").write(files[k])
+            out[k] = p
+        return out
+    up = []
+    item = {"key": "epic/S20/14", "payload": {"state": "S20", "ac": 14, "p": [70], "fix": "epic",
+                                              "hints": "eci-rolls-ssr-text/hints/S20-2027-DR/14.jsonl.gz"}}
+    out = RA.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
+    assert out["changed"] == {"epic_fix1": 0, "epic_fix2": 0} and out["files_changed"] == 0 and up == []
+    rec["ocr_rules"] = {"ECI_EPICFIX2_GUARD": "0"}                  # a run without the guard: the old fix2 (UP behaviour)
+    files["eci-rolls-hi-ocr/ocr/S20/14/70.jsonl.gz"] = gzip.compress((json.dumps(rec, ensure_ascii=False) + "\n").encode())
+    out = RA.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
+    assert out["changed"]["epic_fix2"] == 1
