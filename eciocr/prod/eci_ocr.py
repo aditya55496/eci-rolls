@@ -413,6 +413,7 @@ ENG_LEX = os.environ.get('ECI_ENG_LEX', '0') == '1'   # job4 r2: name lexicon gu
 # also long wrapped names) is never settled by the 2-CRNN stage 1 (HS check: 8 of 9 silent stage-1 errors of a stamp-trained pair
 # were in such boxes)
 ENG_STAMPBOX = os.environ.get('ECI_ENG_STAMPBOX', '0') == '1'
+ENG_STAMP3 = os.environ.get('ECI_ENG_STAMP3', '0') == '1'   # job4 r3: eng_stamp3 (needs ENG_STAMPBOX)
 ENG_UNAN = int(os.environ.get('ECI_ENG_UNAN', '0') or 0)   # job4 r3: accept CRNN-unanimous fields without Tesseract support (eng_unan)
 _ENG_LEX = None
 
@@ -543,6 +544,7 @@ def process_page(task):
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
         rec = dict(page=pno + 1, box=i, kind=kind, lang=lang, section=section, **{f: out[f] for f in OUT_FIELDS})
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if ENG_STAMPBOX and lang == 'ENG' and sum(k.startswith('line') for k in segs_list[i]) > 4: rec['stampbox'] = True
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
             rec['cands'] = {n: c for n, c in zip(nm, cands)}
             rec['confs'] = decide_box.confs
@@ -631,6 +633,32 @@ def eng_unan(recs, lexmin=None, pmin=2):
                 ok = bool(v)
             if ok:
                 r['flags'].remove(f); r['readings'].pop(f, None); r.setdefault('unan', []).append(f); n += 1
+    return n
+
+
+def eng_stamp3(recs, lexmin=None, pmin=2):
+    """job4 r3 (ECI_ENG_STAMP3=1, with ECI_ENG_STAMPBOX=1 and 4 CRNNs: 2 stage-1 + 2 stamp-trained stage-2 models): in a
+    stamp box (more than 4 text bands), a FLAGGED name / relation name is accepted when both stage-2 CRNNs and at least one
+    stage-1 CRNN read the same value and every token passes the lexicon check of eng_unan; Tesseract is not needed (it reads
+    nothing under the stamp). For the other flagged name / relation / house fields of a stamp box the value becomes the
+    stage-2 pair's reading when the pair agrees (the field stays flagged). Offline check on HS (r3/sim/sim3.py, config K3):
+    names 405 accepted, 2 differ from the draft. Returns the number of fields accepted."""
+    lexmin = lexmin or int(os.environ.get('ECI_ENG_UNAN_LEX', '5'))
+    C = _lex(); tok = re.compile(r'[A-Za-z]+'); n = 0
+    pc = collections.Counter(t.lower() for r in recs for k in ('name', 'relation_name') if k not in r['flags']
+                             for t in set(tok.findall(r.get(k) or '')))
+    for r in recs:
+        if not r.get('stampbox'): continue
+        for f in ('name', 'relation_name', 'house_no'):
+            if f not in r['flags']: continue
+            c = [v for k, v in r['readings'].get(f, {}).items() if k.startswith('crnn') and k != 'crnn_conf']
+            if len(c) != 4 or not c[2] or c[2] != c[3]: continue
+            v = c[2]; r[f] = v
+            if f == 'house_no' or sum(x == v for x in c) < 3: continue
+            ts = [t.lower() for t in tok.findall(v) if len(t) >= 2]
+            own = collections.Counter(ts)
+            if ts and all(C.get(t, 0) >= lexmin or pc[t] - own[t] >= pmin for t in ts):
+                r['flags'].remove(f); r['readings'].pop(f, None); r.setdefault('stamp3', []).append(f); n += 1
     return n
 
 
@@ -860,6 +888,8 @@ def main():
                 info['epic_by_prefix'] = eng_epic_prefix(recs)
             if ENG_UNAN and ENG_NOHINT and not _HINTS and recs:
                 info['unan'] = eng_unan(recs)
+            if ENG_STAMP3 and ENG_NOHINT and not _HINTS and recs:
+                info['stamp3'] = eng_stamp3(recs)
             if ENG_LEX and lang_of_pdf_is_eng(recs) and recs:
                 info['lex_guard'] = eng_lex_guard(recs)
             if a.draft_records and recs:
