@@ -532,6 +532,12 @@ def _stage1_agree(cs):
 DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 # job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
+ENG_LEX = os.environ.get('ECI_ENG_LEX', '0') == '1'   # job4 r2: name lexicon guard (eng_lex_guard)
+_ENG_LEX = None
+
+
+def lang_of_pdf_is_eng(recs):
+    return any(r.get('lang') == 'ENG' for r in recs)
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 
 
@@ -858,6 +864,43 @@ def eng_epic_prefix(recs, min_other=3):
     return n
 
 
+def eng_lex_guard(recs, cmax=2, nmin=30, ratio=30.0, pmin=2):
+    """job4 r2 (English, no hints; ECI_ENG_LEX=1): silent-error guard for names. An UNFLAGGED name / relation name is flagged
+    when one of its tokens (>= 3 letters) is rare in the non-gold name lexicon (count <= cmax, eciocr/ocr/eng_name_lex.json.gz)
+    AND is read in fewer than pmin name fields of the same PDF AND a confusable 1-edit neighbour (y/v, j/i, m/rn, d/cl: lost
+    descenders and merged letters) is common (count >= nmin and >= ratio x (count + 1)). Held-out check (22 non-gold PDFs of the
+    11 no-2027 states, 13,953 records, config c2): 8 new flags, 7 of them wrong names ('Chaudharv', 'Jvoti', 'Mava', 'Manoi')."""
+    global _ENG_LEX
+    if _ENG_LEX is None:
+        import gzip
+        _ENG_LEX = json.load(gzip.open(os.path.join(os.path.dirname(os.path.abspath(ensemble2.__file__)), 'eng_name_lex.json.gz'), 'rt'))['counts']
+    C = _ENG_LEX
+    sub = {}
+    for a, b in (('v', 'y'), ('rn', 'm'), ('cl', 'd'), ('j', 'i')):
+        sub.setdefault(a, []).append(b); sub.setdefault(b, []).append(a)
+    tok = re.compile(r'[A-Za-z]+')
+    pc = collections.Counter(t.lower() for r in recs for k in ('name', 'relation_name') for t in tok.findall(r.get(k) or ''))
+
+    def neigh(t):
+        for a, bs in sub.items():
+            i = t.find(a)
+            while i >= 0:
+                for b in bs: yield t[:i] + b + t[i + len(a):]
+                i = t.find(a, i + 1)
+    n = 0
+    for r in recs:
+        for f in ('name', 'relation_name'):
+            if f in r['flags']: continue
+            for t in tok.findall(r.get(f) or ''):
+                t = t.lower()
+                if len(t) < 3 or C.get(t, 0) > cmax or pc[t] >= pmin: continue
+                best = max((C.get(x, 0) for x in neigh(t)), default=0)
+                if best >= nmin and best >= ratio * (C.get(t, 0) + 1):
+                    r['flags'].append(f); r.setdefault('lex_guard', []).append(t); n += 1
+                    break
+    return n
+
+
 def draft_fill(recs, path):
     """job4 (2026-11-25): SIR FINAL roll + the OCR records of the SIR DRAFT roll of the same part. The final roll prints the
     same voters (minus deletions, plus additions); in West Bengal it stamps 'UNDER ADJUDICATION' over the text of some boxes,
@@ -1050,6 +1093,8 @@ def main():
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed, post_rules=post)
             if ENG_NOHINT and not _HINTS and recs:
                 info['epic_by_prefix'] = eng_epic_prefix(recs)
+            if ENG_LEX and lang_of_pdf_is_eng(recs) and recs:
+                info['lex_guard'] = eng_lex_guard(recs)
             if a.draft_records and recs:
                 info['draft_fill'] = draft_fill(recs, a.draft_records)
             if kind == 'SIR' and recs:
