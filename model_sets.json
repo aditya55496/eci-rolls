@@ -325,7 +325,8 @@
         "GEMP (Modal, avx2)": 0.298,
         "r3 mixed ISA, 5 types": 0.349
       },
-      "source": "job5 gold v1.1 (1,283 boxes: GE = GE 2024 Bihar + Himachal, BSIR = Bihar SIR 2025, SSRDR / SSRFIR = SSR 2024/25 drafts / finals of Haryana, MP, Bihar, Himachal, SUP = UP 2026 supplements) + GEMP (MP GE 2024, 294 boxes, gold by 2027 text layer + eye); Modal eci-eval queue models2/job5/eval/q_r4v.txt (tag j5r4V), job5 code 211cc2f, scored with models2/job5/gold/score_j5.py. SUP misses the 97 % target: no supplement items are planned with this set."
+      "source": "job5 gold v1.1 (1,283 boxes: GE = GE 2024 Bihar + Himachal, BSIR = Bihar SIR 2025, SSRDR / SSRFIR = SSR 2024/25 drafts / finals of Haryana, MP, Bihar, Himachal, SUP = UP 2026 supplements) + GEMP (MP GE 2024, 294 boxes, gold by 2027 text layer + eye); Modal eci-eval queue models2/job5/eval/q_r4v.txt (tag j5r4V), job5 code 211cc2f, scored with models2/job5/gold/score_j5.py. SUP misses the 97 % target: no supplement items are planned with this set.",
+      "formocr_rerun": "2026-11-25 gold re-run with the formocr code (branch formocr 586e0f2, env exactly as above; Modal app formocr_gold, 54 PDFs, 511 OCR CPU-s; models2/formocr/gold): record / unflagged / silent / EPIC identical to the job5 run on all 6 types (GE 98.59 / 100 / 0 / 100, BSIR 99.65 / 99.56, SSRDR 98.67 / 100, SSRFIR 98.55 / 100, SUP 95.65 / 100, GEMP 99.66 / 100); flags GE 22.89 -> 23.24 %, SSRFIR 21.74 -> 21.38 %. Output diff of 1,577 gold-page records: 'section' (ocrv5 heading fix: the label 'sankhya evam naam :' no longer in the value) and 4 flag sets + 1 value of a flagged field, all 5 on PDFs that ran on another CPU ISA than in the job5 run (27 of 54 PDFs; 0 such changes on the 27 same-ISA PDFs)."
     }
   }
 }
