@@ -574,7 +574,7 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
     hint = next((hints[e] for e in epics if e in hints), None)
-    if lang == 'ENG' and ENG_NOHINT and hint is None:
+    if lang in LATIN_TPL and ENG_NOHINT and hint is None:   # lang-tam: Tamil too
         out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
@@ -686,7 +686,7 @@ def process_page(task):
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
-    if lang == 'ENG' and ENG_NOHINT and not _OPT['hints'] and K >= 2:
+    if lang in LATIN_TPL and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)

@@ -590,7 +590,8 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
             ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
         if not ok and f in CORE: flags.append(f)
     lab = (out.get('relation_label') or '').lower()
-    if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female'):
+    if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female') \
+            or (lab.startswith('கணவ') and out.get('gender') == 'ஆண்') or (lab.startswith('மனைவி') and out.get('gender') == 'பெண்'):
         if 'gender' not in flags: flags.append('gender')
     if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags
