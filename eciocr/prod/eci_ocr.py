@@ -293,6 +293,7 @@ class Engines:
 LATIN_TEMPLATE = ('ENG', 'BEN')   # lang-ben: rolls printed in the English template (segment_eng, parse by line roles)
 BEN_TOP_CELLS = float(os.environ.get('ECI_BEN_TOP_CELLS', '0.15') or 0)
 BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # segment_eng line pitch for Bengali boxes
+BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
 
 def code_pixel(box_gray, lang='HIN'):
@@ -459,7 +460,7 @@ def process_page(task):
     segs_list, stamps = [], []
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
         if lang in LATIN_TEMPLATE:
-            segs_list.append({k: im for k, im in (segment_eng(g, BEN_TOP_CELLS, BEN_PITCH) if lang == 'BEN' else segment_eng(g)).items() if im.size})
+            segs_list.append({k: im for k, im in (segment_eng(g, BEN_TOP_CELLS, BEN_PITCH, comp=BEN_COMP) if lang == 'BEN' else segment_eng(g)).items() if im.size})
             stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))

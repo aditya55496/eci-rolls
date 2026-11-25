@@ -237,13 +237,77 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
     return band[m:]
 
 
-def segment_eng(gray, top_cells=None, pitch=None):
+def _assign_lines(gray, body, bands, y_body, x0, P):
+    """lang-ben round 2: one crop per text band; every ink component goes to a line: a component that holds a headline row
+    (densest row of a band) to that line; a mark without one to the line whose zone centre (headline + 0.22 P) is nearest.
+    So a u-kar hook below line k stays with line k, and i-kar tops, reph and chandrabindu above line k+1 go to line k+1.
+    P = median headline distance (small-print pages have a smaller pitch than the box grid). Two lines that touch (one
+    component with both headlines, or a line's component that reaches the next headline) are split at the narrowest row of
+    the gap. Components taller than 1.3 P otherwise (stamps, frame) are kept clipped to the band, as the row cut did.
+    Other components are whitened (with a 1 px grey edge)."""
+    H = body.shape[0]
+    prof = (body > 0).sum(1)
+    heads = [a + int(np.argmax(prof[a:b])) for a, b in bands]
+    if len(heads) >= 3: P = float(np.median(np.diff(heads)))   # the real pitch (small-print pages: smaller than the box grid)
+    n, lab, st, _ = cv2.connectedComponentsWithStats(body, 8)
+    owner = np.full(n, -1, int); tall = np.zeros(n, bool); split = []
+    def cut_row(j, k):   # the narrowest row of component j in the gap above line k + 1 (where two lines' marks touch)
+        r0 = max(0, int(round(heads[k + 1] - 0.33 * P))); r1 = max(r0 + 1, int(round(heads[k + 1] - 0.1 * P)) + 1)
+        x, y, w, h, _a = st[j]
+        cnt = [(int((lab[r, x:x + w] == j).sum()), abs(r - (heads[k + 1] - 0.22 * P)), r) for r in range(r0, min(r1, H))]
+        return min(cnt)[2] if cnt else int(heads[k + 1] - 0.22 * P)
+
+    for j in range(1, n):
+        x, y, w, h, _a = st[j]
+        ks = [k for k, hd in enumerate(heads) if y - 1 <= hd <= y + h]
+        if h > 1.3 * P and not (len(ks) == 2 and ks[1] == ks[0] + 1 and h <= 2.3 * P):
+            tall[j] = True; continue             # stamp, frame: clipped to the bands
+        if ks:                                   # the component holds a headline row: that line
+            k = owner[j] = ks[0]
+            if k + 1 < len(heads) and y + h - 1 > heads[k + 1] - 0.1 * P:   # it touches the next line's marks (small print)
+                split.append((j, cut_row(j, k), k))
+            continue
+        c = y + h / 2.0                          # a mark (reph, chandrabindu, i-kar top, u-kar hook): nearest line zone
+        d = [abs(c - (hd + 0.22 * P)) for hd in heads]
+        k = int(np.argmin(d))
+        if d[k] >= 0.8 * P: continue
+        owner[j] = k
+        for k2 in range(len(heads) - 1):         # a mark that spans the gap (u-kar hook touching the next line's i-kar top):
+            sp = heads[k2 + 1] - 0.3 * P         # rows above sp -> line k2, rows below -> line k2 + 1
+            if y < sp - 1 and y + h > sp + 1 and h > 0.3 * P:
+                split.append((j, int(round(sp)), k2))
+    out = []
+    W = body.shape[1]
+    for k, (a, b) in enumerate(bands):
+        sel = owner == k
+        rows = [(st[j][1], st[j][1] + st[j][3]) for j in np.where(sel)[0]]
+        rows += [(st[j][1], sp) if k == k2 else (sp, st[j][1] + st[j][3]) for j, sp, k2 in split if k in (k2, k2 + 1)]
+        y0 = min([r[0] for r in rows] + [a]); y1 = max([r[1] for r in rows] + [b])
+        y0 = max(0, y0 - 2); y1 = min(H, y1 + 2)
+        L = lab[y0:y1]
+        keep = sel[L]
+        for j, sp, k2 in split:                  # split marks: only this line's rows of them
+            if k not in (k2, k2 + 1): continue
+            m = L == j; r = np.arange(y0, y1)[:, None]
+            keep = np.where(m, (r < sp) if k == k2 else (r >= sp), keep)
+        tb = tall[L].copy(); tb[: max(0, a - y0)] = False; tb[max(0, b - y0):] = False
+        keep = cv2.dilate((keep | tb).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        g = gray[y_body + y0: y_body + y1, x0: x0 + W].copy()
+        g[~keep & ((L > 0) | (g > 140))] = 255
+        out.append(g)
+    return out
+
+
+def segment_eng(gray, top_cells=None, pitch=None, comp=False):
     """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
     top_cells (lang-ben, 2026-11-25, Bengali rolls): keep only small cells that start in the top top_cells x box height. The
     Bengali headline (matra) plus the vertical strokes of a name form cell-like rectangles at 0.23 h; cells() took them as the
     part cell ('part' = the name, line0 = the relative line). The serial cell starts at ~0.05 h.
     pitch (lang-ben): line pitch / box height. The Bengali WB print has 0.1086 (median of 132 gold boxes with 4 clean ink runs);
-    with the English 0.1035 the grid drifts ~5 px by the 4th line and cut the lower half of the age/gender line."""
+    with the English 0.1035 the grid drifts ~5 px by the 4th line and cut the lower half of the age/gender line.
+    comp (lang-ben round 2, 2026-11-25): ink components are assigned to lines (_assign_lines) instead of cutting at the
+    emptiest row. FINDING: the row cut dropped the u-kar hook below a line (gold: 425 dropped u-kar) and the i-kar / ii-kar
+    tops, reph and chandrabindu above the next line ('করিম' read 'কারম', 'নির্মল' read 'নিমল')."""
     h, w = gray.shape
     bw, photo, small = cells(gray)
     if top_cells:
@@ -290,6 +354,18 @@ def segment_eng(gray, top_cells=None, pitch=None):
         cuts.append(_runs_min(prof, max(cuts[-1] + int(0.5 * P), c0), min(len(prof), c1)) if c1 > c0 else int(g))
     cuts = [c for i, c in enumerate(cuts) if i == 0 or c > cuts[i - 1]]
     k = 0
+    bands = []
+    for a, b in zip(cuts, cuts[1:] + [len(prof)]):
+        band = prof[a:b]
+        if (band > thr).sum() < 0.3 * P:
+            if len(bands) >= 4: break
+            continue
+        bands.append((a, min(b, len(prof))))
+        if len(bands) >= ENG_MAX_LINES: break
+    if comp and bands:
+        for k, im in enumerate(_assign_lines(gray, body, bands, y_body, xl, P)):
+            out[f'line{k}'] = trim(im, dark=ENG_DARK)
+        return out
     for a, b in zip(cuts, cuts[1:] + [len(prof)]):
         band = prof[a:b]
         # a text line: enough ink rows (>= 30 % of the pitch) - stamps and stray marks in the empty lower part are thinner
