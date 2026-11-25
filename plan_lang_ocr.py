@@ -70,7 +70,7 @@ ENG_HINT_ROLL = {"S05": "S05-2027-DR", "S14": "S14-2027-DR", "U01": "U01-2027-DR
 # ACs whose 2027 roll is in another language than their SIR print (S11 ACs 1-3: 2027 Kannada, SIR Malayalam): no-hint set
 NOHINT_ACS = {"S11": {1, 2, 3}}
 SETS = {("ENG", True): "engD", ("ENG", False): "engK11", ("TAM", True): "tamH2", ("TAM", False): "tamN2",
-        ("MAL", True): "malH2", ("MAL", False): "malN2"}
+        ("MAL", True): "malH4", ("MAL", False): "malN2"}
 PLAN_LANGS = ("ENG", "TAM", "MAL")
 HOLD = {"S25": "job4 (2026-11-25 10:20, set K11): West Bengal FINAL rolls without their draft stay below target (held-out stamp set: "
                "97.52 % record / 10.14 % flagged; J 95.14 / 10.27); with the draft roll (draft_records) the English gold is 99.95 % "

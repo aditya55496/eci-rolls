@@ -1423,5 +1423,72 @@
    "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
    "lang_mal_r2b_base_q0": "229c5f25b1a32584"
   }
+ },
+ "malH4": {
+  "about": "Kerala SIR (owner 2026-11-25 18:20 deploy, lang-mal round 3): malH3 + round 3 engine rules (branch lang-mal e653bac): ECI_MAL_HOUSE also for records without a 2027 hint; FINAL rolls with --draft-records: ECI_DRAFT_FIELDS=1 (unflagged fields of a flagged draft record count) and ECI_DRAFT_STAMP=1 (a DELETED-stamped box, code S, at the draft serial with the draft EPIC in an engine reading takes the unflagged draft fields without a flag). Same 4 int8 models as malH2/malH3; no extra engine work. draft_records true: ocr-any passes the draft roll output to the final roll (--draft-records).",
+  "models": [
+   "lang_mal_r2a_quarter_q0",
+   "lang_mal_r2a_half_q0",
+   "lang_mal_r2b_3q_q0",
+   "lang_mal_r2b_base_q0"
+  ],
+  "sha256_16": {
+   "lang_mal_r2a_quarter_q0": "3b51657936633365",
+   "lang_mal_r2a_half_q0": "e5be4cb77902f3bc",
+   "lang_mal_r2b_3q_q0": "8d3267476387bdaa",
+   "lang_mal_r2b_base_q0": "7b0f0a60f476f109"
+  },
+  "hints": "required",
+  "stage1": 2,
+  "lang": "MAL",
+  "env": {
+   "ECI_ENG_DARK": "170",
+   "ECI_ENG_DESC": "0",
+   "ECI_ENG_AGREE": "2",
+   "ECI_ENG_NOHINT": "1",
+   "ECI_ENG_S1_TESS": "num,code",
+   "ECI_ENG_CODE": "0",
+   "ECI_CASCADE_NOHINT": "0",
+   "ECI_MAL_HOUSE": "1",
+   "ECI_DRAFT_FIELDS": "1",
+   "ECI_DRAFT_STAMP": "1",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_RESCALE_H": "1679",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "gold": {
+   "mal_rec": 98.53,
+   "mal_unflagged": 100.0,
+   "mal_flag_pct": 3.27,
+   "mal_silent": 0,
+   "epic_mal": 100.0,
+   "boxes_mal": 611,
+   "mal_rec_no_draft_fill": 97.05,
+   "mal_flag_pct_no_draft_fill": 4.75,
+   "source": "lang-mal eval h4b_draft (with draft twins) and h4a_draft (ECI_MAL_HOUSE no-hint only)"
+  },
+  "cpu": {
+   "s_per_record_single_pdf": 0.073,
+   "s_per_record_heldout_12pdfs": 0.126,
+   "note": "as malH2 (the rule adds no engine work)"
+  },
+  "heldout": {
+   "records": 9844,
+   "flag_pct": 4.46,
+   "flag_pct_malH3": 5.18,
+   "flag_pct_no_draft": 5.08,
+   "eye_checked": "16 newly unflagged no-hint houses, 24 stamp-confirmed boxes (all their confirmed fields), 16 stamped houses that differ from 2027 (+4 draft prints)",
+   "eye_errors": 0,
+   "note": "S11 ACs 36 63 67 68 98 115; DRAFT twins = heldout/out/drtwin/dr; eye sheets heldout/eye/h4a_*.png st_*.png h4n27_*.png"
+  },
+  "draft_fill": "required for the round-3 gain on FINAL rolls: FINAL roll with --draft-records = eci_ocr output of the DRAFT roll of the same part (same model set). ocrv5 runs draft then final per part but does not pass --draft-records yet. Without it: the switches do nothing; the gold numbers are the 'no_draft_fill' ones.",
+  "charset_sha256_16": {
+   "lang_mal_r2a_quarter_q0": "229c5f25b1a32584",
+   "lang_mal_r2a_half_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_base_q0": "229c5f25b1a32584"
+  },
+  "draft_records": true
  }
 }
