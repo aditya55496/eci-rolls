@@ -518,6 +518,7 @@ _ES = None
 # reading; a stage-2 box is decided by the other engines alone (as if the set had no stage-1 model there), so a small fast
 # screening model (quarter width) does not vote on the hard boxes.
 S1_SCREEN = os.environ.get('ECI_S1_SCREEN', '0') == '1'
+NOHINT_EARLY = int(os.environ.get('ECI_NOHINT_EARLY') or 0)   # job1 speed: no-hint early exit after K CRNNs (see process_page)
 # The section headings are read by CRNN number HEAD_CRNN (0 = the first, as before; with ECI_S1_SCREEN=1 the default is the
 # second, the first stage-2 model: the quarter screening model reads the heading lines badly, section None on 98 % of records).
 HEAD_CRNN = int(os.environ.get('ECI_HEAD_CRNN') or (1 if S1_SCREEN else 0))
@@ -937,6 +938,21 @@ def process_page(task):
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
         K = NOHINT_CASCADE
+    elif NOHINT_EARLY and not _OPT['hints'] and lang not in LATIN_TPL and len(_E.crnn) > NOHINT_EARLY and not TESS_SKIP:
+        # job1 speed (ECI_NOHINT_EARLY=K, no 2027 hints, default 0 = off): stage 1 = the first K CRNNs + Tesseract (all groups);
+        # a box whose stage-1 decision has no flag (all K+1 engines agree on every field and the validators pass) is settled
+        # there; the other CRNNs read only the remaining boxes, which are decided with all engines as before.
+        K = NOHINT_EARLY
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), lang=lang)
+        names1 = _E.names[:K] + _E.tnames
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        if need:
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set(), lang=lang)
+            for i, r2 in zip(need, more):
+                for tn in _E.tnames: r2.pop(tn, None)
+                reads[i].update(r2)
+        tm['stage2_boxes'] = len(need)
+        stage1_only = set(range(len(reads))) - set(need)
     elif TESS_SKIP and not _OPT['hints']:
         # job2 r3 (ECI_NOHINT_TESS_SKIP=1, no 2027 roll, needs ECI_NOHINT_DIGITS=1 + ECI_NOHINT_CLOSED=1): Tesseract does not read
         # line2 (house) when all CRNNs read the same house number with a digit and without . , ; :, nor line3 (age, gender) when
