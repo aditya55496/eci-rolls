@@ -1041,7 +1041,7 @@ def process_page(task):
                 reads[i]['tess'][0].update(r2['tess'][0])
             return sum(len(x) for x in sub)
 
-        sk1 = [_skips(r, s1nm) for r in reads]
+        sk1 = [_skips(r, s1nm) - ({'line2'} if EARLY_TESSQ else set()) for r in reads]   # TESSQ: Tesseract reads every house line
         nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
         if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
         names1 = s1nm + [e[0] for e in _E.pcrnn] + _E.tnames
