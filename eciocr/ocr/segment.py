@@ -290,6 +290,8 @@ def segment_pan(gray):
 # line i+1 when its bottom is within 0.15 pitch above line i+1's head line (upper marks sit on the head line), else to line i
 # (u / uu bars, halant, subjoined letters end 7+ px above it; measured on S19 AC 36 part 61). Each line
 # crop is its own components only (other ink painted white). Fallback to segment() lines when 4 head lines are not found.
+PAN_HOOK = os.environ.get('ECI_PAN_HOOK', '0') == '1'   # experimental: cut a lower mark merged into the next line's word
+PAN_DARK = int(os.environ.get('ECI_PAN_DARK', '200'))
 PAN_PITCH = 30.3 / 257   # measured head line pitch on the SIR boxes (1x crop)
 PAN_UPPER_GAP = float(os.environ.get('ECI_PAN_UPPER_GAP', '0.15'))   # x pitch: max gap above the next head line of an upper mark
 PAN_COMP = os.environ.get('ECI_PAN_COMP', '1') == '1'
@@ -311,7 +313,8 @@ def segment_pan2(gray):
     y_off = top_bottom + 2
     lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
     lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
-    body = cv2.subtract(bw, lines)[y_off: h - 3, xl: px]
+    bw2 = cv2.bitwise_or(bw, ((gray < PAN_DARK) * 255).astype(np.uint8))   # + faint thin strokes (u hook under ਕ, halant)
+    body = cv2.subtract(bw2, lines)[y_off: h - 3, xl: px]
     if body.size == 0: return out
     prof = (body > 0).sum(1).astype(float)
     ink = np.where(prof > max(1.0, 0.01 * body.shape[1]))[0]
@@ -335,6 +338,12 @@ def segment_pan2(gray):
             if b <= a: continue
             cnt = (lab[a:b] == j).sum(1)
             r = a + int(np.argmin(cnt)); body[r][lab[r] == j] = 0; cut = True
+        for i in (hs[:1] if PAN_HOOK else []):   # a lower mark of the line above touching this line's word (ੁ hook under ਕ on ਏ): cut it off
+            if i == 0 or y >= heads[i] - 0.3 * P: continue
+            a, b = y + 1, int(heads[i] - 0.15 * P)
+            if b <= a: continue
+            cnt = (lab[a:b] == j).sum(1)
+            r = a + int(np.argmin(cnt)); body[r][lab[r] == j] = 0; cut = True
     if cut: n, lab, st, cen = cv2.connectedComponentsWithStats(body, 8)
     owner = np.zeros(n, int) - 1
     core = [[] for _ in range(4)]
@@ -349,6 +358,9 @@ def segment_pan2(gray):
         if cy < heads[0]: owner[j] = 0; continue
         if cy >= heads[3]: owner[j] = 3; continue
         i = max(k for k in range(3) if heads[k] <= cy)
+        x, cw = st[j][0], st[j][2]   # touching a letter of line i from below (gap <= 1 px in its columns): lower mark of line i
+        above = PAN_HOOK and (lab[max(0, y - 2):y, x:x + cw] > 0) & np.isin(lab[max(0, y - 2):y, x:x + cw], np.where(owner == i)[0])
+        if PAN_HOOK and above.any(): owner[j] = i; continue
         d_up = heads[i + 1] - (y + ch)   # upper marks of line i+1 sit on its head line; lower marks of line i end well above it
         flat = ch <= 0.16 * P and st[j][2] >= 2.5 * ch and d_up >= 2   # lower bar of a uu sign (ends near the next head line)
         owner[j] = i + 1 if d_up <= PAN_UPPER_GAP * P and not flat else i
@@ -360,7 +372,7 @@ def segment_pan2(gray):
         crop = g[y0:y1].copy()
         keep = np.isin(lab[y0:y1], js)
         other = (lab[y0:y1] > 0) & ~keep
-        crop[cv2.dilate(other.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0] = 255
-        crop[cv2.dilate(keep.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0] = 255   # also faint pixels next to others
+        crop[(cv2.dilate(other.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & ~keep] = 255   # never this line's own ink (a uu bar 1 px above the next head line was wiped)
+        # (no whitening of ink outside the mask: faint thin strokes such as the u hook under ਕ are not in the adaptive mask)
         out[f'line{i}'] = trim(crop)
     return out

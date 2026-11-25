@@ -64,7 +64,7 @@ def hvis(f, v):
     return visual(v)
 
 
-NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
+NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else int(os.environ.get('ECI_NOHINT_SLACK', '0'))   # env: lang-pan 2026-11-25
 
 
 def decide(cands, hint, pix, names=None, confs=None, stamp=None):
