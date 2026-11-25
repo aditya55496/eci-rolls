@@ -15,6 +15,7 @@ from score import load_gold, preds, visual, FIELDS, CORE
 from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
 import parse_tam
+import parse_mal   # lang-mal: Malayalam / Telugu (parse_mal.LANG = 'MAL' | 'TEL')
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -57,12 +58,14 @@ _visual_hin = visual
 
 
 def visual(s):   # lang-tam: Tamil sequences that print the same (ௌ = ெள, ஂ = ்) are one value
+    if LANG in ('MAL', 'TEL'): s = parse_mal.norm(s)   # lang-mal: chillu + virama + ZWJ -> atomic chillu before the ZWJ drop
     v = _visual_hin(s)
     return v.replace('\u0bcc', '\u0bc6\u0bb3').replace('\u0b82', '\u0bcd') if LANG == 'TAM' else v
 
 
 def valid(f, v):
     if LANG == 'TAM': return parse_tam.valid_tam(f, v, EPIC_RE)
+    if LANG in ('MAL', 'TEL'): return parse_mal.valid_mal(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
@@ -70,6 +73,7 @@ def hvis(f, v):
     """visual form used to compare an engine value with the 2027 hint"""
     if LANG == 'ENG' and f == 'relation_label': return parse_eng.rel_canon(v)
     if LANG == 'TAM' and f == 'relation_label': return parse_tam.rel_canon(v)
+    if LANG in ('MAL', 'TEL') and f == 'relation_label': return parse_mal.rel_canon(v)
     if LANG == 'TAM' and f in ('name', 'relation_name'):   # SIR prints 'ராமசாமி -' (empty 2nd part), the 2027 roll 'ராமசாமி'
         return re.sub(r'(\s*-)+$', '', visual(v))
     return visual(v)
@@ -385,7 +389,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             # (gold_v3 measured run: 4 such errors without this condition).
             # job3 (ECI_ENG_CODE=1): English rolls have no stamp test; when the pixel test says a code is printed and NO Tesseract
             # reading gave anything (not even '#'), the first CRNN's letter code is taken (the field stays flagged)
-            eng_code = ENG_CODE and LANG in ('ENG', 'TAM') and pix and all(t == '' for t in tv)
+            eng_code = ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL') and pix and all(t == '' for t in tv)
             if ((CODE_CRNN and stamp) or eng_code) and pix and all(t in ('', '#') for t in tv) and names:
                 j = next((i for i, nm in enumerate(names) if nm.startswith('crnn')), None)
                 if j is not None and re.fullmatch(r'[SERQM][0-9]?', vals[j] or ''):
@@ -525,7 +529,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
                 if not v: continue
-                if ENG_CODE and LANG in ('ENG', 'TAM') and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
+                if ENG_CODE and LANG in ('ENG', 'TAM', 'MAL', 'TEL') and not valid(f, v): continue   # job3: an invalid English value (gender '33 Gee..Female') never wins the vote
                 w[visual(v)] += (cf.get(LINE_OF[f], CONFW) if nm.startswith('crnn') else CONFW)
             if w:
                 top = w.most_common(1)[0][0]
@@ -597,7 +601,8 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
         if not ok and f in CORE: flags.append(f)
     lab = (out.get('relation_label') or '').lower()
     if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female') \
-            or (lab.startswith('கணவ') and out.get('gender') == 'ஆண்') or (lab.startswith('மனைவி') and out.get('gender') == 'பெண்'):
+            or (lab.startswith('கணவ') and out.get('gender') == 'ஆண்') or (lab.startswith('மனைவி') and out.get('gender') == 'பெண்') \
+            or (LANG in ('MAL', 'TEL') and parse_mal.implausible(out.get('relation_label') or '', out.get('gender'))):
         if 'gender' not in flags: flags.append('gender')
     if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags
