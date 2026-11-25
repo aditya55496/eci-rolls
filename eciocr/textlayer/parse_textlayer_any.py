@@ -21,14 +21,19 @@ text: it uses the box layout, which is the same in every state (checked on the s
   relation_label_unknown; an unknown gender gives gender_std None (validate: gender_bad).
 - Repairs of the pdfCalligraph /ActualText artifacts (same kind as in the Hindi rolls; each kind counted per record):
     doubled_mark       a combining mark repeated: 'ਸਿੰੰਘ' -> 'ਸਿੰਘ', 'পুরুুষ' -> 'পুরুষ', 'ശോാഭന' -> 'ശോഭന' (NFD: ോ = െ + ാ)
-    space_before_mark  a space before a combining mark
+    space_before_mark  a space before a combining mark is removed, except before a pre-base vowel sign (and the Malayalam
+                       ra-sign ്ര): there the space is a real word space (the glyph trace draws it) and the sign belongs to the
+                       next word (see visual_order)
     bengali_ra         Bengali-script rolls: the font maps the glyph of র to ব + ় ('পিতাব়' -> 'পিতার'; Assamese: ৰ); after a
                        virama it stands for ব-phala + র ('ঈশ্ব়' -> 'ঈশ্বর', as the glyph trace shows)
     ra_phala_restored  Bengali-script rolls: the text layer drops the ra-phala (or ya-phala) of some conjuncts ('শুক্া',
                        'হ্াপি'); restored after the virama when the glyph trace has exactly that many more র (or য) and nothing
                        else differs (kept as a warning)
-    visual_order       an i-matra at the start of a word ('ਿਪਤਾ'): the row came in visual order (Urdu names in Punjabi rolls);
-                       the matra is moved after the consonant ('ਪਿਤਾ')
+    visual_order       a pre-base vowel sign at the start of a word (MAL െ േ ൈ and the ra-sign ്ര, BEN/ASM ি ে ৈ, PAN ਿ): the text
+                       layer gives it in visual order; it is moved after the consonant cluster that follows ('ਿਪਤਾ' -> 'ਪਿਤਾ',
+                       'സയന െക' -> 'സയന കെ', '്രപകാശൻ' -> 'പ്രകാശൻ'). With no consonant after it, it is kept as printed
+                       ('ਜਰਨੈਲ ਿੰਘ'). A wrapped Malayalam line that starts with ്ര has the virama at the end of the row above:
+                       it is moved back first ('ജോാസഫ് ്' + 'രശീജിത്' -> 'ജോസഫ് ശ്രീജിത്')
     bengali_wa         Bengali rolls: ৱ (drawn as ব) -> ব ('পোরোমেশ্ৱর' -> 'পোরোমেশ্বর'); ৰ is kept (own glyph)
     khanda_ta          Bengali-script rolls: 'ত্প' -> 'ৎপ' where the glyph trace has the khanda-ta glyph ('নীলোৎপল')
     ba_after_ba_phala  Bengali-script rolls: a ব after a ব-phala is lost in the text ('উদ্ব' for the printed 'উদ্বব'); put back
@@ -44,6 +49,8 @@ text: it uses the box layout, which is the same in every state (checked on the s
   in any language: the most frequent first number = printed page count), header part number.
 
 Every record keeps raw_lines: the row texts of the box as the text layer gives them (before repairs), top row first.
+Serial row: as parse_textlayer.top_tokens (a '( .. )' label over the serial cell -> top_label; odd EPIC prints stay in epic
+with warning epic_nonstandard).
 
 Usage
   parse_textlayer_any.py PDF [PDF ...] [--lang ASM] [-o OUTDIR] [--summary FILE]
@@ -54,7 +61,7 @@ import pymupdf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_textlayer import (find_boxes, page_chars, assign, rows_of, row_text, BOX_W,   # noqa: E402
-                             EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_ODD)
+                             EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_ODD, EPIC_PRINTED, top_tokens)
 
 EPIC_LOOSE = re.compile(r'^(?=.*[A-Za-z])(?=.*[0-9])[A-Za-z0-9/]{8,}$')
 FILE_RE = re.compile(r'(\d{4})-EROLLGEN-([SU]\d\d)-(\d+)-.*-([A-Z]{3})-(\d+)-WI\.pdf$')
@@ -81,8 +88,34 @@ GENDER = {
     'KAN': {'ಗಂಡು': 'M', 'ಹೆಣ್ಣು': 'F', 'ತೃತೀಯ ಲಿಂಗಿಗಳು': 'T', 'ತೃತೀಯ ಲಿಂಗ': 'T', 'ಇತರೆ': 'T'},
     'PAN': {'ਪੁਰਸ਼': 'M', 'ਇਸਤਰੀ': 'F', 'ਤੀਜਾ ਲਿੰਗ': 'T'},
 }
-# a pre-base i-matra at the start of a word comes from text in visual order (a Punjabi row with Urdu text: 'ਿਪਤਾ ਦਾ ਨਾਮ')
-VISUAL_I = re.compile('(^|\\s)([\u0a3f\u09bf\u093f])([\u0a15-\u0a39\u0a59-\u0a5e\u0995-\u09b9\u09dc-\u09df\u09f0\u09f1\u0915-\u0939])')
+# Pre-base vowel signs (drawn left of their consonant cluster). At the start of a word the text layer gives them in visual
+# order, before the cluster: 'ਿਪਤਾ ਦਾ ਨਾਮ' (Punjabi row with Urdu text), Malayalam 'സയന െക' (printed 'സയന കെ'),
+# 'െകായിലേര്യന്' ('കൊയിലേര്യന്'), '്രപകാശൻ' ('പ്രകാശൻ'; the Malayalam ra-sign ്ര is pre-base too), Bengali 'িদপন' ('দিপন'),
+# Assamese 'েজ্যাত্নাৰা'. The glyph trace draws a space glyph before them: the word space is real. Such a sign is never joined
+# to the word on its left (2026-11-25: 'സയനെക', 'ਜਰਨੈਲਿੰਘ'); it is moved after the cluster that follows (visual_order), or
+# kept as printed when no consonant follows ('ਜਰਨੈਲ ਿੰਘ': the PDF has no ਸ there).
+PRE_BASE = {'MAL': '\u0d46\u0d47\u0d48', 'BEN': '\u09bf\u09c7\u09c8', 'ASM': '\u09bf\u09c7\u09c8', 'PAN': '\u0a3f',
+            'HIN': '\u093f'}
+_SCRIPT = {   # consonants, nukta, virama
+    'MAL': ('[\u0d15-\u0d3a]', '', '\u0d4d'),
+    'BEN': ('[\u0995-\u09b9\u09dc-\u09df\u09f0\u09f1]', '\u09bc', '\u09cd'),
+    'PAN': ('[\u0a15-\u0a39\u0a59-\u0a5e]', '\u0a3c', '\u0a4d'),
+    'HIN': ('[\u0915-\u0939\u0958-\u095f]', '\u093c', '\u094d')}
+_SCRIPT['ASM'] = _SCRIPT['BEN']
+MAL_RA_SIGN = '\u0d4d\u0d30'   # ്ര
+
+
+def _visual_re(lang):
+    cons, nukta, vir = _SCRIPT[lang]
+    nk = (nukta + '?') if nukta else ''
+    cluster = '(?:' + cons + nk + '(?:' + vir + cons + nk + ')*)'
+    ra = '((?:' + MAL_RA_SIGN + ')?)' if lang == 'MAL' else '()'
+    return re.compile('(^|\\s)([' + PRE_BASE[lang] + ']?)' + ra + '(' + cluster + ')')
+
+
+VISUAL_PRE = {k: _visual_re(k) for k in PRE_BASE}
+# space before a mark: removed (a split cluster), except before a pre-base sign (and the Malayalam ra-sign)
+SPACE_MARK = re.compile(r' +(?=[\u0300-\u036f\u0900-\u0dff])')
 RA = {'ASM': '\u09f0', 'BEN': '\u09b0'}            # ৰ (Assamese), র (Bengali)
 DANGLING = re.compile('\u09cd(?=[\u09be-\u09cc\u09d7])')   # a virama right before a vowel sign: a consonant is missing
 CHILLU = {'ണ': 'ൺ', 'ന': 'ൻ', 'ര': 'ർ', 'ല': 'ൽ', 'ള': 'ൾ', 'ക': 'ൿ'}
@@ -119,12 +152,25 @@ def repair(s, lang, counts=None):
     t = MARK_RUN.sub(lambda m: collapse_run(m.group(0)), s)
     if t != s: counts['doubled_mark'] += 1
     s = unicodedata.normalize('NFC', t)
-    t = re.sub(r' +(?=[̀-ͯऀ-෿])', lambda m: m.group(0) if not is_mark(s[m.end()]) else '', s)
+    pre = PRE_BASE.get(lang) or ''
+
+    def sp(m):
+        nxt = s[m.end():m.end() + 2]
+        if not is_mark(nxt[:1]) or (pre and nxt[:1] in pre) or (lang == 'MAL' and nxt == MAL_RA_SIGN):
+            return m.group(0)
+        return ''
+    t = SPACE_MARK.sub(sp, s)
     if t != s: counts['space_before_mark'] += 1
     s = t
-    t = VISUAL_I.sub(r'\1\3\2', s)
-    if t != s:
-        s = t; counts['visual_order'] += 1
+    if lang in VISUAL_PRE:
+        t = VISUAL_PRE[lang].sub(lambda m: m.group(0) if not (m.group(2) or m.group(3)) else
+                                 m.group(1) + m.group(4) + m.group(3) + m.group(2), s)
+        if t != s:
+            s = unicodedata.normalize('NFC', t); counts['visual_order'] += 1
+            # a sign that is now doubled ('േ' moved next to a 'േ'): collapsed as doubled_mark
+            t = unicodedata.normalize('NFC', MARK_RUN.sub(lambda m: collapse_run(m.group(0)), unicodedata.normalize('NFD', s)))
+            if t != s:
+                s = t; counts['doubled_mark'] += 1
     if lang == 'BEN' and '\u09f1' in s:
         # Bengali has no ৱ: the text layer gives it where the font draws ব ('পোরোমেশ্ৱর', print ব-phala; no ৱ glyph in the
         # glyph trace of the Bengali samples). ৰ is kept: the font draws it with its own glyph (Assamese names)
@@ -350,13 +396,25 @@ def parse_box(box, chars, tchars, lang, photo_texts):
     for r in rows:
         raw = row_text(r['c'])
         raw_lines.append(raw)
+        if lang == 'MAL' and body and r['y'] >= top_y and raw.startswith('\u0d30') and \
+                re.search(' \u0d4d$', body[-1][1].rstrip()):
+            # a wrapped line that starts with the ra-sign ്ര: the text layer puts its virama at the end of the row above
+            # ('ജോാസഫ് ്' + 'രശീജിത്', printed 'ജോസഫ് ്രശീജിത്'; 2026-11-25 this gave 'ജോസഫ്് രശീജിത്'): moved back, then
+            # read in visual order ('ശ്രീജിത്')
+            pr = body[-1][1].rstrip()[:-1].rstrip()
+            body[-1] = (repair(pr, lang), pr, body[-1][2])
+            raw = '\u0d4d' + raw
         if r['y'] < top_y:
-            for tok in row_text(r['c'], gap=0.5).split():
+            toks, lab = top_tokens(r['c'])   # a printed '( .. )' label over the serial cell -> top_label
+            if lab:
+                rec['top_label'] = lab
+            for tok in toks:
                 if re.fullmatch(r'\d+', tok) and 'serial_no' not in rec:
                     rec['serial_no'] = int(tok)
                 elif EPIC_ANY.match(tok) and 'epic' not in rec:
                     rec['epic'] = tok
-                elif (EPIC_ODD.match(tok) or EPIC_LOOSE.match(tok)) and len(tok) >= 6 and 'epic' not in rec:
+                elif (((EPIC_ODD.match(tok) or EPIC_LOOSE.match(tok)) and len(tok) >= 6) or EPIC_PRINTED.match(tok)) \
+                        and 'epic' not in rec:
                     rec['epic'] = tok; warn.append('epic_nonstandard')
                 else:
                     rec.setdefault('_top', []).append(tok)
@@ -563,7 +621,7 @@ def parse_pdf(path, lang=None):
                 rec['box_marks'] = marks[i]; warn.append('box_marks')
             out = dict(state=st_f, ac=ac_f, part=part_f, page=pno + 1, section_no=section[0], section_name=section[1])
             for k in ('serial_no', 'epic', 'name', 'relation_type', 'relation_label', 'relation_name', 'house_no', 'age',
-                      'gender', 'gender_std', 'status_code', 'extra_text', 'box_marks', 'labels', 'raw_lines'):
+                      'gender', 'gender_std', 'status_code', 'top_label', 'extra_text', 'box_marks', 'labels', 'raw_lines'):
                 if k in rec: out[k] = rec[k]
             if rep: out['repairs'] = sorted(rep)
             if warn: out['text_warnings'] = warn

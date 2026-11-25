@@ -9,6 +9,8 @@ Output in the bucket of this project:
   text/<roll id>/<ac>.jsonl.gz           every voter record (all fields, repairs, warnings, raw_lines = the box rows as printed,
                                          without the photo placeholder); relation_type in one vocabulary for all languages
                                          (Father / Husband / Mother / Wife / Others / Guardian), the word read in relation_type_printed
+                                         status_code: only stamps ('D'); an EPIC printed in an odd form stays in epic (warning
+                                         epic_nonstandard); top_label: a '( .. )' label printed over the serial cell
   hints/<roll id>/<ac>.jsonl.gz          the --hint-2027 form eci_ocr uses (one per record with an EPIC)
   text/<roll id>/<ac>.summary.json       per PDF: records, printed totals (cover, summary page, page count), match, validation
   parquet/<roll id>/ac_<ac>/data.parquet the records in the TEXT_SCHEMA of parquet_task.py (other keys in the JSON column 'extra')

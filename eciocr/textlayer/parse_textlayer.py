@@ -21,8 +21,12 @@ How it works
   The PDF meta gets 'label_sets': boxes per printed label set ('नाम/मकान/आयु', ...), for checks per state.
   The 'फोटो उपलब्ध है' placeholder is its own span and is removed by span, so it can not
   bleed into the house number.
+- Serial row (top_tokens): a label in parentheses drawn over the serial cell (English S03: '( MAIBANG PT-I)' on the first box
+  of a page) goes to 'top_label', not into the serial. An EPIC printed in an odd form ('BR\\06\\037\\552015', 'C5X1230739')
+  stays in 'epic' with warning 'epic_nonstandard'; 'status_code' holds only the other words of that row (stamps such as 'D').
 - Repairs of known pdfCalligraph /ActualText artifacts (each one counted per record):
-    doubled_mark   'लिंंग' -> 'लिंग'   (a combining mark repeated)
+    doubled_mark   'लिंंग' -> 'लिंग'   (a combining mark repeated); also after the ZWJ removal ('जितेन््द्र' -> 'जितेन्द्र': the text
+                   layer has virama + ZWJ + virama there)
     space_before_mark  'क ुशवाहा' -> 'कुशवाहा' (space before a vowel sign; drawn in the PDF, i.e. a source typo): the sign is
                    joined to the left only when the part before the space is a fragment (at most 3 consonants, no vowel
                    sign or anusvara: 'क', 'प्रस'),
@@ -32,7 +36,12 @@ How it works
                    joining gave 'गिरीशंसिंह', 'अस्मिताुदेवी'). Always so for anusvara / candrabindu, and for a sign that repeats
                    the sign of the next syllable ('ेदेवी')
     visual_order   'बृजकिशोर िंसह' -> 'बृजकिशोर सिंह': a word that starts with the i-matra came in visual order (Bihar); the
-                   matra (with a following anusvara) is moved after the first consonant cluster
+                   matra (with a following anusvara) is moved after the first consonant cluster. The pre-base i-matra after a
+                   space is never joined to the word on its left. An anusvara before it goes with it ('शैलेन्द्र ंिसह' ->
+                   'शैलेन्द्र सिंह', printed with the bindu; before 2026-11-25 it was dropped: 'सिह'); another sign between it and
+                   the consonant: an e / ai stroke is a stray and is dropped ('नन्द िेकशोर' -> 'नन्द किशोर', page image
+                   checked); with any other sign the whole run is dropped ('िाता देवी' -> 'ता देवी', printed so)
+    bindu_moved    'राजपत ंसिह' -> 'राजपत सिंह': an anusvara printed in front of the word 'सिह' (logical order in the text layer)
     phantom_space  'अश् विनी' -> 'अश्विनी' (a space char with no space glyph drawn there)
     zwj_repeat     'खन्‍नाना' -> 'खन्ना' (after virama+ZWJ the next syllable is repeated)
     zwj_removed    a virama+ZWJ without repetition: the ZWJ is removed ('स्‍वर्ण' -> 'स्वर्ण')
@@ -57,6 +66,10 @@ EPIC_ANY = re.compile(r'^([A-Z]{2,3}[0-9]{6,8}|[A-Z]{2}/[0-9]+/[0-9]+/[0-9]+)$')
 # EPIC printed in a non-standard form (2026-11-25, Bihar/Rajasthan 2027: 'MVK/1234567A', 'XNJ//1234567', 'BR/06/035//762069',
 # 'RJ/21/160/022098B'): kept as printed in 'epic' (validate() lists it under epic_bad), warning 'epic_nonstandard'
 EPIC_ODD = re.compile(r'^[A-Z]{2,3}[A-Z0-9/]*[0-9][A-Z0-9/]*$')
+# any other printed EPIC-like word of the serial row (2026-11-25, checked on the page images: 'BR\06\037\552015' printed with
+# backslashes, 'C5X1230739', '5BMF5192117', 'BQ}0707083'): letters and digits, 8+ visible ASCII characters. Kept as printed in
+# 'epic' with warning 'epic_nonstandard' (before: in status_code, which is for stamps such as 'D', and epic was missing)
+EPIC_PRINTED = re.compile(r'^(?=.*[A-Za-z])(?=.*[0-9])[!-~]{8,}$')
 GENDERS = {'पुरुष', 'महिला', 'तृतीय लिंग'}
 VIRAMA, ZWJ, ZWNJ = '्', '‍', '‌'
 DEP_SIGNS = '[ा-ौॢॣँ-ः]'   # matras, candrabindu, anusvara, visarga
@@ -79,22 +92,44 @@ COMMON_WORDS = set('''देवी कुमार कुमारी प्र�
 शंकर बेगम खान रजक पंडित झा तिवारी चौहान ठाकुर महतो साव रविदास मुखिया पासी गोप'''.split())
 
 
-def space_marks(s):
+# 'राजपत ंसिह': an anusvara printed in front of 'सिह' (logical order in the text layer; the visual-order form ' ंिसह' is
+# handled by space_marks) is the anusvara of 'सिंह' (2026-11-25: dropped, 'सिह')
+SIH_RE = re.compile('(^|[ :])\u0902\u0938\u093f\u0939(?=[\\s,.]|$)')
+
+
+def space_marks(s, move_bindu=True):
     """Vowel signs / anusvara after a space or at the start of s: joined to the left or dropped (rule in the module text).
     An i-matra right before a consonant is left for VISUAL_I (in the glyph trace, which is in visual order, it is normal
-    there). The same function runs on the glyph trace for the cross-check. Returns (text, joined, dropped)."""
-    joined = dropped = 0
+    there). The same function runs on the glyph trace for the cross-check. move_bindu=False: an anusvara in front of the
+    i-matra is dropped (the rule before 2026-11-25; for the glyph trace, where the i-matra glyph may already carry the
+    anusvara, 'ं' + 'िं' in Bihar fonts). Returns (text, joined, dropped)."""
+    joined = dropped = moved = 0
     out, pos = [], 0
     for m in MARKS_RUN.finditer(s):
         sp, run = m.group(1), m.group(2)
         a, b = m.start(), m.end()
         nxt = s[b:b + 1]
         tail = ''
-        ti = re.search('\u093f[\u0901\u0902]?$', run)
-        if ti and re.match(CONS, nxt):
-            tail, run = run[ti.start():], run[:ti.start()]
-        if not run:
-            continue
+        if '\u093f' in run and re.match(CONS, nxt):
+            # a pre-base i-matra after a space is visual order (the next word's first syllable): it is never joined to the
+            # word on the left. An anusvara / candrabindu in the run goes with it ('ंिसह' -> 'सिंह', 2026-11-25: was dropped,
+            # 'सिह'); an e / ai sign is a stray stroke drawn over it ('नन्द िेकशोर', printed 'नन्द किशोर') and is dropped. With
+            # any other sign the whole run is a stray and is dropped ('िाता देवी', printed so: 'ता देवी')
+            others = [c for c in run if c not in '\u093f\u0901\u0902']
+            after = run[run.index('\u093f') + 1:]     # signs after the i-matra; a sign before it is a stray ('ृि' in the trace)
+            if any(c not in '\u0901\u0902\u0947\u0948' for c in after):
+                out.append(s[pos:a]); out.append(sp); dropped += 1; pos = b
+                continue
+            if move_bindu:
+                bindu = next((c for c in run if c in '\u0901\u0902'), '')
+            else:
+                bindu = next((c for c in '\u0901\u0902' if '\u093f' + c in run), '')
+            tail = '\u093f' + bindu
+            run = ''.join(others)
+            if not run:
+                if tail != m.group(2):
+                    out.append(s[pos:a]); out.append(sp + tail); pos = b; moved += 1
+                continue
         left = '' if (a == 0 or ':' in sp) else s[:a].rsplit(' ', 1)[-1]
         last = left[-1:]
         word_follows = bool(tail) or bool(re.match(CONS + '|[\u0904-\u0914]', nxt))
@@ -119,7 +154,7 @@ def space_marks(s):
         else:
             out.append(sp + tail); dropped += 1
         pos = b
-    if not joined and not dropped:
+    if not joined and not dropped and not moved:
         return s, 0, 0
     out.append(s[pos:])
     return re.sub(' +', ' ', ''.join(out)), joined, dropped
@@ -134,6 +169,9 @@ def repair(s, counts):
     t = DOUBLE_RE.sub(r'\1', s)
     if t != s: counts['doubled_mark'] += 1
     s = unicodedata.normalize('NFC', t)
+    t = SIH_RE.sub('\\1\u0938\u093f\u0902\u0939', s)
+    if t != s:
+        s = t; counts['bindu_moved'] += 1
     s, nj, nd = space_marks(s)
     if nj: counts['space_before_mark'] += 1
     if nd: counts['orphan_mark_dropped'] += 1
@@ -157,6 +195,11 @@ def repair(s, counts):
     if ZWJ in s:
         s = s.replace(ZWJ, '')
         counts['zwj_removed'] += 1
+    # the text layer has some virama + ZWJ + virama ('जितेन््द्र' for the printed 'जितेन्द्र'): collapse after the ZWJ removal
+    t = unicodedata.normalize('NFC', DOUBLE_RE.sub(r'\1', unicodedata.normalize('NFD', s)))
+    if t != unicodedata.normalize('NFC', s):
+        counts['doubled_mark'] += 1
+        s = t
     return re.sub(r'\s+', ' ', s).strip()
 
 
@@ -360,6 +403,35 @@ def row_text(chars, gap=None):
     return out
 
 
+LABEL_SPAN = re.compile(r'\s*\(.*\)\s*')
+LABEL_GLUED = re.compile(r'(.*\))(\d+)')
+
+
+def top_tokens(chars):
+    """Words of the serial / EPIC row of a box, and a printed label in parentheses over the serial cell, or None.
+    2026-11-25, English S03 AC 113 part 244: the section label '( MAIBANG PT-I)' is drawn over the serial cell of the first box
+    of each page; its span ends right of the serial, so the serial came glued to it ('PT-I)1') and was lost. A span that is
+    all '( .. )' is the label; a word '<..)><digits>' is split into label and digits."""
+    spans = collections.OrderedDict()
+    for c in chars:
+        spans.setdefault(c[3], []).append(c)
+    label, keep = [], []
+    for cs in spans.values():
+        t = ''.join(c[0] for c in cs)
+        if LABEL_SPAN.fullmatch(t):
+            label.append(t.strip())
+        else:
+            keep += cs
+    toks = []
+    for tok in row_text(keep, gap=0.5).split():
+        m = LABEL_GLUED.fullmatch(tok)
+        if m:
+            label.append(m.group(1)); toks.append(m.group(2))
+        else:
+            toks.append(tok)
+    return toks, (' '.join(label) or None)
+
+
 # --------------------------------------------------------------------------- header / cover
 
 def page_lines(lines, boxes):
@@ -480,12 +552,15 @@ def parse_box(box, chars, tchars, fixes):
     for r in rows:
         raw = row_text(r['c'])
         if r['y'] < top_y:  # serial / EPIC cell row: separate spans, so split on span as well
-            for tok in row_text(r['c'], gap=0.5).split():
+            toks, lab = top_tokens(r['c'])
+            if lab:
+                rec['top_label'] = lab
+            for tok in toks:
                 if re.fullmatch(r'\d+', tok) and 'serial_no' not in rec:
                     rec['serial_no'] = int(tok)
                 elif EPIC_ANY.match(tok) and 'epic' not in rec:
                     rec['epic'] = tok
-                elif len(tok) >= 6 and EPIC_ODD.match(tok) and 'epic' not in rec:
+                elif ((len(tok) >= 6 and EPIC_ODD.match(tok)) or EPIC_PRINTED.match(tok)) and 'epic' not in rec:
                     rec['epic'] = tok
                     warn.append('epic_nonstandard')
                 else:
@@ -549,6 +624,9 @@ def parse_box(box, chars, tchars, fixes):
             warn.append('source_double_mark:' + lab)
             gl = DOUBLE_RE.sub(r'\1', gl)
         g2 = space_marks(unicodedata.normalize('NFC', gl))[0]   # texttrace is visual: ि may follow a space (kept)
+        g3 = space_marks(unicodedata.normalize('NFC', gl), move_bindu=False)[0]
+        if letters(g3) == letters(t):   # a stray anusvara in front of an i-matra glyph that carries one: dropped
+            g2 = g3
         if unicodedata.normalize('NFD', g2) != gl:   # the PDF draws a space before a vowel sign: a source typo
             warn.append('source_space_before_mark:' + lab)
             gl = unicodedata.normalize('NFD', g2)
@@ -650,7 +728,7 @@ def parse_pdf(path):
             out = dict(ac=meta.get('ac_no', ac_f), part=meta.get('part_no', part_f), page=pno + 1,
                        section_no=section[0], section_name=section[1])
             for k in ('serial_no', 'epic', 'name', 'relation_type', 'relation_name', 'house_no', 'age',
-                      'gender', 'status_code', 'extra_text', 'box_marks'):
+                      'gender', 'status_code', 'top_label', 'extra_text', 'box_marks'):
                 if k in rec:
                     out[k] = rec[k]
             label_sets[rec.get('labels')] += 1   # per PDF only (not per record: the output columns stay as they were)

@@ -17,7 +17,9 @@ text (page.get_texttrace()) and a difference is reported in 'text_warnings'.
 
 Output record (like parse_textlayer.py): ac, part, page, section_no, section_name, serial_no, epic, name, relation_type
 (Father / Husband / Mother / Others / ... the word before 'Name'), relation_label (the printed label without the colon, e.g.
-'Fathers Name'), relation_name, house_no, age, gender, status_code, extra_text, box_marks, text_warnings.
+'Fathers Name'), relation_name, house_no, age, gender, status_code, top_label (S03: the section label '( MAIBANG PT-I)'
+drawn over the serial cell of the first box of a page; before 2026-11-25 it hid the serial: serial_no null), extra_text,
+box_marks, text_warnings. An EPIC printed in an odd form stays in epic (warning epic_nonstandard).
 
 Validation per PDF: record count and gender counts against the cover totals ("NUMBER OF ELECTORS": start / end serial, male,
 female, third gender, total) and against the last row of the summary page; serials 1..N; EPIC, age and gender formats.
@@ -32,7 +34,7 @@ import pymupdf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from parse_textlayer import (find_boxes, page_chars, assign, rows_of, row_text, page_lines, box_marks,   # noqa: E402
-                             EPIC_NEW, EPIC_OLD, EPIC_ANY)
+                             EPIC_NEW, EPIC_OLD, EPIC_ANY, EPIC_PRINTED, top_tokens)
 
 GENDERS = {'Male', 'Female', 'Third Gender'}
 PHOTO_TEXT = 'Photo'
@@ -117,9 +119,12 @@ def parse_box(box, chars, tchars):
     fields, last = {}, None
     for r in rows:
         if r['y'] < top_y:
-            for tok in row_text(r['c'], gap=0.5).split():
+            toks, lab = top_tokens(r['c'])   # S03: a section label '( MAIBANG PT-I)' over the serial cell -> top_label
+            if lab: rec['top_label'] = lab
+            for tok in toks:
                 if re.fullmatch(r'\d+', tok) and 'serial_no' not in rec: rec['serial_no'] = int(tok)
                 elif (EPIC_ANY.match(tok) or EPIC_LOOSE.match(tok)) and 'epic' not in rec: rec['epic'] = tok   # odd prints too
+                elif EPIC_PRINTED.match(tok) and 'epic' not in rec: rec['epic'] = tok; warn.append('epic_nonstandard')
                 else: extra.append(('top', tok))
             continue
         t = clean(row_text(r['c']))
@@ -215,7 +220,7 @@ def parse_pdf(path):
             out = dict(state=meta.get('state_code'), ac=meta.get('ac_no', ac_f), part=meta.get('part_no', part_f), page=pno + 1,
                        section_no=section[0], section_name=section[1])
             for k in ('serial_no', 'epic', 'name', 'relation_type', 'relation_label', 'relation_name', 'house_no', 'age', 'gender',
-                      'status_code', 'extra_text', 'box_marks'):
+                      'status_code', 'top_label', 'extra_text', 'box_marks'):
                 if k in rec: out[k] = rec[k]
             if warn: out['text_warnings'] = warn
             records.append(out)

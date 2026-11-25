@@ -240,7 +240,7 @@ def test_hint_missing_age_is_null():
 def test_hindi_space_before_mark():
     import parse_textlayer as H
     c = A.collections.Counter()
-    assert H.repair("गिरीश ंिसंह", c) == "गिरीश सिंह" and c["orphan_mark_dropped"] and c["visual_order"]
+    assert H.repair("गिरीश ंिसंह", c) == "गिरीश सिंह" and c["visual_order"]
     assert H.repair("संगीता ंकंवर चौहान", c) == "संगीता कंवर चौहान"
     assert H.repair("अस्मिता ुदेवी", c) == "अस्मिता देवी"
     assert H.repair("सुनीता ेदेवी", c) == "सुनीता देवी"                 # the sign of the next syllable
@@ -331,3 +331,74 @@ def test_ba_after_ba_phala_kept_only_when_trace_agrees():
     v, kinds = A.bengali_trace_fixes("দ্বিব", tl)
     assert kinds == ["ba_after_ba_phala"] and A.letters(v, "BEN") != A.letters("িদব্ব", "BEN", trace=True)
     assert A.bengali_trace_fixes("দ্বিব", tl, ba=False) == ("দ্বিব", [])
+
+
+# --------------------------------------------------------------------------- 2026-11-25 second verifier round
+
+def test_hindi_anusvara_before_visual_i_matra_is_moved():
+    import parse_textlayer as H
+    c = A.collections.Counter()
+    assert H.repair("शैलेन्द्र ंिसह", c) == "शैलेन्द्र सिंह" and c["visual_order"]    # was dropped: 'सिह'
+    assert H.repair("अमित ंिसह", c) == "अमित सिंह"
+    assert H.repair("रूप िंसह", c) == "रूप सिंह" and H.repair("रूप ंिंसह", c) == "रूप सिंह"
+    assert H.repair("नन्द िेकशोर सिंह", c) == "नन्द किशोर सिंह"          # printed so, with a stray e-stroke over the i-matra
+    assert H.repair("निर्वाचक का नाम : िाता देवी", c) == "निर्वाचक का नाम : ता देवी"   # other sign: the whole run is a stray
+    c = A.collections.Counter()
+    assert H.repair("राजपत ंसिह", c) == "राजपत सिंह" and c["bindu_moved"]   # logical order: bindu in front of 'सिह'
+    assert H.repair("ओमप्रकाश ंसिंह", c) == "ओमप्रकाश सिंह"               # 'सिंह' has its anusvara: the stray is dropped
+    assert H.space_marks("राम ंिसह", move_bindu=False)[0] == "राम िसह"     # glyph-trace variant: the old rule
+
+
+def test_hindi_double_virama_after_zwj():
+    import parse_textlayer as H
+    c = A.collections.Counter()
+    assert H.repair("जितेन्\u200d्द्र कुमार राम", c) == "जितेन्द्र कुमार राम" and c["doubled_mark"]
+    assert H.repair("मिस्\u200d्त्री", c) == "मिस्त्री"
+
+
+def test_pre_base_sign_not_joined_across_a_space():
+    assert A.repair("സയന െക", "MAL") == "സയന കെ"
+    assert A.repair("െകായിലേര്യന് ഹൗസ്", "MAL") == "കൊയിലേര്യന് ഹൗസ്"
+    assert A.repair("സുനിത െക െക", "MAL") == "സുനിത കെ കെ"
+    assert A.repair("ആദർശ് െക", "MAL") == "ആദർശ് കെ"
+    assert A.repair("ദറ്ശൻ ്രപകാശ്", "MAL") == "ദറ്ശൻ പ്രകാശ്"          # the ra-sign is pre-base too
+    assert A.repair("44/235 താമര േശ്ശരിമറ്റം", "MAL") == "44/235 താമര ശ്ശേരിമറ്റം"
+    assert A.repair("ਜਰਨੈਲ ਿੰਘ", "PAN") == "ਜਰਨੈਲ ਿੰਘ"                 # kept as printed (the PDF has no ਸ)
+    assert A.repair("ਮਕਾਨ ਨੰ. : ਿਨਊ ਕਲੋਨੀ,", "PAN") == "ਮਕਾਨ ਨੰ. : ਨਿਊ ਕਲੋਨੀ,"
+    assert A.repair("স্বামীর নাম: িদপন", "BEN") == "স্বামীর নাম: দিপন"
+    assert A.repair("নাম : েজ্যাত্নাৰা বেগম", "ASM") == "নাম : জ্যোত্নাৰা বেগম"
+    assert A.repair("ਸਿੰੰਘ", "PAN") == "ਸਿੰਘ" and A.repair("ക ു", "MAL") == "കു"   # other marks: the space is still removed
+
+
+def test_wrapped_malayalam_ra_sign():
+    box = pymupdf.Rect(0, 0, 186, 75)
+    rows = [("931", 10), ("HFJ1827625", 10), ("പേര് : മീര എം മിനി ജോാസഫ് ്", 28), ("രശീജിത് എസ്", 38),
+            ("ഭർത്താവിന്റെ പേര്: ശ്രീജിത്ത് എസ്", 48), ("വീട്ടു നമ്പർ : 52", 58), ("പ്രായം : 55 ലിംഗം : സ്ത്രീ", 68)]
+    chars, x = [], {}
+    for sid, (t, y) in enumerate(rows):
+        x0 = 120 if t.startswith("HFJ") else 5
+        for i, ch in enumerate(t):
+            chars.append((ch, x0 + i * 1.0, y, sid, t, (x0 + i, y - 8, x0 + i + 1, y)))
+    rec, rep, warn = A.parse_box(box, chars, [], "MAL", set())
+    assert rec["name"] == "മീര എം മിനി ജോസഫ് ശ്രീജിത് എസ്" and rec["serial_no"] == 931
+
+
+def test_top_label_over_the_serial_cell():
+    import parse_textlayer as H
+    # English S03 AC 113 part 244: '( MAIBANG PT-I)' drawn over the serial cell of the first box of a page
+    lab = "( MAIBANG PT-I)"
+    chars = [(ch, 16 + i * 4.2, 20, 1, lab, (16 + i * 4.2, 12, 16 + i * 4.2 + 4, 21)) for i, ch in enumerate(lab)]
+    chars += [("1", 68.7, 20, 2, "1", (68.7, 12, 71.9, 21))]
+    chars += [(ch, 153 + i * 4, 20, 3, "MSY7535037", (153 + i * 4, 12, 157 + i * 4, 21)) for i, ch in enumerate("MSY7535037")]
+    toks, label = H.top_tokens(chars)
+    assert toks == ["1", "MSY7535037"] and label == lab
+    one = [(c[0], c[1], c[2], 9 if c[3] < 3 else 3, "x", c[5]) for c in chars]   # label and serial in one span: glued
+    toks, label = H.top_tokens(one)
+    assert "1" in toks and label.endswith("PT-I)")
+
+
+def test_nonstandard_printed_epic_stays_in_epic():
+    import parse_textlayer as H
+    for e in ("BR\\06\\037\\552015", "C5X1230739", "5BMF5192117", "BQ}0707083"):
+        assert H.EPIC_PRINTED.match(e), e
+    assert not H.EPIC_PRINTED.match("D") and not H.EPIC_PRINTED.match("12345678")
