@@ -32,8 +32,14 @@
       "g26_unflagged": 99.47,
       "g26_flag_pct": 3.42,
       "hc_rec": 98.01,
+      "hc_unflagged": 99.22,
+      "hc_flag_pct_all": 4.4,
       "ge_rec": 97.56,
-      "source": "speed study 2026-11-24 (branch speed-students 41f1d10; Modal eci-eval s11h3x0 s9hx0 s4hx0 s3hx0)"
+      "ge_unflagged": 99.39,
+      "ge_flag_pct": 19.1,
+      "ge_cpu_s": 2139,
+      "source": "ocrv5 gold run 2026-11-25 06:05 (Modal, code ocrv5 99c69e1 = this set's code incl. hinvar rules, section and epicfix fixes; env exactly as above; models = the files here, sha256 checked against eci-eval:/models; paired: the 3 sets of one PDF in one container; models2/ocrv5/gold/report.jsonl)",
+      "earlier": "speed study 2026-11-24 (branch speed-students 41f1d10): same G26 / HC / GE record numbers"
     }
   },
   "j2Ps": {
@@ -64,14 +70,21 @@
       "ECI_EPIC_OLDFMT": "0"
     },
     "gold": {
-      "g26_rec": 98.26,
+      "g26_rec": 98.23,
       "g26_unflagged": 99.79,
-      "g26_flag_pct": 7.95,
+      "g26_flag_pct": 8.31,
       "hc_rec": 97.01,
       "hc_unflagged": 99.73,
-      "ge_rec": 97.27,
-      "ge_unflagged": 99.26,
-      "source": "job2 NOTES 2026-11-25 03:10 (real run j2Ps, branch job2 code without hinvar)"
+      "hc_flag_pct_all": 11.5,
+      "ge_rec": 97.28,
+      "ge_unflagged": 99.25,
+      "ge_flag_pct": 28.2,
+      "ge_cpu_s": 4254,
+      "val_rec": 99.73,
+      "val_unflagged": 100.0,
+      "val_flag_pct": 4.56,
+      "source": "ocrv5 gold run 2026-11-25 06:05 (Modal, code ocrv5 99c69e1 = this set's code incl. hinvar rules, section and epicfix fixes; env exactly as above; models = the files here, sha256 checked against eci-eval:/models; paired: the 3 sets of one PDF in one container; models2/ocrv5/gold/report.jsonl)",
+      "pre_hinvar": "job2 NOTES 03:10, branch job2 code without hinvar (rule 3 ECI_EPIC_TESS_NOHINT, label variants, 240-dpi scaling): G26 98.26 / 99.79 / 7.95 %, HC 97.01 / 99.73 / 9.8 %, GE 97.27 / 99.26 / 26.8 %, val 99.75 / 100 / 4.54 %. On ocrv5 code rule 3 adds flags (G26 +0.36 pt, HC +1.7 pt, GE +1.4 pt); unflagged accuracy holds (ISA noise +-0.05)"
     }
   },
   "j2Psf": {
@@ -102,7 +115,21 @@
       "ECI_EPIC_OLDFMT": "1"
     },
     "gold": {
-      "note": "not gold-run; differs from j2Ps only in the EPIC format check. Local test 2026-11-25 (S07 AC 1 parts 1+10): flags 21.72 -> 3.61 %, values identical to j2Ps in 1,911 boxes, 360 EPIC flags removed, Tesseract agrees in 360 of 360"
+      "g26_rec": 98.23,
+      "g26_unflagged": 99.79,
+      "g26_flag_pct": 8.31,
+      "hc_rec": 97.01,
+      "hc_unflagged": 99.73,
+      "hc_flag_pct_all": 11.5,
+      "ge_rec": 97.28,
+      "ge_unflagged": 99.25,
+      "ge_flag_pct": 28.2,
+      "ge_cpu_s": 4208,
+      "val_rec": 99.73,
+      "val_unflagged": 100.0,
+      "val_flag_pct": 4.56,
+      "source": "ocrv5 gold run 2026-11-25 06:05 (Modal, code ocrv5 99c69e1 = this set's code incl. hinvar rules, section and epicfix fixes; env exactly as above; models = the files here, sha256 checked against eci-eval:/models; paired: the 3 sets of one PDF in one container; models2/ocrv5/gold/report.jsonl)",
+      "note": "identical output to j2Ps on every gold set (UP gold has no old-format EPICs of the HR/01/01/0000369 kind), so the gold does NOT test the switch. Local test 2026-11-25 (S07 AC 1 parts 1+10, AC 3 parts 81+116): Haryana flags 21.7 -> 3.6 % and 33-38 -> 3.0 %, values identical to j2Ps, 360 EPIC flags removed, Tesseract agrees in 360 of 360; 4 of 4 EPICs checked on the page right. Risk not measured: a misread with a lost digit that fits the old format is not flagged."
     }
   }
 }
