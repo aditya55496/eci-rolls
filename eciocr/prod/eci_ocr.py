@@ -506,6 +506,10 @@ def _crnn_same(cs, f):
 
 
 _VALF = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
+# job5 r3 (ECI_NOHINT_VALF=fields, default = all of _VALF): fields whose flagged value the VALSET extras may re-choose. The job2
+# VALSET CRNNs have no '(' ')' in their charsets; on Himachal bracket house numbers (13(1)) they would out-vote the bracket
+# reading of the j5r2 CRNNs (the field stays flagged; the record would be wrong).
+_VALF = tuple(x for x in os.environ.get('ECI_NOHINT_VALF', ','.join(_VALF)).split(',') if x)
 
 
 def _valset(recs, segs_list):
