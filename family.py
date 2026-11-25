@@ -113,6 +113,21 @@ PROJECTS = [
         "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 16, "items": [],
     },
     {
+        # engocr (2026-11-25): English and Tamil SIR rolls of eci-rolls-all-cdn (plan_lang_ocr.py): the same task ocr-any, its own
+        # project (keys '<state>/<lang>/<ac>/<part>', output ocr/<state>/<lang>/<ac>/<part>), so its hot-swap settings, metrics and
+        # worker share stay apart from the Hindi OCR. max_workers 64: English parts take ~60-120 CPU-s (see models2/engocr/README.md).
+        "name": f"{FAMILY}-all-ocr", "title": "English and Tamil SIR rolls 2026 (all other states): OCR, model set per item (no LLM)",
+        "task": "ocr-any", "target": "eci-rolls-ocr", "env": {}, "probe": None,
+        "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 64, "items": [],
+    },
+    {
+        # Parquet per state / roll / language / AC from the eci-rolls-all-ocr output (SIR schema + provenance + lang);
+        # plan_lang_ocr.py --parquet
+        "name": f"{FAMILY}-all-parquet", "title": "English and Tamil SIR rolls as Parquet (per state, roll, language and AC)",
+        "task": "parquet-any", "target": "eci-rolls-parquet", "env": {}, "probe": None,
+        "unit_label": "AC", "record_label": "AC", "threads": 1, "max_workers": 16, "items": [],
+    },
+    {
         "name": f"{FAMILY}-up-ocr", "title": "UP SIR rolls 2026: OCR (no LLM, 4 CPUs per runner)", "task": "ocr",
         "target": "eci-rolls-ocr", "env": {}, "probe": None,
         "unit_label": "part", "record_label": "part", "threads": 1, "max_workers": 256, "items": [],   # hub: 760 (SQL)

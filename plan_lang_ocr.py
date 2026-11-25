@@ -225,6 +225,8 @@ def plan(states=None, acs_only=None, parts_only=None, state_set=None, release=()
                         s["items_waiting_for_hints"] += nparts
                         continue
             mset = state_set.get(st) or SETS[(lang, hints is not None)]
+            if H.MODEL_SETS[mset].get("hints") == "none":
+                hints = None        # --state-set with a no-hint set: the item carries no hints key (a hub swap cannot add hints)
             if not H.compatible(H.MODEL_SETS[mset], hints is not None, lang):
                 raise SystemExit(f"model set {mset} does not fit {st} AC {ac} (lang {lang}, hints {hints is not None})")
             for part in sorted({p for rr in R.values() for p in rr["pdf"].get(ac, {})}):

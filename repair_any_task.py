@@ -49,6 +49,8 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
     if fix not in FIXES:
         raise RuntimeError(f"unknown fix {fix!r}")
     H.payload_version(p)
+    if (p.get("lang") or "HIN") != "HIN":     # engocr: English / Tamil outputs live in eci-rolls-all-ocr (not repaired here)
+        raise RuntimeError(f"lang {p.get('lang')} items are not supported by repair-any (ocr-any runs the repairs itself)")
     group = p.get("roll_group")
     # form-route items (formocr, payload v 2): parts in 'form_p' (older code fails on them with a KeyError instead of repairing
     # the SIR files of the same state / AC / part numbers)

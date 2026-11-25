@@ -810,7 +810,8 @@ def process_page(task):
         if kind == 'SUP' and 'part_no' not in flags:
             pv = {visual(c['part_no']) for c in cands}
             if len(pv) > 1 or not out['part_no'].isdigit(): flags.append('part_no'); readings['part_no'] = {n: c['part_no'] for n, c in zip(nm, cands)}
-        rec = dict(page=pno + 1, box=i, kind=kind, lang=lang, section=section, **{f: out[f] for f in OUT_FIELDS})
+        # engocr (2026-11-25): 'lang' only on English / Tamil records (engpipe wrote it on every record; Hindi records stay as on main)
+        rec = dict(page=pno + 1, box=i, kind=kind, **({'lang': lang} if lang != 'HIN' else {}), section=section, **{f: out[f] for f in OUT_FIELDS})
         if CODE_VALID and out['code'] and not CODE_RE.fullmatch(out['code']) and 'code' not in flags:
             rec['code_invalid'] = True      # flag added by post_rules (after the not_voter_box rule)
             readings['code'] = {n: c['code'] for n, c in zip(nm, cands)}

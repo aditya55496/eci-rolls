@@ -280,6 +280,8 @@ def plan_parquet(states=None):
     by = collections.defaultdict(list)
     for r in rows:
         st, grp, ac, part = r["key"].split("/")
+        if grp in H.LANGS:      # engocr: '<state>/<lang>/<ac>/<part>' items (plan_lang_ocr.py), no form-route group
+            continue
         if states and st not in states:
             continue
         by[(st, grp, int(ac))].append((int(part), r["status"], sorted((r["keys"] or {}).keys())))

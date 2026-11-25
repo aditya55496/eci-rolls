@@ -9,6 +9,12 @@ roll: parquet/<state>/<roll id>/ac_<ac>/data.parquet (zstd). Form-route items (f
 (string, git commit), ocr_rules (JSON text: env switches, stage1, roll_year), hints_used (bool). Keys outside the schema go to
 the JSON column 'extra' (page_scale, extra_part, epic_by_prefix, ...), so nothing is dropped. One hub record per AC: rows per
 roll, rows per model set, parts without an OCR file.
+engocr (2026-11-25, payload v 3): English / Tamil SIR items (project eci-rolls-all-parquet, plan_lang_ocr.py --parquet): key
+"<state>/<lang>/<ac>", payload + "lang" (ENG / TAM) and "ocr_project" (eci-rolls-all-ocr); read ocr/<state>/<lang>/<ac>/<part>.jsonl.gz
+of that project; write parquet/<state>/<roll id>/<lang>/ac_<ac>/data.parquet with LANG_SCHEMA = the schema above + column 'lang'
+(the English / Tamil records carry it; draft_fill markers confirmed_by_draft / filled_from_draft, epic_by_prefix, lex flags go to
+'extra'). A worker of older code fails such an item on the payload version (no output); this code gives back items of a newer
+payload version untried.
 """
 import gzip
 import io
@@ -30,14 +36,15 @@ DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)
 S, B = pa.string(), pa.bool_()
 SCHEMA = pa.schema(list(PT.OCR_SCHEMA) + [("ocr_model_set", S), ("ocr_models", pa.list_(S)), ("ocr_code", S), ("ocr_rules", S),
                                           ("hints_used", B)])
+LANG_SCHEMA = pa.schema(list(SCHEMA) + [("lang", S)])     # engocr: English / Tamil SIR rolls
 
 
-def table(rows, roll, ac):
+def table(rows, roll, ac, schema=SCHEMA):
     for r in rows:
         if isinstance(r.get("ocr_rules"), dict):
             r["ocr_rules"] = json.dumps(r["ocr_rules"], ensure_ascii=False, sort_keys=True)
         r["hints_used"] = bool(r.get("hints_used"))
-    return PT.to_table(rows, SCHEMA, roll, ac)
+    return PT.to_table(rows, schema, roll, ac)
 
 
 def do_item(hub, item, fetch=None, upload=None):
@@ -47,14 +54,18 @@ def do_item(hub, item, fetch=None, upload=None):
     # no version check) fails on them with a KeyError instead of reading the SIR files ocr/<state>/<ac>/ and overwriting the
     # SIR Parquet of the AC
     group = p.get("roll_group")
+    lang = p.get("lang") or "HIN"     # engocr (v 3): ENG / TAM items, own OCR project and output path
     st, ac = str(p["state"]), int(p["ac"])
     parts = [int(x) for x in (p["form_parts"] if group is not None else p["parts"])]
-    base = H.ocr_base(st, ac, group)     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
-    fetch = fetch or (lambda ks, dest: download(hub, H.OCR_HI_PROJECT, ks, dest))
+    base = H.ocr_base(st, ac, group, lang)     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>; engocr: ocr/<state>/<lang>/<ac>
+    src = p.get("ocr_project") or H.OCR_HI_PROJECT
+    if lang != "HIN" and src != H.OCR_ALL_PROJECT:
+        raise RuntimeError(f"lang {lang} item reads {src}, expected {H.OCR_ALL_PROJECT}")
+    fetch = fetch or (lambda ks, dest: download(hub, src, ks, dest))
     upload = upload or hub.upload_many
     by, missing = {r: [] for r in p.get("rolls") or []}, []
     with tempfile.TemporaryDirectory() as tmp:
-        keys = [f"{H.OCR_HI_PROJECT}/{base}/{x}.jsonl.gz" for x in parts]
+        keys = [f"{src}/{base}/{x}.jsonl.gz" for x in parts]
         got = fetch(keys, tmp)
         for x, k in zip(parts, keys):
             if not got.get(k):
@@ -69,6 +80,8 @@ def do_item(hub, item, fetch=None, upload=None):
     rec = {"state": st, "ac": ac, "parts": len(parts), "parts_without_ocr_file": missing, "rolls": {}}
     if group is not None:
         rec["roll_group"] = group
+    if lang != "HIN":
+        rec["lang"] = lang
     for roll in sorted(by, key=lambda r: (0 if H.is_draft(r) else 1, r)):
         rows = by[roll]
         if not rows:
@@ -78,9 +91,16 @@ def do_item(hub, item, fetch=None, upload=None):
         for r in rows:
             sets[r.get("ocr_model_set")] = sets.get(r.get("ocr_model_set"), 0) + 1
         buf = io.BytesIO()
-        pq.write_table(table(rows, roll, ac), buf, compression="zstd", compression_level=9, row_group_size=131072)
+        if lang != "HIN":
+            if any(r.get("lang") != lang for r in rows if not r.get("not_voter_box")):
+                raise RuntimeError(f"records of another language than {lang} in {roll} AC {ac}")
+            pq.write_table(table(rows, roll, ac, LANG_SCHEMA), buf, compression="zstd", compression_level=9, row_group_size=131072)
+            path = f"parquet/{st}/{roll}/{lang}/ac_{ac}/data.parquet"
+        else:
+            pq.write_table(table(rows, roll, ac), buf, compression="zstd", compression_level=9, row_group_size=131072)
+            path = f"parquet/{st}/{roll}/ac_{ac}/data.parquet"
         data = buf.getvalue()
-        upload([(f"parquet/{st}/{roll}/ac_{ac}/data.parquet", data, "application/vnd.apache.parquet")])
+        upload([(path, data, "application/vnd.apache.parquet")])
         nv = sum(1 for r in rows if r.get("not_voter_box"))
         rec["rolls"][roll] = {"rows": len(rows), "voters": len(rows) - nv, "not_voter_box": nv, "bytes": len(data),
                               "rows_by_model_set": sets, "hints_used_rows": sum(1 for r in rows if r.get("hints_used"))}
@@ -105,6 +125,10 @@ def main():
                 n = sum(v.get("rows", 0) for v in rec["rolls"].values())
                 hub.metric("parquet_rows", n)
                 hub.complete([it["key"]], "done", fetched=n)
+            except H.NeedsNewerCode as e:   # a newer payload version: leave it to workers with newer code (attempt not counted)
+                hub.complete([it["key"]], "pending", error=f"{e} ({H.CODE})"[:400])
+                hub.metric("payload_version_unknown")
+                break
             except Exception as e:  # one bad AC must not stop the worker
                 hub.error()
                 hub.complete([it["key"]], "failed", error=f"{type(e).__name__}: {e}"[:400])
