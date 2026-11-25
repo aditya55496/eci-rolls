@@ -432,7 +432,7 @@ CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 S1N = int(os.environ.get('ECI_STAGE1_N', '2'))   # lang-ben r3: CRNNs in the no-hint stage 1 (all must agree); default 2 = job4
 
 
-def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
+def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False, nocv=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
     if lang in LATIN_TEMPLATE:
@@ -454,7 +454,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         flags = flags + [f for f in ('name', 'relation_name') if f not in flags and parse_ben.lex_suspect(out.get(f), BEN_LEX)]
     if lang == 'BEN' and BEN_STAMP_FLAG and nl >= 5:   # lang-ben r2: >= 5 crop lines = stamped box (grey 'UNDER ADJUDICATION')
         flags = flags + [f for f in BEN_STAMP_FLAG if f not in flags]
-    if lang == 'BEN' and BEN_CTCVAR is not None:   # lang-ben r4: an agreed name whose image fits a one-mark variant about as well
+    if lang == 'BEN' and BEN_CTCVAR is not None and not nocv:   # lang-ben r4: an agreed name whose image fits a one-mark
+        # variant about as well (nocv: not used for the stage-2 choice, so no Tesseract run for these boxes)
         for f, src in (('name', 'mv:line0'), ('relation_name', 'mv:line1')):
             mv = [per_engine[n][1].get(src) for n in names if n.startswith('crnn') and per_engine[n][1]]
             if f not in flags and mv and all(m is not None for m in mv) and min(mv) > BEN_CTCVAR: flags = flags + [f]
@@ -507,7 +508,7 @@ def process_page(task):
         # boxes where the 2 CRNNs do not agree on every field
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(S1N)), tess_groups={'code'}, lang=lang)
         names1 = _E.names[:S1N] + _E.tnames
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]]
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True, nocv=True)[1]]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(S1N, len(_E.crnn))),
                                  tess_groups={'line', 'num', 'epic'}, lang=lang)
