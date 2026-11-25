@@ -522,7 +522,7 @@ NOHINT_EARLY = int(os.environ.get('ECI_NOHINT_EARLY') or 0)   # job1 speed: no-h
 # ECI_NOHINT_EARLY_CONF=tau (default 0 = no floor): a box is settled in stage 1 only when every stage-1 CRNN line confidence
 # (minimum character probability, all crops but the code) is >= tau. ECI_EARLY_DUMP=1 (evaluation): stage-1 boxes get 's1_conf'.
 EARLY_CONF = float(os.environ.get('ECI_NOHINT_EARLY_CONF') or 0)
-EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') == '1'
+EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') in ('1', '2')
 
 
 def _s1_conf(r, names):
@@ -1058,6 +1058,8 @@ def process_page(task):
         if i in stampbox: rec['stampbox'] = True
         if EARLY_DUMP and NOHINT_EARLY and not _OPT['hints']:
             rec['s1_conf'] = round(_s1_conf(r, _E.names[:NOHINT_EARLY]), 4); rec['stage1_only'] = i in stage1_only
+            if os.environ.get('ECI_EARLY_DUMP') == '2':   # per crop: CRNN confidences and raw reads of the stage-1 engines
+                rec['s1_reads'] = {n: [r[n][0], r[n][1]] for n in _E.names[:NOHINT_EARLY] + _E.tnames if n in r}
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
             rec['cands'] = {n: c for n, c in zip(nm, cands)}
             rec['confs'] = decide_box.confs
