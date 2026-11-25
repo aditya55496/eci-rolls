@@ -11,6 +11,10 @@ import cv2
 import numpy as np
 
 
+# Punjabi (Gurmukhi) rolls (2026-11-25, lang-pan): set by segment_pan only (None = all small cells, as before).
+CELL_TOP_MAX = None
+
+
 def _mask(gray):
     return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10)
 
@@ -30,6 +34,7 @@ def cells(gray):
                 out.append((x, y, cw, ch))
     photo = [c for c in out if c[3] > 0.4 * h and c[0] > 0.5 * w]
     small = sorted([c for c in out if c[3] < 0.3 * h and c[1] < 0.3 * h and c[0] < 0.6 * w], key=lambda c: c[0])
+    if CELL_TOP_MAX is not None: small = [c for c in small if c[1] < CELL_TOP_MAX * h]   # segment_pan
     return bw, (photo[0] if photo else None), small
 
 
@@ -346,4 +351,113 @@ def segment_eng(gray, dash=False, peaks=None):
             out[f'line{k}'] = trim(clean_edges(gray[y0:y1, xl:px]), dark=ENG_DARK)
         k += 1
         if k >= ENG_MAX_LINES: break
+    return out
+# ---------------------------------------------------------------- Punjabi rolls (2026-11-25, job lang-pan)
+# Punjabi SIR boxes use the Hindi box template (serial cell, EPIC, 4 labelled lines, photo cell; no part cell). The Gurmukhi
+# head line of a long name plus a tall letter can close a contour that cells() takes for a small top-band cell (the part cell
+# of supplements) at 0.22 h; segment() then starts the body below the name line and the EPIC crop takes in the photo frame
+# (seen on S19 AC 43 part 10: 5 of 8 boxes). Real top-band cells start at 0.04 h: segment_pan keeps only small cells that
+# start above 0.15 h. The rest is segment() unchanged.
+def segment_pan(gray):
+    global CELL_TOP_MAX
+    CELL_TOP_MAX = 0.15
+    try:
+        return segment(gray)
+    finally:
+        CELL_TOP_MAX = None
+
+
+# 2026-11-25 (lang-pan round 1): Gurmukhi lines touch. The u / uu signs (hook + 1 or 2 bars), halant and subjoined letters of
+# one line hang into the band of the next line, and the upper marks of the next line (ੌ ੈ ੇ tippi bindi) reach up into the
+# gap. segment() cuts in the emptiest rows between the lines: the bars of ੁ / ੂ went to the next line's crop (gold:
+# ਕੁਮਾਰ read ਕਮਾਰ on 40+ fields). segment_pan2 assigns connected components: each line's head line (the densest ink row in its
+# band) is found; components that cross a head line row are that line's letters; any other component (mark) between line i and i+1 goes to
+# line i+1 when its bottom is within 0.15 pitch above line i+1's head line (upper marks sit on the head line), else to line i
+# (u / uu bars, halant, subjoined letters end 7+ px above it; measured on S19 AC 36 part 61). Each line
+# crop is its own components only (other ink painted white). Fallback to segment() lines when 4 head lines are not found.
+PAN_HOOK = os.environ.get('ECI_PAN_HOOK', '0') == '1'   # experimental: cut a lower mark merged into the next line's word
+PAN_DARK = int(os.environ.get('ECI_PAN_DARK', '200'))
+PAN_PITCH = 30.3 / 257   # measured head line pitch on the SIR boxes (1x crop)
+PAN_UPPER_GAP = float(os.environ.get('ECI_PAN_UPPER_GAP', '0.15'))   # x pitch: max gap above the next head line of an upper mark
+PAN_COMP = os.environ.get('ECI_PAN_COMP', '1') == '1'
+
+
+def segment_pan2(gray):
+    out = segment_pan(gray)
+    if not PAN_COMP or LAST_STAMP: return out
+    h, w = gray.shape
+    global CELL_TOP_MAX
+    CELL_TOP_MAX = 0.15
+    try:
+        bw, photo, small = cells(gray)
+    finally:
+        CELL_TOP_MAX = None
+    top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
+    px = photo[0] - 3 if photo else int(0.72 * w)
+    xl = max(6, int(0.018 * w))
+    y_off = top_bottom + 2
+    lines = cv2.morphologyEx(bw, cv2.MORPH_OPEN, cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, w // 5), 1)))
+    lines = cv2.dilate(lines, np.ones((3, 1), np.uint8))
+    bw2 = cv2.bitwise_or(bw, ((gray < PAN_DARK) * 255).astype(np.uint8))   # + faint thin strokes (u hook under ਕ, halant)
+    body = cv2.subtract(bw2, lines)[y_off: h - 3, xl: px]
+    if body.size == 0: return out
+    prof = (body > 0).sum(1).astype(float)
+    ink = np.where(prof > max(1.0, 0.01 * body.shape[1]))[0]
+    if not len(ink): return out
+    P = PAN_PITCH * h   # template line pitch 
+    heads = []
+    for r in np.argsort(-prof, kind='stable'):   # head lines = the 4 densest rows, >= 0.7 pitch apart
+        if prof[r] <= 0: break
+        if all(abs(int(r) - q) >= 0.7 * P for q in heads): heads.append(int(r))
+        if len(heads) == 4: break
+    heads.sort()
+    if len(heads) < 4 or any(not (0.75 * P <= heads[i + 1] - heads[i] <= 1.3 * P) for i in range(3)): return out
+    P = float(np.median(np.diff(heads)))
+    n, lab, st, cen = cv2.connectedComponentsWithStats(body, 8)
+    cut = False
+    for j in range(1, n):   # a component across two head lines (a uu sign touching the word below): cut at its thinnest row
+        y, ch = st[j][1], st[j][3]
+        hs = [i for i in range(4) if y <= heads[i] < y + ch]
+        for i in hs[:-1]:
+            a, b = int(heads[i] + 0.35 * P), int(heads[i + 1] - 1)
+            if b <= a: continue
+            cnt = (lab[a:b] == j).sum(1)
+            r = a + int(np.argmin(cnt)); body[r][lab[r] == j] = 0; cut = True
+        for i in (hs[:1] if PAN_HOOK else []):   # a lower mark of the line above touching this line's word (ੁ hook under ਕ on ਏ): cut it off
+            if i == 0 or y >= heads[i] - 0.3 * P: continue
+            a, b = y + 1, int(heads[i] - 0.15 * P)
+            if b <= a: continue
+            cnt = (lab[a:b] == j).sum(1)
+            r = a + int(np.argmin(cnt)); body[r][lab[r] == j] = 0; cut = True
+    if cut: n, lab, st, cen = cv2.connectedComponentsWithStats(body, 8)
+    owner = np.zeros(n, int) - 1
+    core = [[] for _ in range(4)]
+    for j in range(1, n):   # letters: components that cross a head line row
+        y, ch = st[j][1], st[j][3]
+        for i in range(4):
+            if y <= heads[i] < y + ch: owner[j] = i; core[i].append(y + ch); break
+    for j in range(1, n):   # marks: to the line whose baseline (below) or head line (above) is nearer
+        if owner[j] >= 0 or st[j][4] < 2: continue
+        y, ch = st[j][1], st[j][3]; cy = y + ch / 2.0
+        if ch >= 0.45 * P: owner[j] = int(np.argmin([abs(y - q) for q in heads])); continue   # a word off its line's head row
+        if cy < heads[0]: owner[j] = 0; continue
+        if cy >= heads[3]: owner[j] = 3; continue
+        i = max(k for k in range(3) if heads[k] <= cy)
+        x, cw = st[j][0], st[j][2]   # touching a letter of line i from below (gap <= 1 px in its columns): lower mark of line i
+        above = PAN_HOOK and (lab[max(0, y - 2):y, x:x + cw] > 0) & np.isin(lab[max(0, y - 2):y, x:x + cw], np.where(owner == i)[0])
+        if PAN_HOOK and above.any(): owner[j] = i; continue
+        d_up = heads[i + 1] - (y + ch)   # upper marks of line i+1 sit on its head line; lower marks of line i end well above it
+        flat = ch <= 0.16 * P and st[j][2] >= 2.5 * ch and d_up >= 2   # lower bar of a uu sign (ends near the next head line)
+        owner[j] = i + 1 if d_up <= PAN_UPPER_GAP * P and not flat else i
+    g = gray[y_off: h - 3, xl: px]
+    for i in range(4):
+        js = [j for j in range(1, n) if owner[j] == i]
+        if not js: continue
+        y0 = max(0, min(st[j][1] for j in js) - 3); y1 = min(g.shape[0], max(st[j][1] + st[j][3] for j in js) + 3)
+        crop = g[y0:y1].copy()
+        keep = np.isin(lab[y0:y1], js)
+        other = (lab[y0:y1] > 0) & ~keep
+        crop[(cv2.dilate(other.astype(np.uint8), np.ones((3, 3), np.uint8)) > 0) & ~keep] = 255   # never this line's own ink (a uu bar 1 px above the next head line was wiped)
+        # (no whitening of ink outside the mask: faint thin strokes such as the u hook under ਕ are not in the adaptive mask)
+        out[f'line{i}'] = trim(crop)
     return out

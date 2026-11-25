@@ -16,6 +16,7 @@ from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
 import parse_tam
 import parse_mal   # lang-mal: Malayalam / Telugu (parse_mal.LANG = 'MAL' | 'TEL')
+import parse_pan   # lang-pan: Punjabi (Gurmukhi)
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -63,9 +64,11 @@ def visual(s):   # lang-tam: Tamil sequences that print the same (ௌ = ெள, 
     return v.replace('\u0bcc', '\u0bc6\u0bb3').replace('\u0b82', '\u0bcd') if LANG == 'TAM' else v
 
 
+# 2026-11-25 (lang-pan): 'PAN' = Punjabi (Gurmukhi) validators (parse_pan.valid_pan: printed Punjabi labels and genders).
 def valid(f, v):
     if LANG == 'TAM': return parse_tam.valid_tam(f, v, EPIC_RE)
     if LANG in ('MAL', 'TEL'): return parse_mal.valid_mal(f, v, EPIC_RE)
+    if LANG == 'PAN': return parse_pan.valid_pan(f, v)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
@@ -77,6 +80,7 @@ def hvis(f, v):
     if LANG == 'MAL' and f in ('name', 'relation_name', 'house_no'): return parse_mal.hint_fold(visual(v))   # lang-mal: word-final virama = chillu
     if LANG == 'TAM' and f in ('name', 'relation_name'):   # SIR prints 'ராமசாமி -' (empty 2nd part), the 2027 roll 'ராமசாமி'
         return re.sub(r'(\s*-)+$', '', visual(v))
+    if LANG == 'PAN' and PAN_CANON: return parse_pan.canon(v)   # lang-pan r2
     return visual(v)
 
 
@@ -193,7 +197,7 @@ def til_ok(vals, names):
     return True
 
 
-NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else 0
+NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.argv else int(os.environ.get('ECI_NOHINT_SLACK', '0'))   # env: lang-pan 2026-11-25
 # job2 2026-11-25 (no 2027 roll): house_no and age are not flagged only because Tesseract disagrees when ALL CRNNs read the same
 # valid value (house_no: with a digit and without . , ; : - the CRNNs confuse those marks). Tesseract misreads these lines (it
 # caused ~11,000 of ~11,400 house_no flags on the no-hint gold runs). Set on a non-gold validation set (14 UP ACs outside every
@@ -404,6 +408,9 @@ def _crnn_all_agree(f, vals, vis, names):
     if not v or not valid(f, v): return None
     if f == 'house_no' and (not any(c.isdigit() for c in v) or any(c in v for c in '.,;:')): return None
     return v
+
+
+PAN_CANON = os.environ.get('ECI_PAN_CANON', '1') != '0'   # lang-pan r2: hint comparison in the Punjabi canonical form
 
 
 def decide(cands, hint, pix, names=None, confs=None, stamp=None):

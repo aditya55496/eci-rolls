@@ -1502,5 +1502,62 @@
    "lang_mal_r2b_3q_q0": "7e8175aad4dfa9ca",
    "lang_mal_r2b_base_q0": "c525ffc7edd75fee"
   }
+ },
+ "panH4": {
+  "about": "Punjab SIR (lang-pan round 3, owner 2026-11-26 deploy): every S19 AC has a 2027 Punjabi roll (hints). 3 int8 CRNNs (half + quarter + base) + Tesseract pan; cascade stage1 2; Punjabi canonical hint compare (ECI_PAN_CANON) and CTC fit of the 2027 value (ECI_PAN_HINTCTC=-10 mean margin, unflag). Engine branch lang-pan 0c86116. Native-resolution pages (ECI_RESCALE_H=0: segment_pan2 pitch is measured on the 2806 px SIR print). Gold (707 boxes, 24 pages, ACs 36 48 95 97 102 112, never trained on): record 99.15 %, unflagged 100 %, flags 1.98 %, 0 silent, EPIC 100 %; 0.134 CPU-s/record.",
+  "models": [
+   "lang_pan_r3a_half_x0",
+   "lang_pan_r3b_quarter_x0",
+   "lang_pan_r3a_base_x0"
+  ],
+  "sha256_16": {
+   "lang_pan_r3a_half_x0": "262c8a68fd5f9abe",
+   "lang_pan_r3b_quarter_x0": "6e1ce61fc49fbd54",
+   "lang_pan_r3a_base_x0": "4e8b137003125b19"
+  },
+  "hints": "required",
+  "stage1": 2,
+  "lang": "PAN",
+  "env": {
+   "ECI_PAN_DARK": "200",
+   "ECI_PAN_HOOK": "0",
+   "ECI_PAN_COMP": "1",
+   "ECI_PAN_UPPER_GAP": "0.15",
+   "ECI_PAN_CANON": "1",
+   "ECI_PAN_HINTCTC": "-10",
+   "ECI_PAN_HINTCTC_AGG": "mean",
+   "ECI_PAN_HINTCTC_UNFLAG": "1",
+   "ECI_RESCALE_H": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "tessdata": "pan + eng traineddata (apt tesseract-ocr-pan)",
+  "gold": {
+   "pan_rec": 99.15,
+   "pan_unflagged": 100.0,
+   "pan_flag_pct": 1.98,
+   "pan_silent": 0,
+   "epic_pan": 100.0,
+   "boxes_pan": 707,
+   "rec_ci95": [
+    97.78,
+    100.0
+   ],
+   "source": "lang-pan eval r3_cas3_hcu (eval/out/r3_cas3_hcu); held-out gold (305 boxes, ACs 40 56 57 114) 99.34 %"
+  },
+  "cpu": {
+   "s_per_record_single_pdf": 0.134
+  },
+  "charset_sha256_16": {
+   "lang_pan_r3a_half_x0": "10abd62eb2a2230e",
+   "lang_pan_r3b_quarter_x0": "10abd62eb2a2230e",
+   "lang_pan_r3a_base_x0": "10abd62eb2a2230e"
+  },
+  "arch_sha256_16": {
+   "lang_pan_r3a_half_x0": "e6c1be4f78ed78b0",
+   "lang_pan_r3b_quarter_x0": "890918ecf7810d78",
+   "lang_pan_r3a_base_x0": "24ef37bb38073b30"
+  }
  }
 }

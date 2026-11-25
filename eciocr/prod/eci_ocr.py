@@ -33,15 +33,17 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_pan, segment_pan2, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_tam                                    # noqa: E402
 import parse_mal                                    # noqa: E402
+from parse_pan import from_lines_pan, parse_heading_pan   # noqa: E402  (lang-pan)
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
+import ctchint_pan                                  # noqa: E402  (lang-pan r2)
 sys.argv = _argv
 from ensemble2 import decide                        # noqa: E402
 from score import FIELDS, visual                    # noqa: E402
@@ -101,6 +103,11 @@ def page_gray(pdf, pno):
 
 
 # ---------------------------------------------------------------- engines (same preprocessing as ocr/engines.py)
+
+# lang-pan r2 (2026-11-25): CTC fit of the 2027 hint value (ctchint_pan); threshold in log units (e.g. -4), unset = off
+PAN_HINTCTC = float(os.environ['ECI_PAN_HINTCTC']) if os.environ.get('ECI_PAN_HINTCTC') else None
+PAN_HINTCTC_UNFLAG = os.environ.get('ECI_PAN_HINTCTC_UNFLAG', '0') == '1'
+PAN_HINTCTC_AGG = os.environ.get('ECI_PAN_HINTCTC_AGG', 'mean')   # 'mean' or 'min' of the CRNN margins
 
 class TessAPI:
     """Minimal ctypes binding of the libtesseract C API (libtesseract.so.5, Tesseract 5.x)."""
@@ -205,7 +212,7 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims, xst=1.0, trim=True, Wmin=0):
+    def _crnn_batch(sess, inp, CH, ims, xst=1.0, trim=True, Wmin=0, keep_p=False):
         H = sess.get_inputs()[0].shape[2]   # job2: the model's input height (48 for every production model; 32 px students)
         H = H if isinstance(H, int) and H > 0 else 48; xs = []
         for im in ims:
@@ -227,7 +234,7 @@ class Engines:
             for t, k in enumerate(seq):
                 if k != prev and k != 0: s.append(CH[k - 1]); conf = min(conf, float(P[t, k]))
                 prev = k
-            out.append((''.join(s), conf))
+            out.append((''.join(s), conf, (P.astype(np.float32), CH)) if keep_p else (''.join(s), conf))
         return out
 
     @staticmethod
@@ -237,7 +244,7 @@ class Engines:
         w = max(min(int(800 * xst), max(8, int((im.shape[1] + 10) * H / (im.shape[0] + 10) * xst))) for im in ims)
         return (w + (0 if trim else NOTRIM_PAD) + 3) // 4 * 4
 
-    def crnn_read(self, eng, ims, keep=None):
+    def crnn_read(self, eng, ims, keep=None, keep_p=False):
         """keep (job1 speed, list of bools): read only these crops, each padded to the width of the batch it has when ALL crops
         are read, so its reading equals the all-crops run (every sample of a batch is computed on its own padded input)."""
         _, sess, inp, CH = eng
@@ -252,12 +259,12 @@ class Engines:
         out = [None] * len(ims)
         for idx in batches:
             if keep is None:
-                for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr)): out[i] = r
+                for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr, keep_p=keep_p)): out[i] = r
                 continue
             sub = [i for i in idx if keep[i]]
             if not sub: continue
             Wb = self._batch_w(sess, [ims[i] for i in idx], xs, tr)
-            for i, r in zip(sub, self._crnn_batch(sess, inp, CH, [ims[i] for i in sub], xs, tr, Wb)): out[i] = r
+            for i, r in zip(sub, self._crnn_batch(sess, inp, CH, [ims[i] for i in sub], xs, tr, Wb, keep_p=keep_p)): out[i] = r
         return out
 
     def read_proxy(self, segs_list, reads, timing):
@@ -326,15 +333,16 @@ class Engines:
                 sel = [i for i, (b, _) in enumerate(keys) if j <= b < j + 32 and outs[i] is None]
                 if only is not None and not any(keys[i][0] in only for i in sel): continue
                 kp = [keys[i][0] in only for i in sel] if only is not None else None
-                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel], kp)):
+                for i, r in zip(sel, self.crnn_read(eng, [ims[i] for i in sel], kp, keep_p=PAN_HINTCTC is not None and lang == 'PAN')):
                     if r is None: continue
                     outs[i] = r
-                    if self.collect: self.cache_out[(eng[0], hs[i])] = r
-            for (b, k), o in zip(keys, outs):
-                if o is None or (only is not None and b not in only): continue
-                txt, c = o
+                    if self.collect: self.cache_out[(eng[0], hs[i])] = r[:2]
+            for (b, k), r in zip(keys, outs):
+                if r is None or (only is not None and b not in only): continue
+                txt, c = r[0], r[1]
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
+                if len(r) > 2 and k in ('line0', 'line1', 'line2'): res[b].setdefault('_P', {})[(eng[0], k)] = r[2]
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
         groups = {'line': (TESS_LANG.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
@@ -379,12 +387,13 @@ def code_pixel(box_gray, lang='HIN'):
     """Printed status code present: inner left 40% of the serial cell has > 15 ink pixels (bench code_pixel.json).
     ENG (2026-11-25): English SIR pages have ~2x the resolution, and the cell's left rule is wider than the 3 px margin
     (English gold: every first-column box read as '#'): only glyph-like ink counts (components >= 3 px wide,
-    >= 25 % of the cell height, not touching the crop edges: thin rule remains are dropped)."""
+    >= 25 % of the cell height, not touching the crop edges: thin rule remains are dropped).
+    PAN (2026-11-25, lang-pan): the same rule remains gave '#' on 235 of 707 Punjabi gold boxes: same filter."""
     _, _, small = cells(box_gray)
     if not small: return False
     x, y, cw, ch = small[0]
     m = _mask(box_gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
-    if lang in LATIN_TPL and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
+    if (lang in LATIN_TPL or lang == 'PAN') and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
         n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
         H, W = m.shape
         for j in range(1, n):
@@ -632,7 +641,7 @@ ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 # lang-mal (2026-11-25): Malayalam (S11, U06, U07-29) and Telugu (U07-30) SIR rolls: the same template, Tesseract 'mal' / 'tel',
 # parse_mal (labels / genders of the language in parse_mal.LANG).
 LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL')
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel'}
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan'}
 PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam),
            'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
@@ -760,6 +769,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         roles = P.box_roles([per_engine[n][0] for n in names], nl)
         per_engine = {n: (P.canonical(per_engine[n][0], roles), P.canonical_conf(per_engine[n][1], roles)) for n in names}
         cands = [from_l(per_engine[n][0]) for n in names]
+    elif lang == 'PAN':
+        cands = [from_lines_pan(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
@@ -768,6 +779,23 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         out, flags = ensemble2.decide_eng_nohint(cands, names, pix, stamp, stage1=stage1)
     else:
         out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
+    hctc = {}
+    if lang == 'PAN' and PAN_HINTCTC is not None and hint and '_P' in per_engine:
+        # lang-pan r2: a flagged hint field takes the 2027 value when every CRNN's line output fits it within PAN_HINTCTC
+        # log units of its own reading (ctchint_pan.margin); the field stays flagged unless ECI_PAN_HINTCTC_UNFLAG=1
+        for f in [f for f in flags if f in ('name', 'relation_name', 'house_no')]:
+            h = ctchint_pan.gur_norm(hint.get(f) or '')
+            if not h: continue
+            ms = []
+            for n, c in zip(names, cands):
+                pc = per_engine['_P'].get((n, SRC[f]))
+                if pc is None: continue
+                ms.append(ctchint_pan.margin(pc[0], pc[1], per_engine[n][0].get(SRC[f], ''), c[f], h))
+            ok = len(ms) >= 2 and all(m is not None for m in ms) and (sum(ms) / len(ms) if PAN_HINTCTC_AGG == 'mean' else min(ms)) >= PAN_HINTCTC
+            hctc[f] = [None if m is None else round(m, 2) for m in ms]
+            if ok:
+                out[f] = h
+                if PAN_HINTCTC_UNFLAG: flags = [g for g in flags if g != f]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in (flags if not os.environ.get('ECI_READINGS_ALL') else list(flags) + [f for f in OUT_FIELDS if f not in flags and f in SRC]):   # debug: readings of every field
@@ -775,6 +803,7 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
         conf = {n: per_engine[n][1].get(SRC[f]) for n in names if n.startswith('crnn') and SRC[f] in per_engine[n][1]}
         if conf: readings[f]['crnn_conf'] = conf
+        if f in hctc: readings[f]['hint_ctc'] = hctc[f]
     return out, flags, readings, hint is not None, cands
 
 
@@ -887,7 +916,8 @@ def process_page(task):
         if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
             segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM', peaks=lang if lang in ('MAL', 'TEL') else None).items() if im.size}); stamps.append(False)
         else:
-            segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
+            seg = segment_pan2(g) if lang == 'PAN' else segment(g)
+            segs_list.append({k: im for k, im in seg.items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
     tm['segment'] = round(time.time() - t, 3)
     t = time.time()
@@ -895,10 +925,14 @@ def process_page(task):
     for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
-        if lang in LATIN_TPL or not _E.crnn:   # English / Tamil headings: Tesseract reads the print well (and runs without CRNNs)
+        if lang == 'PAN':   # Punjabi headings (no colon); CRNN if any, else Tesseract pan
+            txt = [t for t, _ in _E.crnn_read(_E.crnn[0], L)] if _E.crnn else _E.tess_many([_E.tess_prep(l, 2) for l in L], 'pan', 7)
+            heads.append((y, next((h for h in map(parse_heading_pan, reversed(txt)) if h), None)))
+        elif lang in LATIN_TPL or not _E.crnn:   # English / Tamil headings: Tesseract reads the print well (and runs without CRNNs)
             heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], TESS_LANG.get(lang, 'hin'), 7), lang)))
         else:
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[HEAD_CRNN if len(_E.crnn) > HEAD_CRNN else 0], L)])))
+
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
     stampbox = set()
@@ -996,6 +1030,7 @@ def process_page(task):
                 for tn in _E.tnames:
                     t1 = reads[i][tn]; t2 = r2.pop(tn)
                     t1[0].update(t2[0])
+                if '_P' in r2: reads[i].setdefault('_P', {}).update(r2.pop('_P'))   # lang-pan: keep every CRNN's hint-CTC probs across stages
                 reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
@@ -1023,8 +1058,11 @@ def process_page(task):
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(NOHINT_CASCADE, len(_E.crnn))), tess_groups={'line'})
             for i, r2 in zip(need, more):
-                t1 = reads[i]['tess']; t2 = r2.pop('tess')
-                t1[0].update(t2[0]); reads[i].update(r2)
+                for tn in _E.tnames:
+                    t1 = reads[i][tn]; t2 = r2.pop(tn)
+                    t1[0].update(t2[0])
+                if '_P' in r2: reads[i].setdefault('_P', {}).update(r2.pop('_P'))
+                reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
         K = NOHINT_CASCADE
@@ -1450,9 +1488,9 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN'): return opt.upper()
     b = os.path.basename(path).upper()
-    for L in ('ENG', 'TAM', 'MAL', 'TEL'):
+    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN'):
         if f'-{L}-' in b: return L
     return 'HIN'
 
@@ -1488,7 +1526,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* file names, else HIN), HIN, ENG, TAM, MAL or TEL')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG / TAM / MAL / TEL / PAN for *-ENG-* / *-TAM-* / *-MAL-* / *-TEL-* / *-PAN-* file names, else HIN), HIN, ENG, TAM, MAL, TEL or PAN')
     ap.add_argument('--draft-records', help='job4: eci_ocr output (jsonl) of the SIR DRAFT roll of the same part, for a FINAL roll: '
                     'flagged fields of a final record are filled from the unflagged draft record with the same EPIC (draft_fill)')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
