@@ -144,7 +144,7 @@ class TessAPI:
 
 class Engines:
     def __init__(self, crnn_dirs, tessdata=STD_TESSDATA, ort_threads=1, crnn_sort=False, tess2=False):
-        self.crnn = []
+        self.crnn = []; self.xs = {}
         if crnn_dirs: import onnxruntime as ort
         for d in crnn_dirs:
             so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1
@@ -154,6 +154,9 @@ class Engines:
             s = ort.InferenceSession(os.path.join(d, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
             self.crnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s, s.get_inputs()[0].name,
                               json.load(open(os.path.join(d, 'charset.json')))))
+            # job3 round 3: horizontal stretch of the input (arch.json 'xs', trainer j3r3.py; default 1.0 = every older model)
+            try: self.xs[self.crnn[-1][0]] = float(json.load(open(os.path.join(d, 'arch.json'))).get('xs', 1.0))
+            except (OSError, ValueError): pass
         self.tessdata = tessdata
         self.crnn_sort = crnn_sort
         # job2 (2026-11-25): ECI_DIGIT_CRNN=DIR = a CRNN trained only on line2 (house number) and line3 (age, gender) lines; its
@@ -188,12 +191,12 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims):
+    def _crnn_batch(sess, inp, CH, ims, xst=1.0):
         H = sess.get_inputs()[0].shape[2]   # job2: the model's input height (48 for every production model; 32 px students)
         H = H if isinstance(H, int) and H > 0 else 48; xs = []
         for im in ims:
             im = cv2.copyMakeBorder(im, 5, 5, 5, 5, cv2.BORDER_CONSTANT, value=255)
-            w = min(800, max(8, int(im.shape[1] * H / im.shape[0])))
+            w = min(int(800 * xst), max(8, int(im.shape[1] * H / im.shape[0] * xst)))
             xs.append((255 - cv2.resize(im, (w, H), interpolation=cv2.INTER_CUBIC)).astype(np.float32) / 255.0)
         W = (max(x.shape[1] for x in xs) + 3) // 4 * 4
         X = np.zeros((len(xs), 1, H, W), np.float32)
@@ -212,14 +215,15 @@ class Engines:
 
     def crnn_read(self, eng, ims):
         _, sess, inp, CH = eng
+        xs = self.xs.get(eng[0], 1.0)
         if not ims: return []
         if not self.crnn_sort or len(ims) == 1:
-            return self._crnn_batch(sess, inp, CH, ims)
+            return self._crnn_batch(sess, inp, CH, ims, xs)
         order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
         out = [None] * len(ims)
         for j in range(0, len(order), 64):
             idx = order[j:j + 64]
-            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx])): out[i] = r
+            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs)): out[i] = r
         return out
 
     @staticmethod
@@ -488,6 +492,10 @@ _CACHE_IN, _COLLECT = {}, False   # reading cache: loaded before the fork / coll
 _EPIC_IDX = None
 ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)   # see ensemble2.agree_eng and sequence_confirm
 ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,line').split(',')))
+# ENG_SEQ (job3 round 3, 2026-11-25): English stage 1 reads the serial with the first CRNN only when the CRNN serials of the
+# page run in sequence around the box (prev + 1 == s == next - 1; page edges: the two next / two previous boxes); that reading
+# also stands for the Tesseract vote. Other boxes get the Tesseract serial as before. Default off.
+ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -536,7 +544,7 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
     hint = next((hints[e] for e in epics if e in hints), None)
     out, flags = decide(cands, hint, pix, names, [per_engine[n][1] for n in names], stamp=stamp)
     readings = {}
-    for f in flags:
+    for f in (flags if not os.environ.get('ECI_READINGS_ALL') else list(flags) + [f for f in OUT_FIELDS if f not in flags and f in SRC]):   # debug: readings of every field
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
         conf = {n: per_engine[n][1].get(SRC[f]) for n in names if n.startswith('crnn') and SRC[f] in per_engine[n][1]}
@@ -649,7 +657,29 @@ def process_page(task):
         # num/epic/code/line; default all four = engpipe behaviour). With trusted English CRNNs, 'num,code' keeps Tesseract
         # text lines (95 % of the Tesseract time) for the stage-2 boxes only.
         s1t = ENG_S1_TESS if lang == 'ENG' else {'num', 'epic', 'code'}
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t, lang=lang)
+        seq_ok = set()
+        if lang == 'ENG' and ENG_SEQ and 'num' in s1t and _E.crnn:
+            reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t - {'num'}, lang=lang)
+            c0 = _E.names[0]
+            sv = [reads[i][c0][0].get('serial', '') if 'part' not in segs_list[i] else '' for i in range(len(reads))]
+            sv = [int(v) if v.isdigit() and len(v) <= 5 else None for v in sv]
+            n_ = len(sv)
+            for i, v in enumerate(sv):
+                if v is None: continue
+                if 0 < i < n_ - 1: ok = sv[i - 1] == v - 1 and sv[i + 1] == v + 1
+                elif i == 0: ok = n_ > 2 and sv[1] == v + 1 and sv[2] == v + 2
+                else: ok = n_ > 2 and sv[i - 1] == v - 1 and sv[i - 2] == v - 2
+                if ok: seq_ok.add(i)
+            for i in seq_ok:
+                for tn in _E.tnames: reads[i][tn][0]['serial'] = str(sv[i])
+            rest = [i for i in range(n_) if i not in seq_ok and any(k in ('serial', 'part') for k in segs_list[i])]
+            if rest:
+                more = _E.read_boxes([segs_list[i] for i in rest], _OPT['tmp'], tm, crnn_idx=set(), tess_groups={'num'}, lang=lang)
+                for i, r2 in zip(rest, more):
+                    for tn in _E.tnames: reads[i][tn][0].update(r2[tn][0])
+            tm['seq_serial'] = len(seq_ok)
+        else:
+            reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t, lang=lang)
         names1 = _E.names[:K] + _E.tnames
         need = []
         for i, r in enumerate(reads):
@@ -725,6 +755,7 @@ def process_page(task):
             readings['code'] = {n: c['code'] for n, c in zip(nm, cands)}
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
+        if K and _OPT['hints'] and i in seq_ok: rec['serial_s1_seq'] = True
         recs.append(rec)
     tm['decide'] = round(time.time() - t, 3)
     if _E.vcrnn and not _OPT['hints']:
