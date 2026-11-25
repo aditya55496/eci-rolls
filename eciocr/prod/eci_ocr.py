@@ -510,6 +510,7 @@ _VALF = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
 # VALSET CRNNs have no '(' ')' in their charsets; on Himachal bracket house numbers (13(1)) they would out-vote the bracket
 # reading of the j5r2 CRNNs (the field stays flagged; the record would be wrong).
 _VALF = tuple(x for x in os.environ.get('ECI_NOHINT_VALF', ','.join(_VALF)).split(',') if x)
+_VALGUARD = os.environ.get('ECI_NOHINT_VALGUARD', '0') == '1'
 
 
 def _valset(recs, segs_list):
@@ -536,6 +537,11 @@ def _valset(recs, segs_list):
             if not vs: continue
             c = collections.Counter(visual(v) for v in vs); top, k = c.most_common(1)[0]
             if f == 'house_no' and ensemble2.NOHINT_AMP and '&' in (r[f] or ''): continue   # the '&' choice of decide() stays
+            if _VALGUARD and r[f]:
+                # job5 r4 (ECI_NOHINT_VALGUARD=1, default off): the extras may not replace a value that a strict majority of
+                # the main CRNN voters read (gold: 3 of 4 voters + Tesseract read घांधु, the 3 job2 extras घांथु).
+                mv = [rd.get(c[0]) for c in _E.crnn]
+                if sum(isinstance(v, str) and visual(v) == visual(r[f]) for v in mv) * 2 > len(mv): continue
             if k * 2 > len(vs): r[f] = next(v for v in vs if visual(v) == top)
         if ensemble2.NOHINT_NUNF:  # job2 r4: clear a name flag when every CRNN (voters + extras) agrees on a common value (ensemble2)
             for f in [f for f in r['flags'] if f in ('name', 'relation_name')]:
