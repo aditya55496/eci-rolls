@@ -445,6 +445,22 @@ _ORI_TTA = re.compile('([\u0b15-\u0b1e\u0b20-\u0b22\u0b24-\u0b27\u0b2a-\u0b2f\u0
 _ORI_O = re.compile('\u0b13(?=[\u0b3e-\u0b4c\u0b56\u0b57])')
 _ORI_HOUSE_ASCII = re.compile(r'^[0-9A-Za-z][0-9A-Za-z/.\- ]{0,11}$')
 _ORI_AGE = re.compile(r'^(1[89]|[2-9][0-9]|1[01][0-9])$')
+# lang-ori r3: name / relation token lexicon = tokens of 53,757 Opus-read real line strips of NON-gold Odisha ACs (ocr/ori_lex.json).
+#   U: a flagged name / relation_name whose CRNN readings are all equal (>= 2 CRNNs) and whose tokens are all in the lexicon
+#      (count >= ECI_ORI_LEX_MIN) is unflagged.   F: an UNflagged name / relation_name with a token outside the lexicon is flagged.
+ORI_LEX = os.environ.get('ECI_ORI_LEX', '')   # '' | 'U' | 'F' | 'UF'
+ORI_LEX_MIN = int(os.environ.get('ECI_ORI_LEX_MIN', '2'))
+_ORI_LEXSET = None
+
+
+def _ori_inlex(v):
+    global _ORI_LEXSET
+    if _ORI_LEXSET is None:
+        fn = os.environ.get('ECI_ORI_LEX_FILE') or os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'ocr', 'ori_lex.json')
+        _ORI_LEXSET = {w for w, n in json.load(open(fn))['counts'].items() if n >= ORI_LEX_MIN}
+    from parse_ori import norm as _n
+    t = _n(v or '').replace('.', ' ').split()
+    return bool(t) and all(w in _ORI_LEXSET for w in t)
 
 
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
@@ -492,6 +508,14 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
             if f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and rx.match(cn[0].get(f) or '') \
                     and out.get(f) == cn[0].get(f):
                 flags = [x for x in flags if x != f]
+    if lang == 'ORI' and ORI_LEX:
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f in ('name', 'relation_name'):
+            if 'U' in ORI_LEX and f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and cn[0].get(f) \
+                    and out.get(f) == cn[0].get(f) and _ori_inlex(out.get(f)):
+                flags = [x for x in flags if x != f]
+            elif 'F' in ORI_LEX and f not in flags and not _ori_inlex(out.get(f)):
+                flags = flags + [f]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
