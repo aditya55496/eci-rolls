@@ -30,7 +30,7 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, segment_pan, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_pan, segment_pan2, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
@@ -294,12 +294,13 @@ def code_pixel(box_gray, lang='HIN'):
     """Printed status code present: inner left 40% of the serial cell has > 15 ink pixels (bench code_pixel.json).
     ENG (2026-11-25): English SIR pages have ~2x the resolution, and the cell's left rule is wider than the 3 px margin
     (English gold: every first-column box read as '#'): only glyph-like ink counts (components >= 3 px wide,
-    >= 25 % of the cell height, not touching the crop edges: thin rule remains are dropped)."""
+    >= 25 % of the cell height, not touching the crop edges: thin rule remains are dropped).
+    PAN (2026-11-25, lang-pan): the same rule remains gave '#' on 235 of 707 Punjabi gold boxes: same filter."""
     _, _, small = cells(box_gray)
     if not small: return False
     x, y, cw, ch = small[0]
     m = _mask(box_gray[y + 3: y + ch - 3, x + 3: x + cw - 3])
-    if lang == 'ENG' and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
+    if lang in ('ENG', 'PAN') and m.size:   # drop ink that touches the crop edges (remains of the cell's rules)
         n, lab, st, _ = cv2.connectedComponentsWithStats(m, 8)
         H, W = m.shape
         for j in range(1, n):
@@ -445,7 +446,7 @@ def process_page(task):
         if lang == 'ENG':
             segs_list.append({k: im for k, im in segment_eng(g).items() if im.size}); stamps.append(False)
         else:
-            seg = segment_pan(g) if lang == 'PAN' else segment(g)
+            seg = segment_pan2(g) if lang == 'PAN' else segment(g)
             segs_list.append({k: im for k, im in seg.items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
     tm['segment'] = round(time.time() - t, 3)
