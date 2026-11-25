@@ -35,6 +35,7 @@ import numpy as np
 from layout import find_boxes, crop                 # noqa: E402
 from segment import segment, segment_eng, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
+import tofu as _tofu                                # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_tam                                    # noqa: E402
@@ -644,6 +645,14 @@ def _valset(recs, segs_list):
                     r[f] = cr[0]; r['flags'].remove(f); r['readings'].pop(f, None)
 
 
+# job2 2026-11-25 (ECI_TOFU=1, default off): missing-glyph boxes after names (Haryana SIR: the roll font has no glyph for a
+# character stored after many names, the print shows an empty rectangle; 26 of 90 S07 ACs, 8.5 % of the boxes) are found on the
+# page image as stored (before the rescale), painted white there before the boxes are cut, and named in the record:
+# 'missing_glyph' = {field: count} (eciocr/ocr/tofu.py). Only boxes inside a voter box's text column; without such boxes the
+# output is unchanged.
+TOFU = os.environ.get('ECI_TOFU', '0') == '1'
+
+
 def process_page(task):
     pdf, pno, kind, lang = task
     if ensemble2.EPIC_STATE_ON:   # job5: the state's code of old-format EPICs (ensemble2._epic_state)
@@ -652,6 +661,8 @@ def process_page(task):
     gray = page_gray(pdf, pno)
     tm['extract'] = round(time.time() - t0, 3)
     if gray is None: return dict(pdf=pdf, page=pno, boxes=0, skip='no image', timing=tm)
+    tofus = _tofu.find_tofu(gray) if TOFU else []
+    gray0 = gray
     scale = 1.0
     if RESCALE_H and gray.shape[0] > RESCALE_H * 1.25:
         # 2026-11-25: Uttarakhand, Haryana, Jharkhand, Delhi and Chandigarh SIR pages are 2806 px high (240 dpi; UP: 1679 px,
@@ -664,6 +675,12 @@ def process_page(task):
     boxes = find_boxes(gray)
     tm['layout'] = round(time.time() - t, 3)
     if not boxes: return dict(pdf=pdf, page=pno, boxes=0, skip='no voter boxes', timing=tm, size=gray.shape[::-1])
+    tofu_at = {}
+    if tofus:
+        keep, tofu_at = _tofu.select(tofus, boxes, scale)
+        if keep:
+            gray = _tofu.erase(gray0, keep)
+            if scale != 1.0: gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
     t = time.time()
     box_grays = [crop(gray, b, 2) for b in boxes]
     segs_list, stamps = [], []
@@ -816,6 +833,7 @@ def process_page(task):
             rec['code_invalid'] = True      # flag added by post_rules (after the not_voter_box rule)
             readings['code'] = {n: c['code'] for n, c in zip(nm, cands)}
         rec.update(flags=flags, readings=readings, hint_2027=hinted, code_ink=pix[i], bbox=list(map(int, b)))
+        if tofu_at.get(i): rec['missing_glyph'] = tofu_at[i]
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
         if K and _OPT['hints'] and i in seq_ok: rec['serial_s1_seq'] = True
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
