@@ -953,6 +953,42 @@ def process_page(task):
                 reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
+    elif NOHINT_EARLY and not _OPT['hints'] and lang not in LATIN_TPL and len(_E.crnn) > NOHINT_EARLY and TESS_SKIP:
+        # job1 speed: ECI_NOHINT_EARLY=K together with ECI_NOHINT_TESS_SKIP=1 (j5r4 rules): stage 1 = the first K CRNNs + Tesseract
+        # Latin fields + the Tesseract text lines that the TESS_SKIP rule (computed on the K CRNNs) does not skip. Boxes without a
+        # stage-1 flag are settled; for the others the other CRNNs read, the TESS_SKIP rule is computed again on all CRNNs and the
+        # Tesseract lines it no longer skips are read, so a stage-2 box gets exactly the reads of the TESS_SKIP path.
+        K = NOHINT_EARLY
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups={'num', 'epic', 'code'})
+
+        def _skips(r, crn):
+            cs = [from_lines(r[n][0]) for n in crn]; skip = set()
+            if _crnn_same(cs, 'house_no'):
+                h = cs[0]['house_no']
+                if any(ch.isdigit() for ch in h) and not any(ch in h for ch in '.,;:'): skip.add('line2')
+            if _crnn_same(cs, 'age') and _crnn_same(cs, 'gender'): skip.add('line3')
+            return skip
+
+        def _tess_lines(idx, want):
+            sub = [{k: im for k, im in segs_list[i].items() if k in want[j]} for j, i in enumerate(idx)]
+            for i, r2 in zip(idx, _E.read_boxes(sub, _OPT['tmp'], tm, crnn_idx=set(), tess_groups={'line'})):
+                reads[i]['tess'][0].update(r2['tess'][0])
+            return sum(len(x) for x in sub)
+
+        sk1 = [_skips(r, _E.names[:K]) for r in reads]
+        nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
+        names1 = _E.names[:K] + _E.tnames
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        if need:
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set())
+            for i, r2 in zip(need, more):
+                for tn in _E.tnames: r2.pop(tn, None)
+                reads[i].update(r2)
+            crn = [n for n in _E.names if n.startswith('crnn')]
+            nread += _tess_lines(need, [{k for k in sk1[i] if k in segs_list[i]} - _skips(reads[i], crn) for i in need])
+        tm['tess_lines_skipped'] = sum(sum(k.startswith('line') for k in sg) for sg in segs_list) - nread
+        tm['stage2_boxes'] = len(need)
+        stage1_only = set(range(len(reads))) - set(need)
     elif TESS_SKIP and not _OPT['hints']:
         # job2 r3 (ECI_NOHINT_TESS_SKIP=1, no 2027 roll, needs ECI_NOHINT_DIGITS=1 + ECI_NOHINT_CLOSED=1): Tesseract does not read
         # line2 (house) when all CRNNs read the same house number with a digit and without . , ; :, nor line3 (age, gender) when
