@@ -34,6 +34,7 @@ import concurrent.futures as cf
 import hashlib
 import json
 import os
+import random
 import re
 import signal
 import sys
@@ -60,6 +61,8 @@ SLOW_BPS = float(os.environ.get("ECI_SLOW_BPS", "300000"))
 SLOW_AFTER = 8
 SLOW_MARK = "/tmp/eci-rolls-slow-runner"
 EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))      # numbers in a row without a file that end the probe above the list
+GATE_MAX_S = float(os.environ.get("ECI_GATE_MAX_S", "120"))   # longest pause of the back-off gate (Gate)
+FILE_TRIES = int(os.environ.get("ECI_FILE_TRIES", "3"))       # tries per file id before the part goes back to the next round
 FORM_PROBE = 30                                               # part numbers per probe request on the form route
 # completeness check against the totals printed in each PDF (printcheck.py; Tesseract, ~0.3 s CPU per PDF). On by default where
 # Tesseract is installed (the runners); the local form units on dev-vps-3 set ECI_PRINT_CHECK=0 (no bulk OCR on that server):
@@ -72,6 +75,77 @@ _last_captcha = [0.0]
 
 class SlowRunner(Exception):
     pass
+
+
+class Gate:
+    """Process-wide back-off for the form server (gateway-voters.eci.gov.in). A 5xx answer or no answer closes the gate for a
+    pause that doubles (2 s .. GATE_MAX_S) for each failure seen after the gate last opened; each 200 halves the pause. Every
+    request to the form server waits at the gate first, so all threads of a worker slow down together when ECI is overloaded
+    and speed up again when it answers. The hub controller (eci-edge on dev-vps-3) sets the number of workers from the same
+    counts; this gate reacts within seconds."""
+
+    def __init__(self):
+        self.lock = threading.Lock()
+        self.pause, self.until, self.closed_at = 0.0, 0.0, 0.0
+
+    def wait(self, hub):
+        waited = 0.0
+        while True:
+            d = self.until - time.time()
+            if d <= 0:
+                break
+            time.sleep(min(d, 5))
+            waited += min(d, 5)
+        if waited:
+            hub.metric("gate_wait_s", waited)
+        return time.time()
+
+    def bad(self, hub, started):
+        with self.lock:
+            if started < self.closed_at:       # the request started before the gate closed: same overload, no new step
+                return
+            self.pause = min(GATE_MAX_S, max(2.0, self.pause * 2))
+            self.closed_at = time.time()
+            self.until = self.closed_at + self.pause * random.uniform(0.6, 1.0)
+        hub.metric("gate_close")
+
+    def good(self):
+        with self.lock:
+            self.pause = self.pause / 2 if self.pause > 2 else 0.0
+
+
+GATE = Gate()
+
+
+def ep_count(hub, ep, r, started):
+    """Counts per endpoint (captcha, generate, file, partlist): ep_<ep>_n, ep_<ep>_s (seconds), ep_<ep>_<code> for a status other
+    than 200, ep_<ep>_timeout for no answer. Feeds the gate: 5xx / no answer close it, 200 opens it."""
+    hub.metric(f"ep_{ep}_n")
+    if r is None:
+        hub.metric(f"ep_{ep}_timeout")
+        GATE.bad(hub, started)
+        return
+    hub.metric(f"ep_{ep}_s", time.time() - started)
+    if r.status_code != 200:
+        hub.metric(f"ep_{ep}_{r.status_code}")
+    if r.status_code >= 500 or r.status_code == 429:
+        GATE.bad(hub, started)
+    elif r.status_code == 200:
+        GATE.good()
+
+
+def form_get(hub, ep, url, **kw):
+    t = GATE.wait(hub)
+    r = timed_get(hub, session(), url, **kw)
+    ep_count(hub, ep, r, t)
+    return r
+
+
+def form_post(hub, ep, url, **kw):
+    t = GATE.wait(hub)
+    r = timed_post(hub, session(), url, **kw)
+    ep_count(hub, ep, r, t)
+    return r
 
 
 def session():
@@ -93,7 +167,7 @@ def leave_pool():
 def part_list(hub, roll, state, ac):
     url, body = E.roll_part_list_request(roll, state, ac)
     for attempt in range(5):
-        r = timed_post(hub, session(), url, json=body, timeout=60)
+        r = form_post(hub, "partlist", url, json=body, timeout=60)
         if r is not None and r.status_code == 200:
             d = r.json()
             if d.get("payload") is not None:
@@ -315,7 +389,7 @@ def file_ids(hub, roll, state, ac, district, parts, lang):
         if wait > 0:
             time.sleep(wait)
         _last_captcha[0] = time.time()
-        r = timed_get(hub, session(), E.captcha_url(), headers={"appName": "VSP"}, timeout=30)
+        r = form_get(hub, "captcha", E.captcha_url(), headers={"appName": "VSP"}, timeout=30)
         if r is None or r.status_code != 200:
             time.sleep(30 * (attempt + 1))
             continue
@@ -323,9 +397,10 @@ def file_ids(hub, roll, state, ac, district, parts, lang):
         hub.metric("captchas")
         for guess in solve(jpg, k=5):
             url, body = E.roll_generate_request(roll, state, ac, district, parts, guess, cid, lang)
-            g = timed_post(hub, session(), url, json=body, timeout=120)
-            if g is None:
-                continue
+            g = form_post(hub, "generate", url, json=body, timeout=120)
+            if g is None or g.status_code >= 500 or g.status_code == 429:
+                hub.metric("generate_retry")      # server overloaded: a new captcha after the gate opens, not the next guess
+                break
             if g.status_code == 200 and g.json().get("payload"):
                 ids = g.json()["payload"]
                 hub.metric("captcha_ok")
@@ -338,15 +413,26 @@ def file_ids(hub, roll, state, ac, district, parts, lang):
             if g.status_code == 200 and "not found" in g.text.lower():
                 return []                    # the portal has no file for these parts ("File not found")
             raise RuntimeError(f"generate: HTTP {g.status_code} {g.text[:120]}")
-        hub.metric("captcha_miss")
-        hub.upload_many([(f"captcha-miss/{int(time.time())}-{hashlib.md5(jpg).hexdigest()[:8]}.jpg", jpg, "image/jpeg")])
+        else:
+            hub.metric("captcha_miss")
+            hub.upload_many([(f"captcha-miss/{int(time.time())}-{hashlib.md5(jpg).hexdigest()[:8]}.jpg", jpg, "image/jpeg")])
     raise RuntimeError("no captcha accepted in 4 tries")
 
 
 def get_file(hub, fid):
-    r = timed_get(hub, session(), E.file_url(fid), headers={"CurrentRole": "citizen", "Accept": "application/json"}, timeout=180)
-    if r is None or r.status_code != 200:
-        return None, None, (r.status_code if r is not None else "no answer")
+    """One file id -> (PDF bytes, file name, ""), else (None, None, reason). A 5xx / 429 / no answer is tried again with the same
+    file id after the gate opens (FILE_TRIES in all): the id stays valid, so this costs no new captcha and no new generate call."""
+    for attempt in range(FILE_TRIES):
+        r = form_get(hub, "file", E.file_url(fid), headers={"CurrentRole": "citizen", "Accept": "application/json"}, timeout=180)
+        if r is not None and r.status_code == 200:
+            break
+        err = r.status_code if r is not None else "no answer"
+        if r is not None and r.status_code < 500 and r.status_code != 429:
+            return None, None, err
+        if attempt + 1 < FILE_TRIES:
+            hub.metric("file_retry")
+    else:
+        return None, None, err
     j = r.json()
     if not j.get("payload"):
         return None, None, (j.get("message") or "empty")
