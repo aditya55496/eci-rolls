@@ -448,7 +448,8 @@ _ORI_AGE = re.compile(r'^(1[89]|[2-9][0-9]|1[01][0-9])$')
 # lang-ori r3: name / relation token lexicon = tokens of 53,757 Opus-read real line strips of NON-gold Odisha ACs (ocr/ori_lex.json).
 #   U: a flagged name / relation_name whose CRNN readings are all equal (>= 2 CRNNs) and whose tokens are all in the lexicon
 #      (count >= ECI_ORI_LEX_MIN) is unflagged.   F: an UNflagged name / relation_name with a token outside the lexicon is flagged.
-ORI_LEX = os.environ.get('ECI_ORI_LEX', '')   # '' | 'U' | 'F' | 'UF'
+ORI_VOTE3 = os.environ.get('ECI_ORI_VOTE3', '0') == '1'   # lang-ori r4: all >= 3 CRNNs agree -> name / relation / house accepted (see decide_box)
+ORI_LEX = os.environ.get('ECI_ORI_LEX', '')   # '' | 'U' | 'F' | 'UF' | + 'P' (r4: F settled per PDF, ori_pdf_lex)
 ORI_LEX_MIN = int(os.environ.get('ECI_ORI_LEX_MIN', '2'))
 _ORI_LEXSET = None
 
@@ -508,6 +509,16 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
             if f in flags and len(cn) >= 2 and len({c.get(f) for c in cn}) == 1 and rx.match(cn[0].get(f) or '') \
                     and out.get(f) == cn[0].get(f):
                 flags = [x for x in flags if x != f]
+    v3, oov = [], []   # lang-ori r4: fields accepted by VOTE3 (no Tesseract support) / accepted but out of the lexicon (ECI_ORI_LEX P)
+    if lang == 'ORI' and ORI_VOTE3 and flags:
+        # lang-ori r4: with >= 3 CRNNs (the pair + a third family trained from scratch on Opus labels only, r10), a flagged name /
+        # relation_name / house_no that ALL CRNNs read the same (non-empty) is accepted without Tesseract (Tesseract ori is the
+        # weak voter behind most flags). Meant with ECI_ORI_LEX=F (gold sim, uncertain fields skipped: flag 43 -> 49 %,
+        # unflagged 98.74 -> 99.72 %; asis + F: 67 % / 100 %)
+        cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
+        for f in ('name', 'relation_name', 'house_no'):
+            if f in flags and len(cn) >= 3 and cn[0].get(f) and len({c.get(f) for c in cn}) == 1:
+                out[f] = cn[0][f]; flags = [x for x in flags if x != f]; v3.append(f)
     if lang == 'ORI' and ORI_LEX:
         cn = [c for n, c in zip(names, cands) if n.startswith('crnn')]
         for f in ('name', 'relation_name'):
@@ -515,9 +526,12 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
                     and out.get(f) == cn[0].get(f) and _ori_inlex(out.get(f)):
                 flags = [x for x in flags if x != f]
             elif 'F' in ORI_LEX and f not in flags and not _ori_inlex(out.get(f)):
-                flags = flags + [f]
+                if 'P' in ORI_LEX: oov.append(f)   # settled per PDF (ori_pdf_lex)
+                else: flags = flags + [f]
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
+    if v3 and 'P' in ORI_LEX: readings['_ori_v3'] = v3
+    if oov: readings['_ori_oov'] = oov
     for f in flags:
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
@@ -672,6 +686,33 @@ def eng_epic_prefix(recs, min_other=3):
             r['flags'].remove('epic'); r['readings'].pop('epic', None); r['epic_by_prefix'] = True; n += 1
     for r in recs:
         r.get('readings', {}).pop('_nohint_crnn_unanimous', None)
+    return n
+
+
+def ori_pdf_lex(recs, k=None):
+    """lang-ori r4 (ECI_ORI_LEX with P, e.g. 'FP'): the API lexicon misses the regional surnames of many ACs (held-out PDFs: 72 %
+    of records hold a token outside it). A name / relation_name accepted by the votes but with a token outside the lexicon
+    (readings._ori_oov) is accepted when every such token occurs in >= k (ECI_ORI_PDFLEX_K, default 3) OTHER records of the same
+    PDF in a name / relation_name that Tesseract confirmed (unflagged, not accepted by VOTE3 alone); else it is flagged."""
+    from parse_ori import norm as _n
+    k = k or int(os.environ.get('ECI_ORI_PDFLEX_K', '3'))
+    def toks(v): return set(_n(v or '').replace('.', ' ').split())
+    cnt = collections.Counter(); per = []
+    for r in recs:
+        rd = r.get('readings', {}); bad = set(r['flags']) | set(rd.get('_ori_v3', []))   # Tesseract-confirmed fields only
+        t = set()
+        for f in ('name', 'relation_name'):
+            if f not in bad: t |= toks(r.get(f))
+        per.append(t); cnt.update(t)
+    n = 0
+    for r, t in zip(recs, per):
+        rd = r.get('readings', {})
+        for f in rd.pop('_ori_oov', []):
+            miss = [w for w in toks(r.get(f)) if not _ori_inlex(w) and cnt[w] - (w in t) < k]
+            if miss:
+                r['flags'].append(f); rd[f] = {'_oov': miss}
+            else: n += 1
+        rd.pop('_ori_v3', None)
     return n
 
 
@@ -831,6 +872,8 @@ def main():
                         records=len(recs), not_voter_boxes=len(allrecs) - len(recs), epic_from_2027=epic_fixed)
             if ENG_NOHINT and not _HINTS and recs:
                 info['epic_by_prefix'] = eng_epic_prefix(recs)
+            if ORI_LEX and 'P' in ORI_LEX and recs:
+                info['ori_pdf_lex_accepted'] = ori_pdf_lex(recs)
             if kind == 'SIR' and recs:
                 info['serial_check'] = serial_check(recs)
                 info['serial_check']['confirmed_by_sequence'] = sequence_confirm(recs)
