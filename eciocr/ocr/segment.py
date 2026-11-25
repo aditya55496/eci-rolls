@@ -240,6 +240,7 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
 BEN_COMP_CUT = float(os.environ.get('ECI_BEN_COMP_CUT', '0.25'))  # > 0: touching lines split at headline - CUT x P (0: narrowest row)
 BEN_COMP_ZONE = float(os.environ.get('ECI_BEN_COMP_ZONE', '0.22'))  # line zone centre = headline + ZONE x P (marks go to the nearest)
 BEN_COMP_UP = os.environ.get('ECI_BEN_COMP_UP', '1') == '1'       # split a line's component that reaches up into the line above
+BEN_COMP_DOT = os.environ.get('ECI_BEN_COMP_DOT', '0') == '1'     # lang-ben r5: a dot mark goes to the line of the ink touching it
 BEN_STAMP = float(os.environ.get('ECI_BEN_STAMP', '0'))          # > 0: grey-stamp removal (median grey of a stamp letter above this)
 BEN_STAMP_CORE = int(os.environ.get('ECI_BEN_STAMP_CORE', '75'))  # text keeps the pixels within 1 px of a pixel darker than this
 BEN_COMP_DARK = int(os.environ.get('ECI_BEN_COMP_DARK', '0'))   # ink threshold of the component labels (antialias edges touch)
@@ -302,6 +303,25 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
             sp = heads[k2 + 1] - 0.3 * P         # rows above sp -> line k2, rows below -> line k2 + 1
             if y < sp - 1 and y + h > sp + 1 and h > 0.3 * P:
                 split.append((j, int(round(sp)), k2))
+    if BEN_COMP_DOT:   # lang-ben r5 (held-out gold v2): the nukta dot of ড় ঢ় য় sits ~0.65 P below line k's headline, as near to
+        # line k+1's zone as to line k's (8 relative names lost the dot: 'ধাডা' for 'ধাড়া'). A dot-sized free mark that the zone
+        # rule gave to line k+1 goes to line k when the nearest ink straight above it (x overlap) is line k's and is nearer
+        # than any ink straight below it (the glyph body of the nukta). Ink of a split component counts for the line of its row.
+        dmax = 0.22 * P; spl = {j2: (sp, k2) for j2, sp, k2 in split}
+        def line_of(v, r):
+            if v in spl: return spl[v][1] if r < spl[v][0] else spl[v][1] + 1
+            return int(owner[v])
+        for j in range(1, n):
+            x, y, w, h, _a = st[j]
+            if owner[j] <= 0 or tall[j] or w > dmax or h > dmax or any(y - 1 <= hd <= y + h for hd in heads): continue
+            xa, xb = max(0, x - 1), min(W, x + w + 1); above = below = None
+            for r in range(y - 1, max(-1, y - 1 - int(0.4 * P)), -1):           # nearest ink straight above
+                ls = {line_of(v, r) for v in set(lab[r, xa:xb].tolist()) if v not in (0, j) and (owner[v] >= 0 or v in spl)}
+                if ls: above = (y - 1 - r, ls); break
+            for r in range(y + h, min(H, y + h + int(0.4 * P))):                # nearest ink straight below
+                ls = {line_of(v, r) for v in set(lab[r, xa:xb].tolist()) if v not in (0, j) and (owner[v] >= 0 or v in spl)}
+                if ls: below = (r - (y + h), ls); break
+            if above and above[1] == {int(owner[j]) - 1} and (below is None or above[0] < below[0]): owner[j] -= 1
     out = []
     for k, (a, b) in enumerate(bands):
         sel = owner == k

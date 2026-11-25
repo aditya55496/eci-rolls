@@ -306,6 +306,7 @@ BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # se
 BEN_LEX = os.environ.get('ECI_BEN_LEX', '')   # lang-ben r2: lexicon json for the mark-variant guard (empty = off)
 BEN_STAMP_FLAG = [f for f in os.environ.get('ECI_BEN_STAMP_FLAG', '').split(',') if f]   # lang-ben r2: fields flagged in stamped boxes
 BEN_HOUSE_PUNCT = os.environ.get('ECI_BEN_HOUSE_PUNCT', '0') == '1'   # lang-ben r3: flag a house value that is empty, '.' or ','
+BEN_HOUSE_1BD = os.environ.get('ECI_BEN_HOUSE_1BD', '0') == '1'   # lang-ben r5: flag a house value that is one Bengali digit
 BEN_CTCVAR = float(os.environ['ECI_BEN_CTCVAR']) if os.environ.get('ECI_BEN_CTCVAR') else None   # lang-ben r4: CTC mark-variant guard
 BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
@@ -461,6 +462,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
             if f not in flags and mv and all(m is not None for m in mv) and min(mv) > BEN_CTCVAR: flags = flags + [f]
     if lang == 'BEN' and BEN_HOUSE_PUNCT and (out.get('house_no') or '').strip() in ('', '.', ',') and 'house_no' not in flags:
         flags = flags + ['house_no']   # lang-ben r3: a stray mark in the house cell is read as '.', ',' or nothing (gold: 2 silent)
+    if lang == 'BEN' and BEN_HOUSE_1BD and re.fullmatch('[০-৯]', (out.get('house_no') or '').strip()) and 'house_no' not in flags:
+        flags = flags + ['house_no']   # lang-ben r5: one Bengali digit = mostly a misread '-' ('৭': 38 of 19,284 twin-roll records)
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
