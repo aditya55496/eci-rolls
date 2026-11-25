@@ -11,7 +11,7 @@ The role logic (vote over engines, order, wrap lines) is the one of parse_eng (b
 role function as a parameter here). Output keys = parse.from_lines.
 relation_label = the printed label without the colon (as the English gold), e.g. 'પિતાનું નામ'.
 """
-import collections, re, unicodedata
+import collections, os, re, unicodedata
 from rapidfuzz import fuzz, process
 
 NAME_LABEL = 'મતદારનું નામ'
@@ -21,6 +21,22 @@ HOUSE_LABEL = 'ઘર નંબર'
 AGE_LABEL = 'ઉંમર'
 GEN_LABEL = 'જાતિ'
 GUJ2LAT = str.maketrans('૦૧૨૩૪૫૬૭૮૯', '0123456789')
+# house numbers keep the printed digit script (gold keeps it; the print mixes Latin and Gujarati digits). lang-guj round 2 found
+# that the parser mapped Gujarati digits to Latin, so no model could get them right. ECI_GUJ_HOUSE_KEEP_DIGITS=0 = old behaviour.
+HOUSE_KEEP_DIGITS = os.environ.get('ECI_GUJ_HOUSE_KEEP_DIGITS', '1') != '0'
+# words of house numbers the CRNNs misread in a fixed way (gold r4: 'ક્લેટ' for ફ્લેટ 'flat' 13x, 'એય' for એચ 'H' 15x,
+# 'બ્લાક' block, 'પ્લાટ' plot); none of the wrong forms is a Gujarati word. ECI_GUJ_HOUSE_FIX=0 = off.
+HOUSE_FIX = os.environ.get('ECI_GUJ_HOUSE_FIX', '1') != '0'
+_HFIX = [(re.compile(r'(^|[\s,./-])ક્લ(ે?)ટ'), r'\1ફ્લ\2ટ'), (re.compile(r'(^|[\s,./-])એય(?=[\s,./0-9૦-૯-]|$)'), r'\1એચ'),
+         (re.compile('બ્લાક'), 'બ્લોક'), (re.compile('પ્લાટ'), 'પ્લોટ')]
+
+
+def house_fix(v):
+    for rx, rep in _HFIX: v = rx.sub(rep, v)
+    # Gujarati digit ૨ read as the letter ર (gold r4: 8 house numbers): ર next to a Gujarati digit, or a run of ર alone
+    v = re.sub(r'(?<=[૦-૯])ર|ર(?=[૦-૯])', '૨', v)
+    v = re.sub(r'(?<![઀-૿])રર+(?![઀-૿])', lambda m: '૨' * len(m.group(0)), v)
+    return v
 COLON = re.compile(r'\s*[:;ઃ：!|](?=\s|$|[઀-૿0-9A-Za-z(])')
 ROLE_ORDER = ['name', 'rel', 'house', 'age']
 
@@ -177,7 +193,9 @@ def from_lines_guj(f, pp=True):
         if out['relation_label']: out['relation_label'] = snap(out['relation_label'], LABELS, 70)
         for k in ('name', 'relation_name'):
             out[k] = re.sub(r'^[^઀-૿A-Za-z(]+', '', out[k]).strip(' :;,_ઃ')
-        out['house_no'] = re.sub(r'^[:;!|ઃ]+\s*', '', out['house_no'].translate(GUJ2LAT)).strip(' ;_|')
+        h = out['house_no'] if HOUSE_KEEP_DIGITS else out['house_no'].translate(GUJ2LAT)
+        out['house_no'] = re.sub(r'^[:;!|ઃ]+\s*', '', h).strip(' ;_|')
+        if HOUSE_FIX: out['house_no'] = house_fix(out['house_no'])
     return out
 
 
