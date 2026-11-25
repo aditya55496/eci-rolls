@@ -989,8 +989,9 @@ def eng_stamp3(recs, lexmin=None, pmin=2):
         for f in ('name', 'relation_name', 'house_no'):
             if f not in r['flags']: continue
             c = [v for k, v in r['readings'].get(f, {}).items() if k.startswith('crnn') and k != 'crnn_conf']
-            if len(c) < 4 or not c[2] or len(set(c[2:])) != 1: continue
-            v = c[2]; r[f] = v
+            if len(c) < 4 or not c[2]: continue
+            v = c[2]; r[f] = v     # flagged stamp-box value = the first stage-2 CRNN (HS: 808 of 923 right vs 788 by the vote)
+            if len(set(c[2:])) != 1: continue
             if ENG_STAMP3 == 1 and (f == 'house_no' or sum(x == v for x in c) < 3): continue
             if f == 'house_no':   # ECI_ENG_STAMP3=2: every stage-2 (stamp-trained) CRNN reads the same house number
                 r['flags'].remove(f); r['readings'].pop(f, None); r.setdefault('stamp3', []).append(f); n += 1
