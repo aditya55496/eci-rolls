@@ -1422,6 +1422,12 @@
    "lang_mal_r2a_half_q0": "229c5f25b1a32584",
    "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
    "lang_mal_r2b_base_q0": "229c5f25b1a32584"
+  },
+  "arch_sha256_16": {
+   "lang_mal_r2a_quarter_q0": "a5cb8e4ed91b7964",
+   "lang_mal_r2a_half_q0": "fb0bdacd0df340b1",
+   "lang_mal_r2b_3q_q0": "7e8175aad4dfa9ca",
+   "lang_mal_r2b_base_q0": "c525ffc7edd75fee"
   }
  },
  "malH4": {
@@ -1489,6 +1495,12 @@
    "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
    "lang_mal_r2b_base_q0": "229c5f25b1a32584"
   },
-  "draft_records": true
+  "draft_records": true,
+  "arch_sha256_16": {
+   "lang_mal_r2a_quarter_q0": "a5cb8e4ed91b7964",
+   "lang_mal_r2a_half_q0": "fb0bdacd0df340b1",
+   "lang_mal_r2b_3q_q0": "7e8175aad4dfa9ca",
+   "lang_mal_r2b_base_q0": "c525ffc7edd75fee"
+  }
  }
 }
