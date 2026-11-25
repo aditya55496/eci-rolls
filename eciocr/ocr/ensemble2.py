@@ -98,7 +98,17 @@ def agree_eng(f, vals, names, hv='', full=False):
         # held-out Opus check: 'Flat no. 1/El-2' read by all three engines, 2027 and Opus 'EI-2')
         x, y = v[0], visual(str(hv or ''))
         if any(op == 'replace' and x[i] in 'Il1|' and y[j] in 'Il1|' for op, i, j in Levenshtein.editops(x, y)): return False
-        if ENG_AGREE >= 5:
+        if ENG_AGREE >= 6:
+            # ECI_ENG_AGREE=6 (job3 round 4, 2026-11-25): as 5, but case-insensitive (2027 names are often in capitals: under 5,
+            # 'Rajiv Naik' / 2027 'RAJIV M NAIK' hit the guard through i/I alone: HO1 +19, HO2 +30 flags) and only when EVERY
+            # difference is such a narrow-glyph substitution or a doubled-character collapse ('Md. Fin' / 'Md. Fjn',
+            # "D'Souza" / "D''Souza", 'Vanila' / 'Vanilla'); a reading with any other difference ('Smita' / 'Smeeta') is a
+            # different spelling, which the agreeing engines are evidence for.
+            xl, yl = x.lower(), y.lower(); ops = Levenshtein.editops(xl, yl)
+            narrow = lambda op, i, j: (op == 'replace' and xl[i] in 'l1|ij!' and yl[j] in 'l1|ij!') or (
+                op == 'insert' and ((j > 0 and yl[j - 1] == yl[j]) or (j + 1 < len(yl) and yl[j + 1] == yl[j])))
+            if ops and all(narrow(*o) for o in ops): return False
+        elif ENG_AGREE >= 5:
             # ECI_ENG_AGREE=5 (job3 round 3, 2026-11-25; held-out set 2 checked by eye): all engines agreed on 'Md. Fin' (print and
             # 2027 'Md. Fjn') and on "Jose D'Souza" (print and 2027 "Jose D''Souza"): narrow glyphs i / j / ! and a doubled
             # character that a CTC reader collapses are no evidence either.
