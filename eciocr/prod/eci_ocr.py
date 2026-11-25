@@ -556,12 +556,71 @@ def _init(crnn_dirs, tessdata, crnn_sort, hints_path, tmp, ort_threads=1, stage1
 
 
 def load_hints(path):
+    if HINTS_LAZY: return load_hints_lazy(path)
     H = {}
     for l in open(path, encoding='utf-8'):
         if l.strip():
             r = json.loads(l)
             if r.get('epic'): H[r['epic']] = r
     return H
+
+
+# job1 speed (2026-11-25): ECI_HINTS_LAZY=1 (default off): the 2027 hints of the whole AC (~270k records; json.loads of all lines
+# took ~1.8 CPU-s per eci_ocr process, 2 processes per part) are kept as raw lines keyed by EPIC; a record is parsed on its first
+# lookup. Same keys, same values, same order as load_hints (checked on the job1 val hints, see speed notes).
+HINTS_LAZY = os.environ.get('ECI_HINTS_LAZY', '0') == '1'
+_EPIC_KEY = re.compile(r'"epic":\s*"([^"\\]*)"')
+
+
+class LazyHints(dict):
+    def __getitem__(self, k):
+        v = dict.__getitem__(self, k)
+        if isinstance(v, str):
+            v = json.loads(v); dict.__setitem__(self, k, v)
+        return v
+
+    def get(self, k, d=None):
+        return self[k] if dict.__contains__(self, k) else d
+
+    def values(self):
+        return [self[k] for k in self]
+
+    def items(self):
+        return [(k, self[k]) for k in self]
+
+
+def load_hints_lazy(path):
+    H = LazyHints()
+    for l in open(path, encoding='utf-8'):
+        if not l.strip(): continue
+        m = _EPIC_KEY.search(l)
+        if m and l.count('"epic":') == 1:
+            if m.group(1): H[m.group(1)] = l
+        else:   # escaped or missing EPIC, or a second "epic": key: parse as load_hints does
+            r = json.loads(l)
+            if r.get('epic'):
+                H[r['epic']] = r
+    return H
+
+
+class _LazyBy:
+    """epicfix index 'by' (last 7 EPIC characters -> 2027 records) of a LazyHints dict, built on the first lookup."""
+    def __init__(self, H): self.H, self.by = H, None
+
+    def get(self, k, d=None):
+        if self.by is None:
+            self.by = {}
+            for e in self.H: self.by.setdefault(e[-7:], []).append(e)
+        es = self.by.get(k)
+        return [self.H[e] for e in es] if es is not None else d
+
+
+def hints_index(H):
+    """= epicfix.index(H.values()) without parsing every record when H is a LazyHints dict."""
+    if not isinstance(H, LazyHints):
+        import epicfix
+        return epicfix.index(H.values())
+    return set(H), _LazyBy(H)
 
 
 NOHINT_CASCADE = int(os.environ.get('ECI_NOHINT_CASCADE', '0') or 0)
@@ -1290,7 +1349,7 @@ def main():
                 import epicfix
                 global _EPIC_IDX
                 if _EPIC_IDX is None:
-                    _EPIC_IDX = epicfix.index(_HINTS.values())
+                    _EPIC_IDX = hints_index(_HINTS)
                 epic_fixed = epicfix.fix(recs, _EPIC_IDX, ensemble2.AGE_GAP) + epicfix.fix2(recs, _EPIC_IDX, ensemble2.AGE_GAP)
             else:
                 epic_fixed = 0
