@@ -519,6 +519,15 @@ _ES = None
 # screening model (quarter width) does not vote on the hard boxes.
 S1_SCREEN = os.environ.get('ECI_S1_SCREEN', '0') == '1'
 NOHINT_EARLY = int(os.environ.get('ECI_NOHINT_EARLY') or 0)   # job1 speed: no-hint early exit after K CRNNs (see process_page)
+# ECI_NOHINT_EARLY_CONF=tau (default 0 = no floor): a box is settled in stage 1 only when every stage-1 CRNN line confidence
+# (minimum character probability, all crops but the code) is >= tau. ECI_EARLY_DUMP=1 (evaluation): stage-1 boxes get 's1_conf'.
+EARLY_CONF = float(os.environ.get('ECI_NOHINT_EARLY_CONF') or 0)
+EARLY_DUMP = os.environ.get('ECI_EARLY_DUMP', '0') == '1'
+
+
+def _s1_conf(r, names):
+    v = [c for n in names for k, c in r[n][1].items() if k != 'code']
+    return min(v) if v else 1.0
 # The section headings are read by CRNN number HEAD_CRNN (0 = the first, as before; with ECI_S1_SCREEN=1 the default is the
 # second, the first stage-2 model: the quarter screening model reads the heading lines badly, section None on 98 % of records).
 HEAD_CRNN = int(os.environ.get('ECI_HEAD_CRNN') or (1 if S1_SCREEN else 0))
@@ -945,7 +954,8 @@ def process_page(task):
         K = NOHINT_EARLY
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), lang=lang)
         names1 = _E.names[:K] + _E.tnames
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
+        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set(), lang=lang)
             for i, r2 in zip(need, more):
@@ -978,7 +988,8 @@ def process_page(task):
         sk1 = [_skips(r, _E.names[:K]) for r in reads]
         nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
         names1 = _E.names[:K] + _E.tnames
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
+        s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
+        need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))), tess_groups=set())
             for i, r2 in zip(need, more):
@@ -1045,6 +1056,8 @@ def process_page(task):
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
         if K and _OPT['hints'] and i in seq_ok: rec['serial_s1_seq'] = True
         if i in stampbox: rec['stampbox'] = True
+        if EARLY_DUMP and NOHINT_EARLY and not _OPT['hints']:
+            rec['s1_conf'] = round(_s1_conf(r, _E.names[:NOHINT_EARLY]), 4); rec['stage1_only'] = i in stage1_only
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
             rec['cands'] = {n: c for n, c in zip(nm, cands)}
             rec['confs'] = decide_box.confs
