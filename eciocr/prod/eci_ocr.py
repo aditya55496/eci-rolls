@@ -412,6 +412,24 @@ def load_hints(path):
 GUJ_AGREE = os.environ.get('ECI_GUJ_AGREE', '1') != '0'
 GUJ_STRICT = ('name', 'relation_name', 'house_no')          # all CRNNs AND a Tesseract read must agree
 GUJ_CRNN_ONLY = ('relation_label', 'age', 'gender')        # all CRNNs agree (and the value is valid)
+# house numbers with digits: the print mixes Latin and Gujarati digits (~10 % Gujarati); Tesseract guj and the r3 CRNNs read
+# Gujarati digits as Latin (gold r3: 8 of 142 unflagged house fields wrong, all of this kind) -> keep them flagged unless 0
+GUJ_HOUSE_DIGIT_FLAG = os.environ.get('ECI_GUJ_HOUSE_DIGIT_FLAG', '1') != '0'
+# CRNN + Tesseract character merge for name / relation (lang-guj round 2): the CRNNs read the print's ચ as ય (gold r3: 101 of 328
+# wrong CRNN name/relation fields), ઓ as ઔ and દ as ધ્; Tesseract guj reads these right. Where ALL CRNNs agree, an edit
+# (crnn part -> tess part) in GUJ_MERGE_SAFE is taken from the first Tesseract read. Gold r3: 79 fixed, 1 broken (pairs were chosen
+# on the gold error list: a design choice measured on gold, recheck on new gold). The field stays flagged unless a Tesseract read
+# equals the merged value (strict rule below).
+GUJ_MERGE = os.environ.get('ECI_GUJ_MERGE', '1') != '0'
+GUJ_MERGE_SAFE = {('ય', 'ચ'), ('ઔ', 'ઓ'), ('ધ્', 'દ')}
+
+
+def guj_merge(v, t):
+    import difflib
+    out = []
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(None, v, t, autojunk=False).get_opcodes():
+        out.append(t[j1:j2] if tag != 'equal' and (v[i1:i2], t[j1:j2]) in GUJ_MERGE_SAFE else v[i1:i2])
+    return ''.join(out)
 
 
 def guj_agree(out, flags, cands, names):
@@ -429,8 +447,12 @@ def guj_agree(out, flags, cands, names):
             if f not in flags: flags = flags + [f]
             continue
         v = cands[ci[0]][f]
+        if GUJ_MERGE and f in ('name', 'relation_name') and v:
+            tv = next((cands[i][f] for i in ti if cands[i][f]), '')
+            if tv: v = guj_merge(nm(v), nm(tv))
         ok = bool(v) and ensemble2.valid(f, v) if f != 'house_no' else bool(v)
         if f in GUJ_STRICT: ok = ok and any(nm(cands[i][f]) == nm(v) for i in ti)
+        if f == 'house_no' and GUJ_HOUSE_DIGIT_FLAG and re.search(r'[0-9\u0AE6-\u0AEF]', v): ok = False
         out[f] = v
         if ok: flags = [x for x in flags if x != f]
         elif f not in flags: flags = flags + [f]
