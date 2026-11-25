@@ -17,6 +17,7 @@ import parse_eng
 import parse_tam
 import parse_mal   # lang-mal: Malayalam / Telugu (parse_mal.LANG = 'MAL' | 'TEL')
 import parse_pan   # lang-pan: Punjabi (Gurmukhi)
+import parse_ben
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -69,6 +70,7 @@ def valid(f, v):
     if LANG == 'TAM': return parse_tam.valid_tam(f, v, EPIC_RE)
     if LANG in ('MAL', 'TEL'): return parse_mal.valid_mal(f, v, EPIC_RE)
     if LANG == 'PAN': return parse_pan.valid_pan(f, v)
+    if LANG == 'BEN': return parse_ben.valid_ben(f, v, EPIC_RE)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
@@ -81,6 +83,7 @@ def hvis(f, v):
     if LANG == 'TAM' and f in ('name', 'relation_name'):   # SIR prints 'ராமசாமி -' (empty 2nd part), the 2027 roll 'ராமசாமி'
         return re.sub(r'(\s*-)+$', '', visual(v))
     if LANG == 'PAN' and PAN_CANON: return parse_pan.canon(v)   # lang-pan r2
+    if LANG == 'BEN' and f == 'relation_label': return parse_ben.rel_canon(v)
     return visual(v)
 
 
@@ -655,6 +658,64 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
     if (lab.startswith('husband') and out.get('gender') == 'Male') or (lab.startswith('wife') and out.get('gender') == 'Female') \
             or (lab.startswith('கணவ') and out.get('gender') == 'ஆண்') or (lab.startswith('மனைவி') and out.get('gender') == 'பெண்') \
             or (LANG in ('MAL', 'TEL') and parse_mal.implausible(out.get('relation_label') or '', out.get('gender'))):
+        if 'gender' not in flags: flags.append('gender')
+    if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
+    return out, flags
+
+
+# ---------------------------------------------------------------- job4 (2026-11-25): English rolls WITHOUT a 2027 roll
+# Measured on the job4 dev gold (440 boxes of 11 states, non-gold; rules chosen there, then tested once on the English gold):
+# requiring ALL engines to agree (decide() without a hint) flags 24-38 % of English boxes, because Tesseract misreads names /
+# houses that the English CRNNs read right. decide_eng_nohint():
+#   stage 1 (stage1=True, the first 2 CRNNs, trained on different data): a field is accepted when both CRNNs read the same
+#            valid value. A box with every field accepted is done; otherwise stage 2.
+#   stage 2: accepted when all CRNNs agree on a valid value and a Tesseract reading equals it; or when more than half of the
+#            CRNNs and a Tesseract reading agree on a valid value. Else flagged (value: majority of all engines, CRNN order on
+#            ties). An EPIC / serial flagged only for missing Tesseract support is settled per PDF (eci_ocr: EPIC prefix
+#            seen in >= 3 other records of the PDF; serial: sequence_confirm).
+#   plausibility (both stages): gender Male with a Husband label / Female with a Wife label, age outside 18..120 -> flag.
+NOHINT_SUPPORT = {}   # last decide_eng_nohint call: {field: 'crnn_unanimous'} for fields flagged only for missing Tesseract support
+
+
+def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
+    global NOHINT_SUPPORT
+    NOHINT_SUPPORT = {}
+    out, flags = {}, []
+    ci = [i for i, nm in enumerate(names) if nm.startswith('crnn')]
+    ti = [i for i, nm in enumerate(names) if nm.startswith('tess')]
+    if stage1: ci = ci[:int(os.environ.get('ECI_STAGE1_N', '2'))]
+    for f in FIELDS:
+        vals = [c[f] for c in cands]
+        if f == 'code':
+            tv = [vals[i] for i in ti] or vals
+            out[f] = (next((v for v in tv if v), '#') if pix else '')
+            if pix and not any(tv): flags.append(f)
+            continue
+        cv = [visual(vals[i]) for i in ci]; tvv = [visual(vals[i]) for i in ti]
+        allc = collections.Counter(v for v in cv + tvv if v)
+        if allc:
+            top_all = max(allc, key=lambda v: (allc[v], -(cv.index(v) if v in cv else 99)))
+            out[f] = next(vals[i] for i in ci + ti if visual(vals[i]) == top_all)
+        else:
+            out[f] = vals[ci[0]] if ci else ''
+        c = collections.Counter(cv); top, n = c.most_common(1)[0] if cv else ('', 0)
+        if f == 'part_no' and not top: continue
+        ok = False
+        if n == len(cv) and cv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            if stage1: ok = len(cv) >= 2
+            elif top in tvv: ok = True
+            else: NOHINT_SUPPORT[f] = 'crnn_unanimous'
+            if ok or f in NOHINT_SUPPORT: out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        elif not stage1 and n * 2 > len(cv) and top in tvv and valid(f, next(vals[i] for i in ci if visual(vals[i]) == top)):
+            ok = True; out[f] = next(vals[i] for i in ci if visual(vals[i]) == top)
+        if not ok and f in CORE: flags.append(f)
+    lab = (out.get('relation_label') or '').lower()
+    if LANG == 'BEN':   # lang-ben: Bengali labels / genders -> the English words of the rule
+        lab = parse_ben.rel_canon(out.get('relation_label') or '')
+        g = {'পুরুষ': 'Male', 'মহিলা': 'Female'}.get(out.get('gender'), '')
+    else:
+        g = out.get('gender')
+    if (lab.startswith('husband') and g == 'Male') or (lab.startswith('wife') and g == 'Female'):
         if 'gender' not in flags: flags.append('gender')
     if (out.get('age') or '').isdigit() and not 18 <= int(out['age']) <= 120 and 'age' not in flags: flags.append('age')
     return out, flags

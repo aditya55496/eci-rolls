@@ -41,6 +41,10 @@ import parse_eng                                    # noqa: E402
 import parse_tam                                    # noqa: E402
 import parse_mal                                    # noqa: E402
 from parse_pan import from_lines_pan, parse_heading_pan   # noqa: E402  (lang-pan)
+import parse_ben                                    # noqa: E402  (lang-ben)
+import ctcvar_ben                                   # noqa: E402  (lang-ben)
+_CTCVAR_LINE = re.compile(r'(^|:)\s*[ঀ-৿]')         # name / relation line ('নাম : X', 'পিতার নাম: X') or a wrapped name line
+_CTCVAR_SKIP = re.compile(r'বয়স|লিঙ্গ|বাড়ি|বাড়ী|নং')
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 import ctchint_pan                                  # noqa: E402  (lang-pan r2)
@@ -234,7 +238,14 @@ class Engines:
             for t, k in enumerate(seq):
                 if k != prev and k != 0: s.append(CH[k - 1]); conf = min(conf, float(P[t, k]))
                 prev = k
-            out.append((''.join(s), conf, (P.astype(np.float32), CH)) if keep_p else (''.join(s), conf))
+            s = ''.join(s)
+            if keep_p:                                             # lang-pan: (probs, charset) for the hint-CTC margin
+                out.append((s, conf, (P.astype(np.float32), CH)))
+            elif BEN_CTCVAR is not None:                           # lang-ben r4: margin of the best one-mark variant (ctcvar_ben)
+                mv = ctcvar_ben.margin(P, CH, s)[0] if _CTCVAR_LINE.search(s) and not _CTCVAR_SKIP.search(s) else None
+                out.append((s, conf, mv))
+            else:
+                out.append((s, conf))
         return out
 
     @staticmethod
@@ -342,7 +353,11 @@ class Engines:
                 txt, c = r[0], r[1]
                 f, cf = res[b].setdefault(eng[0], ({}, {}))
                 f[k] = txt; cf[k] = round(c, 4)
-                if len(r) > 2 and k in ('line0', 'line1', 'line2'): res[b].setdefault('_P', {})[(eng[0], k)] = r[2]
+                if len(r) > 2 and r[2] is not None:
+                    if isinstance(r[2], tuple):                                        # lang-pan: hint-CTC (probs, charset)
+                        if k in ('line0', 'line1', 'line2'): res[b].setdefault('_P', {})[(eng[0], k)] = r[2]
+                    else:                                                              # lang-ben: one-mark-variant CTC margin
+                        cf['mv:' + k] = round(r[2], 3)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
         groups = {'line': (TESS_LANG.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
@@ -381,6 +396,17 @@ class Engines:
                             res[b][nm][0][k] = '-'
                             if k in res[b][nm][1]: res[b][nm][1][k] = 1.0
         return res
+
+
+LATIN_TEMPLATE = ('ENG', 'BEN')   # lang-ben: rolls printed in the English template (segment_eng, parse by line roles)
+BEN_TOP_CELLS = float(os.environ.get('ECI_BEN_TOP_CELLS', '0.15') or 0)
+BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # segment_eng line pitch for Bengali boxes
+BEN_LEX = os.environ.get('ECI_BEN_LEX', '')   # lang-ben r2: lexicon json for the mark-variant guard (empty = off)
+BEN_STAMP_FLAG = [f for f in os.environ.get('ECI_BEN_STAMP_FLAG', '').split(',') if f]   # lang-ben r2: fields flagged in stamped boxes
+BEN_HOUSE_PUNCT = os.environ.get('ECI_BEN_HOUSE_PUNCT', '0') == '1'   # lang-ben r3: flag a house value that is empty, '.' or ','
+BEN_HOUSE_1BD = os.environ.get('ECI_BEN_HOUSE_1BD', '0') == '1'   # lang-ben r5: flag a house value that is one Bengali digit
+BEN_CTCVAR = float(os.environ['ECI_BEN_CTCVAR']) if os.environ.get('ECI_BEN_CTCVAR') else None   # lang-ben r4: CTC mark-variant guard
+BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
 
 def code_pixel(box_gray, lang='HIN'):
@@ -640,10 +666,11 @@ ENG_SEQ = os.environ.get('ECI_ENG_SEQ', '0') == '1'
 # 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
 # lang-mal (2026-11-25): Malayalam (S11, U06, U07-29) and Telugu (U07-30) SIR rolls: the same template, Tesseract 'mal' / 'tel',
 # parse_mal (labels / genders of the language in parse_mal.LANG).
-LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL')
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan'}
+LATIN_TPL = ('ENG', 'TAM', 'MAL', 'TEL', 'BEN')   # lang-ben: Bengali uses the English SIR box template too
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'MAL': 'mal', 'TEL': 'tel', 'PAN': 'pan', 'BEN': 'ben'}
 PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam),
-           'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal)}
+           'MAL': (parse_mal, parse_mal.from_lines_mal), 'TEL': (parse_mal, parse_mal.from_lines_mal),
+           'BEN': (parse_ben, parse_ben.from_lines_ben)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -758,7 +785,7 @@ def lang_of_pdf_is_eng(recs):
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
 
 
-def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
+def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False, nocv=False):
     """per_engine: {name: (raw_fields, crnn_conf)} -> record fields, flags, readings for flagged fields."""
     ensemble2.LANG = lang
     if lang in ('MAL', 'TEL'): parse_mal.LANG = lang
@@ -796,6 +823,19 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
             if ok:
                 out[f] = h
                 if PAN_HINTCTC_UNFLAG: flags = [g for g in flags if g != f]
+    if lang == 'BEN' and BEN_LEX:   # lang-ben r2: mark-variant lexicon guard on agreed names (parse_ben.lex_suspect)
+        flags = flags + [f for f in ('name', 'relation_name') if f not in flags and parse_ben.lex_suspect(out.get(f), BEN_LEX)]
+    if lang == 'BEN' and BEN_STAMP_FLAG and nl >= 5:   # lang-ben r2: >= 5 crop lines = stamped box (grey 'UNDER ADJUDICATION')
+        flags = flags + [f for f in BEN_STAMP_FLAG if f not in flags]
+    if lang == 'BEN' and BEN_CTCVAR is not None and not nocv:   # lang-ben r4: an agreed name whose image fits a one-mark
+        # variant about as well (nocv: not used for the stage-2 choice, so no Tesseract run for these boxes)
+        for f, src in (('name', 'mv:line0'), ('relation_name', 'mv:line1')):
+            mv = [per_engine[n][1].get(src) for n in names if n.startswith('crnn') and per_engine[n][1]]
+            if f not in flags and mv and all(m is not None for m in mv) and min(mv) > BEN_CTCVAR: flags = flags + [f]
+    if lang == 'BEN' and BEN_HOUSE_PUNCT and (out.get('house_no') or '').strip() in ('', '.', ',') and 'house_no' not in flags:
+        flags = flags + ['house_no']   # lang-ben r3: a stray mark in the house cell is read as '.', ',' or nothing (gold: 2 silent)
+    if lang == 'BEN' and BEN_HOUSE_1BD and re.fullmatch('[০-৯]', (out.get('house_no') or '').strip()) and 'house_no' not in flags:
+        flags = flags + ['house_no']   # lang-ben r5: one Bengali digit = mostly a misread '-' ('৭': 38 of 19,284 twin-roll records)
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in (flags if not os.environ.get('ECI_READINGS_ALL') else list(flags) + [f for f in OUT_FIELDS if f not in flags and f in SRC]):   # debug: readings of every field
@@ -913,8 +953,12 @@ def process_page(task):
     segs_list, stamps = [], []
     _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
-            segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM', peaks=lang if lang in ('MAL', 'TEL') else None).items() if im.size}); stamps.append(False)
+        if lang in LATIN_TPL:   # ENG, TAM, MAL, TEL, BEN: the English SIR box template
+            if lang == 'BEN':   # lang-ben: Bengali box (top_cells + pitch + component line assignment)
+                seg = segment_eng(g, top_cells=BEN_TOP_CELLS, pitch=BEN_PITCH, comp=BEN_COMP)
+            else:
+                seg = segment_eng(g, dash=lang == 'TAM', peaks=lang if lang in ('MAL', 'TEL') else None)
+            segs_list.append({k: im for k, im in seg.items() if im.size}); stamps.append(False)
         else:
             seg = segment_pan2(g) if lang == 'PAN' else segment(g)
             segs_list.append({k: im for k, im in seg.items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
@@ -922,7 +966,7 @@ def process_page(task):
     tm['segment'] = round(time.time() - t, 3)
     t = time.time()
     heads = []
-    for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
+    for y, band in ([] if lang == 'BEN' else heading_strips(gray, boxes)):  # section headings (BEN: not read yet): CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
         if lang == 'PAN':   # Punjabi headings (no colon); CRNN if any, else Tesseract pan
@@ -946,7 +990,7 @@ def process_page(task):
         if ENG_STAMPBOX:
             for i, r in enumerate(reads):
                 if _eng_stampbox(segs_list[i], r, _E.names[:2]): stampbox.add(i)
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1] or i in stampbox]
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True, nocv=True)[1] or i in stampbox]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
                                  tess_groups={'line', 'num', 'epic'}, lang=lang)
@@ -1488,9 +1532,9 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN'): return opt.upper()
     b = os.path.basename(path).upper()
-    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN'):
+    for L in ('ENG', 'TAM', 'MAL', 'TEL', 'PAN', 'BEN'):
         if f'-{L}-' in b: return L
     return 'HIN'
 

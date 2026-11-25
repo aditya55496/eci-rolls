@@ -1559,5 +1559,54 @@
    "lang_pan_r3b_quarter_x0": "890918ecf7810d78",
    "lang_pan_r3a_base_x0": "24ef37bb38073b30"
   }
+ },
+ "lbR5": {
+  "about": "West Bengal SIR Bengali (lang-ben round 5, owner 2026-11-26 deploy; below the 97 % record target but accepted: unflagged ~97-100 %, gap is flag rate). No hints. 2 int8 CRNNs (half + quarter, trained on Assam 2027 + pseudo-labelled WB + Opus-labelled lines) + Tesseract ben; no-hint cascade stage1 2 (both CRNNs agree); component line assignment (ECI_BEN_COMP, COMP_DOT), mark-variant lexicon guard (ECI_BEN_LEX ben_lex.json), stamp relation flag, CTC one-mark-variant guard (ECI_BEN_CTCVAR=-5), house guards. Native-resolution pages (ECI_RESCALE_H=0). Engine branch lang-ben 7530a4f. Gold v1.1 (688 boxes) with cross-roll repair: record 97.53 %, unflagged 99.67 %, flag 11.19 %, 2 silent. Held-out gold v2 (300 boxes, 10 unused ACs): record 94.67 %, unflagged 97.37 %, flag 11.33 %, 7 silent. Cross-roll repair (tools/xroll_repair.py) applies where both rolls of a part are OCR'd.",
+  "models": [
+   "lang_ben_r5_half_i8",
+   "lang_ben_r5_q_i8"
+  ],
+  "sha256_16": {
+   "lang_ben_r5_half_i8": "ffb19611293d08df",
+   "lang_ben_r5_q_i8": "46e65dfabc98dfb5",
+   "ben_lex.json": "a614fc12184dc934"
+  },
+  "hints": "none",
+  "stage1": 2,
+  "lang": "BEN",
+  "aux": [
+   "ben_lex.json"
+  ],
+  "env": {
+   "ECI_ENG_NOHINT": "1",
+   "ECI_BEN_COMP": "1",
+   "ECI_BEN_TOP_CELLS": "0.15",
+   "ECI_BEN_PITCH": "0.1086",
+   "ECI_BEN_LEX": "<models>/ben_lex.json",
+   "ECI_BEN_STAMP_FLAG": "relation_name",
+   "ECI_BEN_HOUSE_PUNCT": "1",
+   "ECI_BEN_CTCVAR": "-5",
+   "ECI_BEN_COMP_DOT": "1",
+   "ECI_BEN_HOUSE_1BD": "1",
+   "ECI_RESCALE_H": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "tessdata": "ben + eng traineddata (apt tesseract-ocr-ben)",
+  "gold": {
+   "ben_rec_goldv1_xroll": 97.53,
+   "ben_unflagged_goldv1_xroll": 99.67,
+   "ben_flag_pct_goldv1_xroll": 11.19,
+   "ben_rec_goldv2_heldout": 94.67,
+   "ben_unflagged_goldv2_heldout": 97.37,
+   "ben_flag_pct_goldv2_heldout": 11.33,
+   "ben_silent_goldv2": 7,
+   "source": "lang-ben eval g2 (gold2 held-out) + gold v1.1 with xroll repair"
+  },
+  "charset_sha256_16": {
+   "lang_ben_r5_half_i8": "65fc08649910a35a",
+   "lang_ben_r5_q_i8": "65fc08649910a35a"
+  }
  }
 }

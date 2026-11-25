@@ -271,12 +271,126 @@ def _peak_cuts(prof, P, thr):
     return cuts
 
 
-def segment_eng(gray, dash=False, peaks=None):
-    """English box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
-    dash=True (lang-tam 2026-11-25, Tamil rolls): a band with only a short flat mark right after the name or relative line is
-    kept as a line (the SIR print wraps the ' -' after a long name to its own line; the band test below dropped it)."""
+BEN_COMP_CUT = float(os.environ.get('ECI_BEN_COMP_CUT', '0.25'))  # > 0: touching lines split at headline - CUT x P (0: narrowest row)
+BEN_COMP_ZONE = float(os.environ.get('ECI_BEN_COMP_ZONE', '0.22'))  # line zone centre = headline + ZONE x P (marks go to the nearest)
+BEN_COMP_UP = os.environ.get('ECI_BEN_COMP_UP', '1') == '1'       # split a line's component that reaches up into the line above
+BEN_COMP_DOT = os.environ.get('ECI_BEN_COMP_DOT', '0') == '1'     # lang-ben r5: a dot mark goes to the line of the ink touching it
+BEN_STAMP = float(os.environ.get('ECI_BEN_STAMP', '0'))          # > 0: grey-stamp removal (median grey of a stamp letter above this)
+BEN_STAMP_CORE = int(os.environ.get('ECI_BEN_STAMP_CORE', '75'))  # text keeps the pixels within 1 px of a pixel darker than this
+BEN_COMP_DARK = int(os.environ.get('ECI_BEN_COMP_DARK', '0'))   # ink threshold of the component labels (antialias edges touch)
+
+
+def _assign_lines(gray, body, bands, y_body, x0, P):
+    """lang-ben round 2: one crop per text band; every ink component goes to a line: a component that holds a headline row
+    (densest row of a band) to that line; a mark without one to the line whose zone centre (headline + 0.22 P) is nearest.
+    So a u-kar hook below line k stays with line k, and i-kar tops, reph and chandrabindu above line k+1 go to line k+1.
+    P = median headline distance (small-print pages have a smaller pitch than the box grid). Two lines that touch (one
+    component with both headlines, or a line's component that reaches the next headline) are split at the narrowest row of
+    the gap (row headline - 0.25 P; gold r2 models: 0.2 / 0.25 / 0.3 / narrowest row = 89.24 / 89.24 / 89.39 / 88.23 % record;
+    labels on dark pixels only (ECI_BEN_COMP_DARK 150) gave 87.06 %). Components taller than 1.3 P otherwise (stamps, frame) are kept clipped to the band, as the row cut did.
+    Other components are whitened (with a 1 px grey edge)."""
+    H = body.shape[0]
+    prof = (body > 0).sum(1)
+    heads = [a + int(np.argmax(prof[a:b])) for a, b in bands]
+    if len(heads) >= 3: P = float(np.median(np.diff(heads)))   # the real pitch (small-print pages: smaller than the box grid)
+    W = body.shape[1]
+    dark = ((gray[y_body: y_body + H, x0: x0 + W] < BEN_COMP_DARK) & (body > 0)).astype(np.uint8) if BEN_COMP_DARK > 0 else body
+    n, lab, st, _ = cv2.connectedComponentsWithStats(dark, 8)
+    stamp = None
+    if BEN_STAMP > 0:   # grey stamp ('UNDER ADJUDICATION', job4 finding): >= 2 tall components with a light median grey ->
+        G = gray[y_body: y_body + H, x0: x0 + W]   # keep only ink within 1 px of a dark core pixel, label again
+        greys = []
+        for j in range(1, n):
+            x, y, w, h, _a = st[j]
+            if h > 1.3 * P: greys.append(np.median(G[y: y + h, x: x + w][lab[y: y + h, x: x + w] == j]))
+        if sum(1 for v in greys if v > BEN_STAMP) >= 2:
+            core = cv2.dilate((G < BEN_STAMP_CORE).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+            stamp = ~core
+            dark = (dark > 0) & core
+            n, lab, st, _ = cv2.connectedComponentsWithStats(dark.astype(np.uint8), 8)
+    owner = np.full(n, -1, int); tall = np.zeros(n, bool); split = []
+    def cut_row(j, k):   # the narrowest row of component j in the gap above line k + 1 (where two lines' marks touch)
+        r0 = max(0, int(round(heads[k + 1] - 0.33 * P))); r1 = max(r0 + 1, int(round(heads[k + 1] - 0.1 * P)) + 1)
+        x, y, w, h, _a = st[j]
+        cnt = [(int((lab[r, x:x + w] == j).sum()), abs(r - (heads[k + 1] - 0.22 * P)), r) for r in range(r0, min(r1, H))]
+        if BEN_COMP_CUT > 0: return int(round(heads[k + 1] - BEN_COMP_CUT * P))
+        return min(cnt)[2] if cnt else int(heads[k + 1] - 0.22 * P)
+
+    for j in range(1, n):
+        x, y, w, h, _a = st[j]
+        ks = [k for k, hd in enumerate(heads) if y - 1 <= hd <= y + h]
+        if h > 1.3 * P and not (len(ks) == 2 and ks[1] == ks[0] + 1 and h <= 2.3 * P):
+            tall[j] = True; continue             # stamp, frame: clipped to the bands
+        if ks:                                   # the component holds a headline row: that line
+            k = owner[j] = ks[0]
+            if k + 1 < len(heads) and y + h - 1 > heads[k + 1] - 0.1 * P:   # it touches the next line's marks (small print)
+                split.append((j, cut_row(j, k), k))
+            elif BEN_COMP_UP and k > 0 and y < heads[k] - 0.3 * P and w <= 0.8 * P:   # a narrow glyph reaching up (a u-kar hook
+                split.append((j, cut_row(j, k - 1), k - 1))                     # of line k-1 touching a digit of line k)
+            continue
+        c = y + h / 2.0                          # a mark (reph, chandrabindu, i-kar top, u-kar hook): nearest line zone
+        d = [abs(c - (hd + BEN_COMP_ZONE * P)) for hd in heads]
+        k = int(np.argmin(d))
+        if d[k] >= 0.8 * P: continue
+        owner[j] = k
+        for k2 in range(len(heads) - 1):         # a mark that spans the gap (u-kar hook touching the next line's i-kar top):
+            sp = heads[k2 + 1] - 0.3 * P         # rows above sp -> line k2, rows below -> line k2 + 1
+            if y < sp - 1 and y + h > sp + 1 and h > 0.3 * P:
+                split.append((j, int(round(sp)), k2))
+    if BEN_COMP_DOT:   # lang-ben r5 (held-out gold v2): the nukta dot of ড় ঢ় য় sits ~0.65 P below line k's headline, as near to
+        # line k+1's zone as to line k's (8 relative names lost the dot: 'ধাডা' for 'ধাড়া'). A dot-sized free mark that the zone
+        # rule gave to line k+1 goes to line k when the nearest ink straight above it (x overlap) is line k's and is nearer
+        # than any ink straight below it (the glyph body of the nukta). Ink of a split component counts for the line of its row.
+        dmax = 0.22 * P; spl = {j2: (sp, k2) for j2, sp, k2 in split}
+        def line_of(v, r):
+            if v in spl: return spl[v][1] if r < spl[v][0] else spl[v][1] + 1
+            return int(owner[v])
+        for j in range(1, n):
+            x, y, w, h, _a = st[j]
+            if owner[j] <= 0 or tall[j] or w > dmax or h > dmax or any(y - 1 <= hd <= y + h for hd in heads): continue
+            xa, xb = max(0, x - 1), min(W, x + w + 1); above = below = None
+            for r in range(y - 1, max(-1, y - 1 - int(0.4 * P)), -1):           # nearest ink straight above
+                ls = {line_of(v, r) for v in set(lab[r, xa:xb].tolist()) if v not in (0, j) and (owner[v] >= 0 or v in spl)}
+                if ls: above = (y - 1 - r, ls); break
+            for r in range(y + h, min(H, y + h + int(0.4 * P))):                # nearest ink straight below
+                ls = {line_of(v, r) for v in set(lab[r, xa:xb].tolist()) if v not in (0, j) and (owner[v] >= 0 or v in spl)}
+                if ls: below = (r - (y + h), ls); break
+            if above and above[1] == {int(owner[j]) - 1} and (below is None or above[0] < below[0]): owner[j] -= 1
+    out = []
+    for k, (a, b) in enumerate(bands):
+        sel = owner == k
+        rows = [(st[j][1], st[j][1] + st[j][3]) for j in np.where(sel)[0]]
+        rows += [(st[j][1], sp) if k == k2 else (sp, st[j][1] + st[j][3]) for j, sp, k2 in split if k in (k2, k2 + 1)]
+        y0 = min([r[0] for r in rows] + [a]); y1 = max([r[1] for r in rows] + [b])
+        y0 = max(0, y0 - 2); y1 = min(H, y1 + 2)
+        L = lab[y0:y1]
+        keep = sel[L]
+        for j, sp, k2 in split:                  # split marks: only this line's rows of them
+            if k not in (k2, k2 + 1): continue
+            m = L == j; r = np.arange(y0, y1)[:, None]
+            keep = np.where(m, (r < sp) if k == k2 else (r >= sp), keep)
+        tb = tall[L].copy(); tb[: max(0, a - y0)] = False; tb[max(0, b - y0):] = False
+        keep = cv2.dilate((keep | tb).astype(np.uint8), np.ones((3, 3), np.uint8)) > 0
+        g = gray[y_body + y0: y_body + y1, x0: x0 + W].copy()
+        g[~keep & ((L > 0) | (g > 140))] = 255
+        if stamp is not None: g[stamp[y0:y1]] = 255
+        out.append(g)
+    return out
+
+
+def segment_eng(gray, dash=False, peaks=None, top_cells=None, pitch=None, comp=False):
+    """English SIR box -> dict: serial (+ code), part (supplements), epic, line0..lineN (N = 3..7, top to bottom).
+    dash (lang-tam): keep a band with only a short flat mark after the name/relative line (the Tamil ' -' wrap).
+    peaks (lang-mal, MAL/TEL): profile-peak line cut for the taller Malayalam/Telugu lines (_peak_cuts).
+    top_cells (lang-ben, Bengali): keep only small cells starting in the top top_cells x box height (the Bengali headline
+      + name strokes form cell-like rectangles at 0.23 h that cells() took for the part cell).
+    pitch (lang-ben): line pitch / box height (Bengali WB print 0.1086; English 0.1035 drifts by the 4th line).
+    comp (lang-ben round 2): ink components assigned to lines (_assign_lines) instead of the emptiest-row cut (keeps the
+      u-kar hook below a line and the i-kar/ii-kar tops, reph and chandrabindu above the next line)."""
     h, w = gray.shape
     bw, photo, small = cells(gray)
+    if top_cells:
+        small = [c for c in small if c[1] < top_cells * h]
     out = {}
     top_bottom = max([c[1] + c[3] for c in small], default=int(0.18 * h))
     for i, (x, y, cw, ch) in enumerate(small[:2]):
@@ -305,7 +419,7 @@ def segment_eng(gray, dash=False, peaks=None):
     body = cv2.subtract(bw, lines)[y_body: h - 3, xl:px]
     prof = (body > 0).sum(1).astype(int)
     if not len(prof): return out
-    P = ENG_PITCH * h
+    P = (pitch or ENG_PITCH) * h
     thr = max(2, int(0.01 * body.shape[1]))
     ink = np.where(prof > thr)[0]
     if not len(ink): return out
@@ -329,6 +443,18 @@ def segment_eng(gray, dash=False, peaks=None):
         cuts.append(_runs_min(prof, max(cuts[-1] + int(0.5 * P), c0), min(len(prof), c1)) if c1 > c0 else int(g))
     cuts = [c for i, c in enumerate(cuts) if i == 0 or c > cuts[i - 1]]
     k = 0
+    bands = []
+    for a, b in zip(cuts, cuts[1:] + [len(prof)]):
+        band = prof[a:b]
+        if (band > thr).sum() < 0.3 * P:
+            if len(bands) >= 4: break
+            continue
+        bands.append((a, min(b, len(prof))))
+        if len(bands) >= ENG_MAX_LINES: break
+    if comp and bands:
+        for k, im in enumerate(_assign_lines(gray, body, bands, y_body, xl, P)):
+            out[f'line{k}'] = trim(im, dark=ENG_DARK)
+        return out
     for a, b in zip(cuts, cuts[1:] + [len(prof)]):
         band = prof[a:b]
         # a text line: enough ink rows (>= 30 % of the pitch) - stamps and stray marks in the empty lower part are thinner

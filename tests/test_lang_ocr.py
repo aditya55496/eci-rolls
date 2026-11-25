@@ -24,6 +24,11 @@ PASS |= {"ECI_CRNN_BATCH", "ECI_NOTRIM_PAD", "ECI_TESS_LAZY", "ECI_HINTS_LAZY", 
 # lang-pan (2026-11-25): Punjabi SIR switches (panH4); no effect on the English / Tamil sets (lang != PAN)
 PASS |= {"ECI_NOHINT_SLACK", "ECI_PAN_DARK", "ECI_PAN_HOOK", "ECI_PAN_COMP", "ECI_PAN_UPPER_GAP", "ECI_PAN_CANON",
          "ECI_PAN_HINTCTC", "ECI_PAN_HINTCTC_AGG", "ECI_PAN_HINTCTC_UNFLAG"}
+# lang-ben (2026-11-26): Bengali SIR switches (lbR5); no effect on the English / Tamil sets (lang != BEN)
+PASS |= {"ECI_STAGE1_N", "ECI_BEN_COMP", "ECI_BEN_COMP_CUT", "ECI_BEN_COMP_ZONE", "ECI_BEN_COMP_UP", "ECI_BEN_COMP_DOT",
+         "ECI_BEN_COMP_DARK", "ECI_BEN_STAMP", "ECI_BEN_STAMP_CORE", "ECI_BEN_TOP_CELLS", "ECI_BEN_PITCH", "ECI_BEN_LEX",
+         "ECI_BEN_LEX_M", "ECI_BEN_LEX_R", "ECI_BEN_STAMP_FLAG", "ECI_BEN_HOUSE_PUNCT", "ECI_BEN_HOUSE_1BD", "ECI_BEN_CTCVAR",
+         "ECI_BEN_KEEP_ASM"}
 
 
 def _code_switches():
