@@ -125,6 +125,39 @@ def _epic_bs(v):
 # a value with '&', the value is the most common CRNN reading with '&' (the CRNNs trained with hin_ms_2027 lines read the printed
 # '&' as '8': round 2 finding, GE '10190&' read '101908'). The field stays flagged.
 NOHINT_AMP = os.environ.get('ECI_NOHINT_AMP', '0') != '0'
+# job2 r4 2026-11-25 (ECI_CONFW_SKIP=field,field, default empty): no 2027 roll: the confidence-weighted vote (--confvote) does not
+# re-choose the value of these flagged fields (plain majority of decide() stays). Sim on j2Z: house_no without CONFW GE house
+# 99.22 -> 99.29 (the CRNN confidences of house lines are 0.5-0.7 for right reads too, round 1).
+CONFW_SKIP = set(x for x in os.environ.get('ECI_CONFW_SKIP', '').split(',') if x)
+# job2 r4 2026-11-25 (ECI_NOHINT_LEX=path.npz, default off): word lexicon of the 2027 UP text layers of 281 ACs outside every gold
+# set and the job2 val ACs (name + relation_name words, visual form), stored as sorted 64-bit blake2b hashes: key kN = words seen
+# >= N times. ECI_NOHINT_LEXG=N (no 2027 roll): an UNFLAGGED name / relation_name with a word seen < N times gets a flag (all
+# engines can read a rare name the same wrong way: HC जाफ़्रीन read जाफ़ीन by all 5). ECI_NOHINT_NUNF=K (eci_ocr._valset): a
+# flagged name / relation_name is cleared when every CRNN (voters + VALSET extras) read the same value, every word of it is seen
+# >= K times, and Tesseract differs by more than marks (nukta, anusvara, candrabindu, virama, reph, candra vowels).
+NOHINT_LEXG = int(os.environ.get('ECI_NOHINT_LEXG', '0') or 0)
+NOHINT_NUNF = int(os.environ.get('ECI_NOHINT_NUNF', '0') or 0)
+_LEXH = {}
+
+
+def _whash(w):
+    import hashlib
+    return int.from_bytes(hashlib.blake2b(w.encode('utf-8'), digest_size=8).digest(), 'little')
+
+
+def lex_count_ge(word, n):
+    """True when the (visual-form) word is seen >= n times in the ECI_NOHINT_LEX lexicon (key 'k<n>')."""
+    if n not in _LEXH:
+        import numpy as np
+        _LEXH[n] = np.load(os.environ['ECI_NOHINT_LEX'])[f'k{n}']
+    a = _LEXH[n]; h = _whash(word)
+    import numpy as np
+    i = int(np.searchsorted(a, np.uint64(h)))
+    return i < len(a) and int(a[i]) == h
+
+
+def marks_strip(x):
+    return re.sub('[\u093c\u0902\u0901\u094d\u0945]', '', visual(x or '').replace('र्', '').replace('\u0949', '\u093e')).replace(' ', '')
 
 
 def amp_pick(vals, names):
@@ -264,6 +297,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     if CONFW is not None and confs:
         for f in flags:
             if f not in LINE_OF: continue
+            if hint is None and f in CONFW_SKIP: continue
             w = collections.Counter()
             for c, cf, nm in zip(cands, confs, names or []):
                 v = c[f]
@@ -275,6 +309,10 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
     if hint is None and NOHINT_AMP and 'house_no' in flags:  # after the CONFW vote (production default 0.6)
         v = amp_pick([c['house_no'] for c in cands], names)
         if v is not None: out['house_no'] = v
+    if hint is None and NOHINT_LEXG:
+        for f in ('name', 'relation_name'):
+            if f not in flags and out.get(f) and not all(lex_count_ge(w, NOHINT_LEXG) for w in visual(out[f]).split()):
+                flags.append(f)
     return out, flags
 
 

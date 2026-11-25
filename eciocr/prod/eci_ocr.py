@@ -452,6 +452,14 @@ def _valset(recs, segs_list):
             c = collections.Counter(visual(v) for v in vs); top, k = c.most_common(1)[0]
             if f == 'house_no' and ensemble2.NOHINT_AMP and '&' in (r[f] or ''): continue   # the '&' choice of decide() stays
             if k * 2 > len(vs): r[f] = next(v for v in vs if visual(v) == top)
+        if ensemble2.NOHINT_NUNF:  # job2 r4: clear a name flag when every CRNN (voters + extras) agrees on a common value (ensemble2)
+            for f in [f for f in r['flags'] if f in ('name', 'relation_name')]:
+                rd = r['readings'].get(f, {})
+                cr = [v for n, v in rd.items() if n.startswith('crnn') and isinstance(v, str)]
+                if not cr or not cr[0] or len({visual(v) for v in cr}) != 1: continue
+                if ensemble2.marks_strip(rd.get('tess', '')) == ensemble2.marks_strip(cr[0]): continue
+                if all(ensemble2.lex_count_ge(w, ensemble2.NOHINT_NUNF) for w in visual(cr[0]).split()):
+                    r[f] = cr[0]; r['flags'].remove(f); r['readings'].pop(f, None)
 
 
 def process_page(task):
