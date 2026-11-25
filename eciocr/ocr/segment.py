@@ -10,6 +10,10 @@ import cv2
 import numpy as np
 
 
+# Punjabi (Gurmukhi) rolls (2026-11-25, lang-pan): set by segment_pan only (None = all small cells, as before).
+CELL_TOP_MAX = None
+
+
 def _mask(gray):
     return cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_MEAN_C, cv2.THRESH_BINARY_INV, 15, 10)
 
@@ -29,6 +33,7 @@ def cells(gray):
                 out.append((x, y, cw, ch))
     photo = [c for c in out if c[3] > 0.4 * h and c[0] > 0.5 * w]
     small = sorted([c for c in out if c[3] < 0.3 * h and c[1] < 0.3 * h and c[0] < 0.6 * w], key=lambda c: c[0])
+    if CELL_TOP_MAX is not None: small = [c for c in small if c[1] < CELL_TOP_MAX * h]   # segment_pan
     return bw, (photo[0] if photo else None), small
 
 
@@ -259,3 +264,18 @@ def segment_eng(gray):
         k += 1
         if k >= ENG_MAX_LINES: break
     return out
+
+
+# ---------------------------------------------------------------- Punjabi rolls (2026-11-25, job lang-pan)
+# Punjabi SIR boxes use the Hindi box template (serial cell, EPIC, 4 labelled lines, photo cell; no part cell). The Gurmukhi
+# head line of a long name plus a tall letter can close a contour that cells() takes for a small top-band cell (the part cell
+# of supplements) at 0.22 h; segment() then starts the body below the name line and the EPIC crop takes in the photo frame
+# (seen on S19 AC 43 part 10: 5 of 8 boxes). Real top-band cells start at 0.04 h: segment_pan keeps only small cells that
+# start above 0.15 h. The rest is segment() unchanged.
+def segment_pan(gray):
+    global CELL_TOP_MAX
+    CELL_TOP_MAX = 0.15
+    try:
+        return segment(gray)
+    finally:
+        CELL_TOP_MAX = None

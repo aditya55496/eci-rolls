@@ -30,10 +30,11 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_pan, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
+from parse_pan import from_lines_pan, parse_heading_pan   # noqa: E402  (lang-pan)
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -262,7 +263,7 @@ class Engines:
                 f[k] = txt; cf[k] = round(c, 4)
         timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
         t = time.time()
-        groups = {'line': ('eng' if lang == 'ENG' else 'hin', 7, None), 'num': ('eng', 7, '0123456789'),
+        groups = {'line': ({'ENG': 'eng', 'PAN': 'pan'}.get(lang, 'hin'), 7, None), 'num': ('eng', 7, '0123456789'),
                   'epic': ('eng', 7, 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789/'), 'code': ('eng', 7, '#SERMQ0123456789')}
         gk = {g: [] for g in groups}
         for b, k in keys:
@@ -411,6 +412,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
         roles = parse_eng.box_roles([per_engine[n][0] for n in names], nl)
         per_engine = {n: (parse_eng.canonical(per_engine[n][0], roles), parse_eng.canonical_conf(per_engine[n][1], roles)) for n in names}
         cands = [parse_eng.from_lines_eng(per_engine[n][0]) for n in names]
+    elif lang == 'PAN':
+        cands = [from_lines_pan(per_engine[n][0]) for n in names]
     else:
         cands = [from_lines(per_engine[n][0]) for n in names]
     epics = [e for e, _ in collections.Counter(c['epic'] for c in cands).most_common() if e]
@@ -442,7 +445,8 @@ def process_page(task):
         if lang == 'ENG':
             segs_list.append({k: im for k, im in segment_eng(g).items() if im.size}); stamps.append(False)
         else:
-            segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
+            seg = segment_pan(g) if lang == 'PAN' else segment(g)
+            segs_list.append({k: im for k, im in seg.items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
     pix = [code_pixel(g, lang) for g in box_grays]
     tm['segment'] = round(time.time() - t, 3)
     t = time.time()
@@ -450,7 +454,10 @@ def process_page(task):
     for y, band in heading_strips(gray, boxes):  # section headings: CRNN reads them (Tesseract hin misreads the Latin numbers)
         L = [l for l in text_lines(band) if l.shape[1] < 0.5 * gray.shape[1]]  # headings are short; skip the title line
         if not L: continue
-        if lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
+        if lang == 'PAN':   # Punjabi: 'ਸੈਕਸ਼ਨ ਨੰ. ਅਤੇ ਨਾਮ 1-ਮਾਂਝੀ' (no colon); CRNN if any, else Tesseract pan
+            txt = [t for t, _ in _E.crnn_read(_E.crnn[0], L)] if _E.crnn else _E.tess_many([_E.tess_prep(l, 2) for l in L], 'pan', 7)
+            heads.append((y, next((h for h in map(parse_heading_pan, reversed(txt)) if h), None)))
+        elif lang == 'ENG' or not _E.crnn:   # English headings: Tesseract eng reads the print well (and runs without CRNNs)
             heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], 'eng' if lang == 'ENG' else 'hin', 7), lang)))
         else:
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
@@ -557,13 +564,14 @@ def pdf_kind(path):
 
 def pdf_meta(path):
     b = os.path.basename(path)
-    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:HIN|ENG)-(\d+)-', b)
+    m = re.search(r'-([SU])(\d+)-(\d+)-.*-(?:HIN|ENG|PAN)-(\d+)-', b)
     return dict(state=f'{m.group(1)}{m.group(2)}', ac=int(m.group(3)), roll_part=int(m.group(4))) if m else {}
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG'): return opt.upper()
-    return 'ENG' if '-ENG-' in os.path.basename(path).upper() else 'HIN'
+    if opt and opt.upper() in ('HIN', 'ENG', 'PAN'): return opt.upper()
+    b = os.path.basename(path).upper()
+    return 'ENG' if '-ENG-' in b else 'PAN' if '-PAN-' in b else 'HIN'
 
 
 def parse_pages(spec, n):
@@ -597,7 +605,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-* file names, else HIN), HIN or ENG')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, PAN for *-PAN-* file names, else HIN), HIN, ENG or PAN')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
     a = ap.parse_args()
     crnn = a.crnn or [os.environ.get('ECI_CRNN', '/data/models/crnn/c1')]

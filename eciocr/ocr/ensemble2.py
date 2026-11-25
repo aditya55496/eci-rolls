@@ -14,6 +14,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from score import load_gold, preds, visual, FIELDS, CORE
 from ensemble import valid as valid_hin, EPIC_RE
 import parse_eng
+import parse_pan
 
 B = os.path.expanduser('~/projects/eci-data/bench')
 args = [a for a in sys.argv[1:] if not a.startswith('--') and not a.endswith('.json') and not a.replace('.', '').isdigit()]
@@ -49,9 +50,11 @@ LEX = None  # set by --lexicon: word set from 2027 text layer (non-gold voters o
 # printed relative labels) and the relative label compared with the 2027 hint by kind (Father/Husband/Mother/Other), because the
 # 2027 roll of a state can print another form of the label ("Father's Name" vs 'Fathers Name'). Set by eci_ocr per page.
 LANG = 'HIN'
+# 2026-11-25 (lang-pan): 'PAN' = Punjabi (Gurmukhi) validators (parse_pan.valid_pan: printed Punjabi labels and genders).
 
 
 def valid(f, v):
+    if LANG == 'PAN': return parse_pan.valid_pan(f, v)
     return parse_eng.valid_eng(f, v, EPIC_RE) if LANG == 'ENG' else valid_hin(f, v)
 
 
