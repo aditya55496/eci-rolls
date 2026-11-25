@@ -119,8 +119,18 @@ def _value(t, nwords):
     return ' '.join(t.split()[nwords:])
 
 
+# lang-tam 2026-11-25 (ECI_TAM_EPIC_L2D8=1, default off): Tamil Nadu has a few old EPICs of 2 letters + 8 digits (XG10861989,
+# SX1..., 54 in 8.6 M 2027 records, 3rd character '1' in 30 of them). fix_epic turned the 3rd character into a letter
+# (XGI0861989) and all CRNNs agreed: a silent EPIC error (held-out U07-23). With the switch an EPIC that reads as 2 letters +
+# '1' + 7 digits is kept as read ('0' stays 'O': Tesseract reads O as 0, gold U07-16 SCO0060897); it fails
+# EPIC_RE (3 letters + 7 digits), so the field is flagged; with 2027 hints, epicfix keeps it when the 2027 roll has it.
+TAM_EPIC_L2D8 = __import__('os').environ.get('ECI_TAM_EPIC_L2D8', '0') == '1'
+
+
 def fix_epic(e):
     e = re.sub(r'\s+', '', (e or '').upper())
+    if TAM_EPIC_L2D8 and re.fullmatch(r'[A-Z]{2}1[0-9]{7}', e):
+        return e
     if 0 < e.count('/') < 3 and re.fullmatch(r'[A-Z0-9]{3}[0-9/]{7,8}', e) and len(e.replace('/', '7')) == 10:
         e = e.replace('/', '7')
     if '/' in e:
