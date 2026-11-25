@@ -19,6 +19,7 @@ SUBS = [('ક', 'ફ'), ('ા', 'ો'), ('ઘ', 'ધ'), ('ધ્નિ', 'દિ
         ('ય', 'ચ'), ('ધ્', 'દ'), ('ઠ', 'ઠ્ઠ'), ('ડ', 'ડ્ડ'), ('સ્ર', 'સ્ત્ર'), ('ષ', 'ષ્ઠ'), ('ક્ય', 'ડ્ય'), ('ધ્ધ', 'ધ્ય')]
 SUF = ['ભાઈ', 'ભાઇ', 'બેન', 'કુમાર', 'કુમારી', 'લાલ', 'સિંહ', 'સિહ', 'ચંદ્ર', 'જી', 'બા', 'દાસ', 'ગીરી', 'ગિરી', 'રામ', 'દેવી']
 WR, WMIN, KEEP = 3, 5, 3
+LEX_FILE = 'guj_lex3.json'   # v3 (round 4): v2 + 10 x token counts of 54k API line labels (lang-guj NOTES round 4); ECI_GUJ_LEX_FILE overrides
 _W = None
 _H = None
 ANU_HIN = os.environ.get('ECI_GUJ_LEX_ANU_HIN', '1') != '0'
@@ -37,7 +38,7 @@ def hcount(t):
 
 def wcount(t):
     global _W
-    if _W is None: _W = json.load(open(os.path.join(D, 'guj_lex.json'), encoding='utf-8'))
+    if _W is None: _W = json.load(open(os.environ.get('ECI_GUJ_LEX_FILE') or os.path.join(D, LEX_FILE), encoding='utf-8'))
     c = _W.get(t, 0)
     for s in SUF:
         if t.endswith(s) and len(t) - len(s) >= 2: c = max(c, _W.get(t[:-len(s)], 0))
