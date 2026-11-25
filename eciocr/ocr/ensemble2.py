@@ -205,7 +205,7 @@ def decide_eng_nohint(cands, names, pix, stamp=None, stage1=False):
     out, flags = {}, []
     ci = [i for i, nm in enumerate(names) if nm.startswith('crnn')]
     ti = [i for i, nm in enumerate(names) if nm.startswith('tess')]
-    if stage1: ci = ci[:2]
+    if stage1: ci = ci[:int(os.environ.get('ECI_STAGE1_N', '2'))]
     for f in FIELDS:
         vals = [c[f] for c in cands]
         if f == 'code':

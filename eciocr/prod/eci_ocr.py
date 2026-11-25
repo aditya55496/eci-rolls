@@ -295,6 +295,7 @@ BEN_TOP_CELLS = float(os.environ.get('ECI_BEN_TOP_CELLS', '0.15') or 0)
 BEN_PITCH = float(os.environ.get('ECI_BEN_PITCH', '0.1086') or 0) or None   # segment_eng line pitch for Bengali boxes
 BEN_LEX = os.environ.get('ECI_BEN_LEX', '')   # lang-ben r2: lexicon json for the mark-variant guard (empty = off)
 BEN_STAMP_FLAG = [f for f in os.environ.get('ECI_BEN_STAMP_FLAG', '').split(',') if f]   # lang-ben r2: fields flagged in stamped boxes
+BEN_HOUSE_PUNCT = os.environ.get('ECI_BEN_HOUSE_PUNCT', '0') == '1'   # lang-ben r3: flag a house value that is empty, '.' or ','
 BEN_COMP = os.environ.get('ECI_BEN_COMP', '1') == '1'   # lang-ben r2: lines by ink components (keeps u-kar hooks, i-kar tops, reph)
 
 
@@ -417,6 +418,7 @@ DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 # job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
 CASCADE_NOHINT = os.environ.get('ECI_CASCADE_NOHINT', '0') == '1'
+S1N = int(os.environ.get('ECI_STAGE1_N', '2'))   # lang-ben r3: CRNNs in the no-hint stage 1 (all must agree); default 2 = job4
 
 
 def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=False):
@@ -441,6 +443,8 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN', stage1=Fal
         flags = flags + [f for f in ('name', 'relation_name') if f not in flags and parse_ben.lex_suspect(out.get(f), BEN_LEX)]
     if lang == 'BEN' and BEN_STAMP_FLAG and nl >= 5:   # lang-ben r2: >= 5 crop lines = stamped box (grey 'UNDER ADJUDICATION')
         flags = flags + [f for f in BEN_STAMP_FLAG if f not in flags]
+    if lang == 'BEN' and BEN_HOUSE_PUNCT and (out.get('house_no') or '').strip() in ('', '.', ',') and 'house_no' not in flags:
+        flags = flags + ['house_no']   # lang-ben r3: a stray mark in the house cell is read as '.', ',' or nothing (gold: 2 silent)
     if DUMP: decide_box.confs = {n: per_engine[n][1] for n in names if per_engine[n][1]}   # canonical line confidences
     readings = {}
     for f in flags:
@@ -486,11 +490,11 @@ def process_page(task):
     if lang in LATIN_TEMPLATE and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
-        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
-        names1 = _E.names[:2] + _E.tnames
+        reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(S1N)), tess_groups={'code'}, lang=lang)
+        names1 = _E.names[:S1N] + _E.tnames
         need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]]
         if need:
-            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
+            more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(S1N, len(_E.crnn))),
                                  tess_groups={'line', 'num', 'epic'}, lang=lang)
             for i, r2 in zip(need, more):
                 for tn in _E.tnames:
@@ -536,7 +540,7 @@ def process_page(task):
         for y, h in heads:
             if y <= b[1] + 5 and h: section = h
         if K == -2:
-            nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
+            nm = (_E.names[:S1N] + _E.tnames) if i in stage1_only else _E.names
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
         else:
             nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names

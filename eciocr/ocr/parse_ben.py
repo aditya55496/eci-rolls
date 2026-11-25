@@ -8,7 +8,7 @@ The West Bengal SIR print uses the English template (segment.segment_eng: 4 labe
 Roles are voted over all engines (box_roles), every engine is then parsed with the same roles (canonical), as parse_eng does.
 Normalisation: NFC, ZWJ / ZWNJ removed, whitespace collapsed. The Bengali visarga 'ঃ' after a label is read as the colon.
 """
-import collections, re, unicodedata
+import collections, os, re, unicodedata
 from rapidfuzz import fuzz, process
 
 LABELS = ['পিতার নাম', 'স্বামীর নাম', 'মাতার নাম', 'অন্যান্য', 'মায়ের নাম', 'স্ত্রীর নাম', 'অভিভাবকের নাম']
@@ -23,8 +23,12 @@ BEN_DIG = str.maketrans('০১২৩৪৫৬৭৮৯', '0123456789')
 ASM_TO_BEN = str.maketrans({'ৰ': 'র', 'ৱ': 'ব'})   # the line models also learn Assam 2027 lines; WB rolls never print ৰ / ৱ
 
 
+KEEP_ASM = os.environ.get('ECI_BEN_KEEP_ASM', '0') == '1'   # lang-ben r3: Assam rolls keep ৰ ৱ (WB prints neither: default maps them)
+
+
 def norm(s):
-    s = unicodedata.normalize('NFC', s or '').replace('‌', '').replace('‍', '').translate(ASM_TO_BEN)
+    s = unicodedata.normalize('NFC', s or '').replace('‌', '').replace('‍', '')
+    if not KEEP_ASM: s = s.translate(ASM_TO_BEN)
     s = re.sub('(?<![ডঢয])়', '.', s)   # r2: a nukta exists only under ড ঢ য; elsewhere it is a printed full stop ('হক.' read 'হক়')
     s = s.replace('ত্স', 'ৎস')   # r2: Bengali has no printed t+s conjunct; the Assam text layer (training labels) stores khanda ta as ত্
     return re.sub(r'\s+', ' ', s).strip(' ;_')
