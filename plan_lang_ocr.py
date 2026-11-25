@@ -56,17 +56,22 @@ ROLLS = {
     "S21": ["S21-2026-DR", "S21-2026-SIR-FIR-1"], "S29": ["S29-2026-DR"], "U03": ["U03-2026-DR", "U03-2026-SIR-FIR-1"],
     "S01": ["S01-2026-DR"], "S22": ["S22-2026-DR", "S22-2026-FIR"], "U07": ["U07-2026-DR", "U07-2026-FIR"],
     "S25": ["S25-2026-DR", "S25-2026-FIR"],
+    "S11": ["S11-2026-DR", "S11-2026-FIR"],
 }
 RANK = {"U01": 0, "S05": 1, "S14": 2, "S02": 3, "S10": 4, "S13": 5, "S15": 6, "S16": 7, "S17": 8, "S21": 9, "S29": 10, "U03": 11,
-        "S01": 12, "S22": 13, "U07": 14, "S25": 15}
+        "S01": 12, "S22": 13, "U07": 14, "S25": 15, "S11": 16}
 NAMES = {"U01": "Andaman & Nicobar", "S05": "Goa", "S14": "Manipur", "S02": "Arunachal Pradesh", "S10": "Karnataka",
          "S13": "Maharashtra", "S15": "Meghalaya", "S16": "Mizoram", "S17": "Nagaland", "S21": "Sikkim", "S29": "Telangana",
          "U03": "Dadra & Nagar Haveli, Daman & Diu", "S01": "Andhra Pradesh", "S22": "Tamil Nadu", "U07": "Puducherry",
-         "S25": "West Bengal (English ACs)"}
+         "S25": "West Bengal (English ACs)", "S11": "Kerala"}
 # English 2027 SSR roll in eci-rolls-ssr-text (task ssrtext, English parser): the hints of these states' English SIR rolls
-ENG_HINT_ROLL = {"S05": "S05-2027-DR", "S14": "S14-2027-DR", "U01": "U01-2027-DR"}
-SETS = {("ENG", True): "engD", ("ENG", False): "engK11", ("TAM", True): "tamH2", ("TAM", False): "tamN2"}
-PLAN_LANGS = ("ENG", "TAM")
+ENG_HINT_ROLL = {"S05": "S05-2027-DR", "S14": "S14-2027-DR", "U01": "U01-2027-DR",
+                 "S11": "S11-2027-DR"}   # S11: Malayalam 2027 text layer (lang-mal, 2026-11-25)
+# ACs whose 2027 roll is in another language than their SIR print (S11 ACs 1-3: 2027 Kannada, SIR Malayalam): no-hint set
+NOHINT_ACS = {"S11": {1, 2, 3}}
+SETS = {("ENG", True): "engD", ("ENG", False): "engK11", ("TAM", True): "tamH2", ("TAM", False): "tamN2",
+        ("MAL", True): "malH2", ("MAL", False): "malN2"}
+PLAN_LANGS = ("ENG", "TAM", "MAL")
 HOLD = {"S25": "job4 (2026-11-25 10:20, set K11): West Bengal FINAL rolls without their draft stay below target (held-out stamp set: "
                "97.52 % record / 10.14 % flagged; J 95.14 / 10.27); with the draft roll (draft_records) the English gold is 99.95 % "
                "record / 0.29 % flagged. --release S25 plans it (pairs read with draft_fill; final-only parts are held as partial "
@@ -209,7 +214,7 @@ def plan(states=None, acs_only=None, parts_only=None, state_set=None, release=()
                 s["acs_new_only_skipped"] += 1
                 continue
             hints = None
-            if lang == "ENG" and hint_roll:
+            if lang in ("ENG", "MAL") and hint_roll and ac not in NOHINT_ACS.get(st, ()):
                 if ac in ready:
                     hints = f"{hints_project}/hints/{hint_roll}/{ac}.jsonl.gz"
                 else:

@@ -1300,5 +1300,128 @@
    "eye_check": "all 4 viewed on the page image: 4 right (एच.नं.-582, 6153ऐ, दसोंधी, 2इ/21)",
    "values_changed_unflagged_both": 0
   }
+ },
+ "malH2": {
+  "about": "Malayalam SIR WITH 2027 hints: 4 int8 CRNNs (r2a quarter + half from r1a, r2b 3q + base from r1b: Kerala 2027 renders + 620k real SIR lines labelled from 2027 + English 2027 lines), cascade stage 1 = 2 CRNNs + Tesseract num/code, stage 2 = 4 CRNNs + Tesseract mal; boxes without a 2027 record use the no-hint rule (ECI_ENG_NOHINT); ECI_ENG_AGREE=2 takes a value far from 2027 that every engine reads the same (data changed since SIR). (S11 ACs 1-3 are Kannada print and not in this set's scope.)",
+  "models": [
+   "lang_mal_r2a_quarter_q0",
+   "lang_mal_r2a_half_q0",
+   "lang_mal_r2b_3q_q0",
+   "lang_mal_r2b_base_q0"
+  ],
+  "sha256_16": {
+   "lang_mal_r2a_quarter_q0": "3b51657936633365",
+   "lang_mal_r2a_half_q0": "e5be4cb77902f3bc",
+   "lang_mal_r2b_3q_q0": "8d3267476387bdaa",
+   "lang_mal_r2b_base_q0": "7b0f0a60f476f109"
+  },
+  "hints": "required",
+  "stage1": 2,
+  "lang": "MAL",
+  "env": {
+   "ECI_ENG_DARK": "170",
+   "ECI_ENG_DESC": "0",
+   "ECI_ENG_AGREE": "2",
+   "ECI_ENG_NOHINT": "1",
+   "ECI_ENG_S1_TESS": "num,code",
+   "ECI_ENG_CODE": "0",
+   "ECI_CASCADE_NOHINT": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_RESCALE_H": "1679",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "gold": {
+   "mal_rec": 97.05,
+   "mal_unflagged": 100.0,
+   "mal_flag_pct": 5.89,
+   "mal_silent": 0,
+   "all_rec": 90.01,
+   "all_rec_ci95": [
+    80.69,
+    97.29
+   ],
+   "all_unflagged": 100.0,
+   "all_flag_pct": 12.7,
+   "epic": 99.86,
+   "boxes": 701,
+   "source": "lang-mal eval h2na4_s2 (eval/out/h2na4_s2.score.json)"
+  },
+  "cpu": {
+   "s_per_record_single_pdf": 0.073,
+   "s_per_record_heldout_12pdfs": 0.126,
+   "note": "this server (nice 15, shared load 7-9); single PDF = S11-36 DR p183 696 records 1 worker; held-out = 12 PDFs 6 at a time, hint file of the whole AC loaded per PDF"
+  },
+  "heldout": {
+   "records": 9844,
+   "flag_pct": 8.94,
+   "unflagged_vs_2027_differ": 37,
+   "eye_checked": 10,
+   "eye_errors": 0,
+   "note": "S11 ACs 36 63 67 68 98 115 (not gold, not real-line ACs); differences = data changed after SIR (ages, names, houses)"
+  },
+  "charset_sha256_16": {
+   "lang_mal_r2a_quarter_q0": "229c5f25b1a32584",
+   "lang_mal_r2a_half_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_base_q0": "229c5f25b1a32584"
+  }
+ },
+ "malN2": {
+  "about": "Malayalam SIR WITHOUT hints (only S11 ACs 1-3 need it): same 4 CRNNs, job4 no-hint rule (stage 1 = first 2 CRNNs agree).",
+  "models": [
+   "lang_mal_r2a_quarter_q0",
+   "lang_mal_r2a_half_q0",
+   "lang_mal_r2b_3q_q0",
+   "lang_mal_r2b_base_q0"
+  ],
+  "sha256_16": {
+   "lang_mal_r2a_quarter_q0": "3b51657936633365",
+   "lang_mal_r2a_half_q0": "e5be4cb77902f3bc",
+   "lang_mal_r2b_3q_q0": "8d3267476387bdaa",
+   "lang_mal_r2b_base_q0": "7b0f0a60f476f109"
+  },
+  "hints": "none",
+  "stage1": 2,
+  "lang": "MAL",
+  "env": {
+   "ECI_ENG_DARK": "170",
+   "ECI_ENG_DESC": "0",
+   "ECI_ENG_AGREE": "0",
+   "ECI_ENG_NOHINT": "1",
+   "ECI_ENG_S1_TESS": "num,code",
+   "ECI_ENG_CODE": "0",
+   "ECI_CASCADE_NOHINT": "0",
+   "ECI_CODE_VALID": "0",
+   "ECI_PARTNO_LIST": "0",
+   "ECI_RESCALE_H": "1679",
+   "ECI_DIGIT_CRNN": ""
+  },
+  "gold": {
+   "mal_rec": 96.4,
+   "mal_unflagged": 99.0,
+   "mal_flag_pct": 17.84,
+   "mal_silent": 5,
+   "all_rec": 84.02,
+   "all_rec_ci95": [
+    68.48,
+    96.58
+   ],
+   "all_unflagged": 99.0,
+   "all_flag_pct": 28.39,
+   "epic": 98.43,
+   "boxes": 701,
+   "source": "lang-mal eval n2_4 (eval/out/n2_4.score.json)"
+  },
+  "cpu": {
+   "s_per_record_single_pdf": 0.066
+  },
+  "note": "gold no-hint includes Mahe Latin house names and AC 1; 5 silent = 3 comma read as period (Mahe, 115 dpi), 1 odd DB spelling ജൃോതി, 1 invisible space",
+  "charset_sha256_16": {
+   "lang_mal_r2a_quarter_q0": "229c5f25b1a32584",
+   "lang_mal_r2a_half_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_3q_q0": "229c5f25b1a32584",
+   "lang_mal_r2b_base_q0": "229c5f25b1a32584"
+  }
  }
 }
