@@ -1002,7 +1002,7 @@
   ]
  },
  "j2X4fe": {
-  "about": "j2X4ft + no-hint early exit (job1 speed 2026-11-25): stage 1 = CRNNs 0, 1, 3 (c11g9s, job2_r1_s9mx0, job2_r4_ibx0) + Tesseract; a box whose stage-1 decision has no flag is settled there (decided with the same engines); job2_r2_s4mx0 reads only the other boxes, each crop padded to the width of its batch in an all-boxes run, so those boxes get the j2X4ft readings and decision. Same models, aux files and other switches as j2X4ft. Code: family branch job1-speed (switches ECI_NOHINT_EARLY, ECI_NOHINT_EARLY_IDX, default off; every other set byte-identical except the timing field t_box_s).",
+  "about": "REJECTED 2026-11-25 15:35 (eye check: 3/40 wrong house numbers with \"?\"); kept only so the name stays known; do not use. j2X4ft + no-hint early exit (job1 speed 2026-11-25): stage 1 = CRNNs 0, 1, 3 (c11g9s, job2_r1_s9mx0, job2_r4_ibx0) + Tesseract; a box whose stage-1 decision has no flag is settled there (decided with the same engines); job2_r2_s4mx0 reads only the other boxes, each crop padded to the width of its batch in an all-boxes run, so those boxes get the j2X4ft readings and decision. Same models, aux files and other switches as j2X4ft. Code: family branch job1-speed (switches ECI_NOHINT_EARLY, ECI_NOHINT_EARLY_IDX, default off; every other set byte-identical except the timing field t_box_s).",
   "models": [
    "c11g9s",
    "job2_r1_s9mx0",
@@ -1147,5 +1147,158 @@
    "job2_r2_indbx0",
    "job2_lex4.npz"
   ]
+ },
+ "j2X4fc": {
+  "about": "j2X4ft + no-hint early exit with check crops (job1 speed 2026-11-25): stage 1 = CRNNs 0 and 3 (c11g9s, job2_r4_ibx0 = the independent model) + Tesseract; the other two CRNNs (job2_r1_s9mx0, job2_r2_s4mx0) read only the name, relative and house lines of every box (ECI_NOHINT_EARLY_CHECK); a box is settled only when stage 1 has no flag AND those reads agree; else all engines read it, each crop padded to its all-boxes batch width, so it gets the j2X4ft decision. Same models, aux and other switches as j2X4ft. Code: family branch job1-speed 8445d34 ; every other set byte-identical except the timing field t_box_s.",
+  "models": [
+   "c11g9s",
+   "job2_r1_s9mx0",
+   "job2_r2_s4mx0",
+   "job2_r4_ibx0"
+  ],
+  "sha256_16": {
+   "job2_r1_s9mx0": "fc0c19c4654453a2",
+   "job2_r2_s4mx0": "0a385332a0bbed7d",
+   "job2_r4_ibx0": "70d73c4a5bbf6417",
+   "job2_boost_softx0": "37dc0ad65d3b4a1b",
+   "job2_boost_hmsx0": "ff5deec19589baad",
+   "job2_boost_softgrux0": "066ff8868cc06b1e",
+   "job2_r4_iax0": "72f7b176b698ea00",
+   "job2_r2_indbx0": "904a9f03f4a73122",
+   "c11g9s": "0c4cf0ab04cb6b98",
+   "job2_lex4.npz": "76d0ee597eb2a937"
+  },
+  "charset_sha256_16": {
+   "job2_r1_s9mx0": "f022b1ee76aacbfb",
+   "job2_r2_s4mx0": "28b7fa05b3bd0679",
+   "job2_r4_ibx0": "f022b1ee76aacbfb",
+   "job2_boost_softx0": "f022b1ee76aacbfb",
+   "job2_boost_hmsx0": "f022b1ee76aacbfb",
+   "job2_boost_softgrux0": "f022b1ee76aacbfb",
+   "job2_r4_iax0": "f022b1ee76aacbfb",
+   "job2_r2_indbx0": "f022b1ee76aacbfb",
+   "c11g9s": "f022b1ee76aacbfb"
+  },
+  "hints": "none",
+  "stage1": 1,
+  "env": {
+   "ECI_AGE_HINT_MAJ": "1",
+   "ECI_CODE_CRNN": "1",
+   "ECI_CODE_VALID": "1",
+   "ECI_CONFW_SKIP": "house_no",
+   "ECI_CRNN_BATCH": "64",
+   "ECI_DIGIT_CRNN": "",
+   "ECI_EARLY_DUMP": "0",
+   "ECI_EPICFIX2_GUARD": "1",
+   "ECI_EPICFIX2_MIN": "70",
+   "ECI_EPIC_CONFIRM": "1",
+   "ECI_EPIC_FMT": "1",
+   "ECI_EPIC_OLDFMT": "1",
+   "ECI_EPIC_PAIR": "1",
+   "ECI_EPIC_PREFIX": "1",
+   "ECI_EPIC_TESS_NOHINT": "1",
+   "ECI_HEAD_CRNN": "0",
+   "ECI_HINTS_LAZY": "0",
+   "ECI_NOHINT_AMP": "1",
+   "ECI_NOHINT_CLOSED": "1",
+   "ECI_NOHINT_DIGITS": "1",
+   "ECI_NOHINT_EARLY": "2",
+   "ECI_NOHINT_EARLY_CHECK": "line0,line1,line2",
+   "ECI_NOHINT_EARLY_CONF": "0",
+   "ECI_NOHINT_EARLY_IDX": "0,3",
+   "ECI_NOHINT_EARLY_TESSQ": "",
+   "ECI_NOHINT_HOUSE_PUNCT": "1",
+   "ECI_NOHINT_LEX": "<models>/job2_lex4.npz",
+   "ECI_NOHINT_LEXG": "2",
+   "ECI_NOHINT_NUNF": "1000",
+   "ECI_NOHINT_PROXY": "",
+   "ECI_NOHINT_TESSCLEAN": "7",
+   "ECI_NOHINT_TESS_SKIP": "1",
+   "ECI_NOHINT_VALKEEP": "crnn_job2_r4_ibx0",
+   "ECI_NOHINT_VALSET": "<models>/job2_boost_softx0,<models>/job2_boost_hmsx0,<models>/job2_boost_softgrux0,<models>/job2_r4_iax0,<models>/job2_r2_indbx0",
+   "ECI_NOTRIM_PAD": "32",
+   "ECI_PARTNO_LIST": "1",
+   "ECI_RESCALE_H": "1679",
+   "ECI_S1_SCREEN": "0",
+   "ECI_STAMP_SET": "",
+   "ECI_STAMP_TEMPLATE": "1",
+   "ECI_TESS_LAZY": "0",
+   "ECI_TOFU": "1"
+  },
+  "gold": {
+   "source": "paired Modal run u1 (speed/q/u1.txt: j2X4ft = uX, this set = uXi03cn; one container per PDF; ISA 73 avx2 / 19 vnni), eval_report + score_val + gate_check (PASS vs uX)",
+   "ge": [
+    98.1,
+    99.67,
+    13.9
+   ],
+   "ge_fields_name_rel_house": [
+    99.27,
+    99.36,
+    99.37
+   ],
+   "hc": [
+    98.01,
+    100.0,
+    10.26
+   ],
+   "g26": [
+    98.59,
+    99.87,
+    7.8,
+    "silent 5"
+   ],
+   "val": [
+    99.86,
+    99.991,
+    3.97,
+    "silent 1"
+   ],
+   "ge_cpu_s": 3882,
+   "ref_same_run_j2X4ft": {
+    "ge": [
+     98.1,
+     99.67,
+     13.9
+    ],
+    "hc": [
+     98.01,
+     100.0,
+     10.26
+    ],
+    "g26": [
+     98.59,
+     99.87,
+     7.8,
+     "silent 5"
+    ],
+    "val": [
+     99.86,
+     99.991,
+     3.98,
+     "silent 1"
+    ],
+    "ge_cpu_s": 4062
+   },
+   "changes_vs_ref": "GE / HC / G26: 0 records changed (values and flags); val: 1 name flag lost (record right by the val truth)"
+  },
+  "aux": [
+   "job2_boost_softx0",
+   "job2_boost_hmsx0",
+   "job2_boost_softgrux0",
+   "job2_r4_iax0",
+   "job2_r2_indbx0",
+   "job2_lex4.npz"
+  ],
+  "s07": {
+   "source": "same run, part 10 of all 90 S07 ACs (81,190 records)",
+   "flag_pct": 7.37,
+   "flag_pct_ref": 7.37,
+   "cpu_s_per_record": 0.1818,
+   "cpu_s_per_record_ref": 0.2057,
+   "records_newly_unflagged": 4,
+   "eye_check": "all 4 viewed on the page image: 4 right (एच.नं.-582, 6153ऐ, दसोंधी, 2इ/21)",
+   "values_changed_unflagged_both": 0
+  }
  }
 }
