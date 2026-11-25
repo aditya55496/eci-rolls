@@ -30,11 +30,12 @@ import cv2
 import numpy as np
 
 from layout import find_boxes, crop                 # noqa: E402
-from segment import segment, segment_eng, _mask, cells   # noqa: E402
+from segment import segment, segment_eng, segment_ori, _mask, cells   # noqa: E402
 import segment as _segmod                           # noqa: E402
 from parse import from_lines                        # noqa: E402
 import parse_eng                                    # noqa: E402
 import parse_tam                                    # noqa: E402
+import parse_ori                                    # noqa: E402
 _argv, sys.argv = sys.argv, sys.argv[:1]            # ensemble2 reads sys.argv at import time
 import ensemble2                                    # noqa: E402
 sys.argv = _argv
@@ -369,6 +370,12 @@ def parse_heading(lines, lang='HIN'):
     from rapidfuzz import process, fuzz
     for t in reversed(lines):
         t = re.sub(r'\s+', ' ', t).strip()
+        if lang == 'ORI':   # 'ଭାଗ ନଂ ଓ ନାମ : 1-<name>' (Tesseract ori); keep the number + name after the colon
+            if ':' in t:
+                v = t.split(':', 1)[1].strip(' :.-').translate(parse_ori.ODIA_DIGITS)
+                m = re.match(r'([0-9]+)\s*-?\s*(.*)', v)
+                if m: return f'{m.group(1)}-{m.group(2).strip()}'
+            continue
         if lang == 'TAM':   # 'பிரிவு எண் மற்றும் பெயர் : 1-<name>' (Tesseract tam)
             if ':' in t and re.search(r'பிரிவு|எண்', t):
                 v = t.split(':', 1)[1].strip(' :.-')
@@ -402,9 +409,9 @@ ENG_AGREE = int(os.environ.get('ECI_ENG_AGREE', '0') or 0)   # see ensemble2.agr
 ENG_S1_TESS = set(filter(None, os.environ.get('ECI_ENG_S1_TESS', 'num,epic,code,line').split(',')))
 # lang-tam (2026-11-25): Tamil SIR rolls (S22, U07) use the English SIR box template: segment_eng, the ENG code-cell test, Tesseract
 # 'tam' for the text lines, parse_tam (Tamil labels / genders); everything else as ENG.
-LATIN_TPL = ('ENG', 'TAM')
-TESS_LANG = {'ENG': 'eng', 'TAM': 'tam'}
-PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam)}
+LATIN_TPL = ('ENG', 'TAM', 'ORI')   # lang-ori: the Odia SIR box is the English template too (lines cut by segment_ori)
+TESS_LANG = {'ENG': 'eng', 'TAM': 'tam', 'ORI': 'ori'}
+PARSERS = {'ENG': (parse_eng, parse_eng.from_lines_eng), 'TAM': (parse_tam, parse_tam.from_lines_tam), 'ORI': (parse_ori, parse_ori.from_lines_ori)}
 _HINTS = None   # loaded once in the parent before the fork: the workers share it (a whole AC is ~1.5 GB as dicts)
 
 
@@ -475,7 +482,9 @@ def process_page(task):
     segs_list, stamps = [], []
     _segmod.DASH_IDS.clear()
     for g in box_grays:  # segment.LAST_STAMP: DELETED stamp found (only checked for rolls before 2026, see segment.STAMP_CHECK)
-        if lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
+        if lang == 'ORI':   # lang-ori: Odia lines from connected components (marks above / below the line core)
+            segs_list.append({k: im for k, im in segment_ori(g).items() if im.size}); stamps.append(False)
+        elif lang in LATIN_TPL:   # ENG, TAM: the English SIR box template
             segs_list.append({k: im for k, im in segment_eng(g, dash=lang == 'TAM').items() if im.size}); stamps.append(False)
         else:
             segs_list.append({k: im for k, im in segment(g).items() if im.size}); stamps.append(bool(_segmod.LAST_STAMP))
@@ -648,9 +657,9 @@ def pdf_meta(path):
 
 
 def pdf_lang(path, opt='auto'):
-    if opt and opt.upper() in ('HIN', 'ENG', 'TAM'): return opt.upper()
+    if opt and opt.upper() in ('HIN', 'ENG', 'TAM', 'ORI'): return opt.upper()
     b = os.path.basename(path).upper()
-    return 'ENG' if '-ENG-' in b else 'TAM' if '-TAM-' in b else 'HIN'
+    return 'ENG' if '-ENG-' in b else 'TAM' if '-TAM-' in b else 'ORI' if '-ORI-' in b else 'HIN'
 
 
 def parse_pages(spec, n):
@@ -684,7 +693,7 @@ def main():
     ap.add_argument('--stage1', type=int, default=0, help='cascade: the first K --crnn models (+ Tesseract Latin fields) read every box; '
                     'the other engines run only where stage 1 is flagged or has no 2027 record (needs --hint-2027). 0 = off')
     ap.add_argument('--confvote', type=float, default=0.6, help='confidence-weighted choice for flagged fields (Tesseract weight); <0 = off')
-    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, TAM for *-TAM-* file names, else HIN), HIN, ENG or TAM')
+    ap.add_argument('--lang', default='auto', help='auto (default: ENG for *-ENG-*, TAM for *-TAM-*, ORI for *-ORI-* file names, else HIN), HIN, ENG, TAM or ORI')
     ap.add_argument('--tess2', action='store_true', help='second Tesseract reading (x2, Otsu) as one more voter (default on with --crnn none)')
     a = ap.parse_args()
     crnn = a.crnn or [os.environ.get('ECI_CRNN', '/data/models/crnn/c1')]
