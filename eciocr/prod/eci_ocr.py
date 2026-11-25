@@ -159,6 +159,9 @@ class Engines:
             # job3 round 3: horizontal stretch of the input (arch.json 'xs', trainer j3r3.py; default 1.0 = every older model)
             try: self.xs[self.crnn[-1][0]] = float(json.load(open(os.path.join(d, 'arch.json'))).get('xs', 1.0))
             except (OSError, ValueError): pass
+        # job1 speed (2026-11-25, from job1 0339a3b): a model dir with a file 'notrim' is decoded over all output frames (students that
+        # emit the last character at the end of the padded sequence lost it to the frame trim). No such file = unchanged.
+        self.notrim = {c[0] for c, d in zip(self.crnn, crnn_dirs) if os.path.exists(os.path.join(d, 'notrim'))}
         self.tessdata = tessdata
         self.crnn_sort = crnn_sort
         # job2 (2026-11-25): ECI_DIGIT_CRNN=DIR = a CRNN trained only on line2 (house number) and line3 (age, gender) lines; its
@@ -193,7 +196,7 @@ class Engines:
 
     # engines.py _crnn_read: pad 5 white, resize to height 48 (cubic, width <= 800), invert, /255, greedy CTC (blank 0)
     @staticmethod
-    def _crnn_batch(sess, inp, CH, ims, xst=1.0):
+    def _crnn_batch(sess, inp, CH, ims, xst=1.0, trim=True):
         H = sess.get_inputs()[0].shape[2]   # job2: the model's input height (48 for every production model; 32 px students)
         H = H if isinstance(H, int) and H > 0 else 48; xs = []
         for im in ims:
@@ -207,7 +210,8 @@ class Engines:
         Y = np.exp(Y - Y.max(-1, keepdims=True)); Y /= Y.sum(-1, keepdims=True)
         out = []
         for P, x in zip(Y, xs):
-            P = P[: x.shape[1] // 4 + 1]; seq = P.argmax(-1); conf = 1.0
+            if trim: P = P[: x.shape[1] // 4 + 1]
+            seq = P.argmax(-1); conf = 1.0
             s, prev = [], 0
             for t, k in enumerate(seq):
                 if k != prev and k != 0: s.append(CH[k - 1]); conf = min(conf, float(P[t, k]))
@@ -219,13 +223,14 @@ class Engines:
         _, sess, inp, CH = eng
         xs = self.xs.get(eng[0], 1.0)
         if not ims: return []
+        tr = eng[0] not in getattr(self, 'notrim', ())
         if not self.crnn_sort or len(ims) == 1:
-            return self._crnn_batch(sess, inp, CH, ims, xs)
+            return self._crnn_batch(sess, inp, CH, ims, xs, tr)
         order = sorted(range(len(ims)), key=lambda i: ims[i].shape[1] * 48 / max(1, ims[i].shape[0]))  # engines.py SORTW=1
         out = [None] * len(ims)
-        for j in range(0, len(order), 64):
-            idx = order[j:j + 64]
-            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs)): out[i] = r
+        for j in range(0, len(order), CRNN_BATCH):
+            idx = order[j:j + CRNN_BATCH]
+            for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr)): out[i] = r
         return out
 
     @staticmethod
@@ -491,6 +496,15 @@ _E = None
 _OPT = {}
 
 
+# job1 speed (2026-11-25): ECI_CRNN_BATCH = crops per CRNN batch after the width sort (default 64 = unchanged). Smaller batches pad
+# less (a crop of a batch is padded to the widest one) and use the CPU caches better; readings change only by the padding.
+CRNN_BATCH = max(1, int(os.environ.get('ECI_CRNN_BATCH') or 64))
+# job1 speed (2026-11-25): ECI_TESS_LAZY=1 (Hindi cascade with 2027 hints; default off): stage 1 reads the Tesseract EPIC only for
+# boxes whose stage-1 CRNN EPIC is not an EPIC of the 2027 roll, and the Tesseract code only where the pixel test finds a code;
+# stage-2 boxes get the EPIC read they skipped. Output identical: with a 2027 match by a CRNN EPIC, decide() takes the 2027 EPIC
+# whatever Tesseract reads (EPIC_CONFIRM; the CRNN EPIC comes first among equal counts), and the code text is used only when the
+# pixel test fires. A skipped crop reads '' (the key stays, so parse.from_lines takes the same serial path).
+TESS_LAZY = os.environ.get('ECI_TESS_LAZY', '0') == '1'
 RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
 # 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
 # the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
@@ -749,6 +763,16 @@ def process_page(task):
         # text lines (95 % of the Tesseract time) for the stage-2 boxes only.
         s1t = ENG_S1_TESS if lang in LATIN_TPL else {'num', 'epic', 'code'}
         seq_ok = set()
+        lazy_skip, lazy_todo, lazy_done = {}, {}, {}   # ECI_TESS_LAZY: box -> crop keys skipped / to read now / already read
+
+        def lazy_read(reads, idx):
+            idx = [i for i in idx if [k for k in lazy_todo[i] if k not in lazy_done.get(i, ())]]
+            if not idx: return
+            sub = [{k: segs_list[i][k] for k in lazy_todo[i] if k not in lazy_done.get(i, ())} for i in idx]
+            for i, r2, sb in zip(idx, _E.read_boxes(sub, _OPT['tmp'], tm, crnn_idx=set(), tess_groups={'epic', 'code'}, lang=lang), sub):
+                for tn in _E.tnames: reads[i][tn][0].update(r2[tn][0])
+                lazy_done[i] = lazy_done.get(i, set()) | set(sb)
+            tm['tess_lazy_reads'] = tm.get('tess_lazy_reads', 0) + sum(len(x) for x in sub)
         if lang == 'ENG' and ENG_SEQ and 'num' in s1t and _E.crnn:
             reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t - {'num'}, lang=lang)
             c0 = _E.names[0]
@@ -769,6 +793,19 @@ def process_page(task):
                 for i, r2 in zip(rest, more):
                     for tn in _E.tnames: reads[i][tn][0].update(r2[tn][0])
             tm['seq_serial'] = len(seq_ok)
+        elif TESS_LAZY and lang not in LATIN_TPL and _OPT['hints'] and s1t == {'num', 'epic', 'code'}:
+            reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups={'num'}, lang=lang)
+            for i, r in enumerate(reads):
+                ce = {from_lines(r[n][0])['epic'] for n in _E.names[:K]}
+                ks = [k for k in ('epic', 'code') if k in segs_list[i] and not (k == 'epic' and ce & _OPT['hints'].keys())
+                      and not (k == 'code' and not pix[i])]
+                if ks: lazy_todo[i] = ks
+                for k in ('epic', 'code'):
+                    if k in segs_list[i]:
+                        for tn in _E.tnames: r[tn][0][k] = ''
+                        lazy_skip[i] = lazy_skip.get(i, set()) | {k}
+            lazy_read(reads, list(lazy_todo))
+            lazy_todo.clear()
         else:
             reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), tess_groups=s1t, lang=lang)
         names1 = _E.names[:K] + _E.tnames
@@ -776,6 +813,11 @@ def process_page(task):
         for i, r in enumerate(reads):
             _, fl, _, hinted, _ = decide_box(r, names1, pix[i], _OPT['hints'], stamps[i], lang)
             if fl or (not hinted and not CASCADE_NOHINT): need.append(i)
+        if lazy_skip:   # ECI_TESS_LAZY: stage-2 boxes get the Tesseract EPIC (and code, where the pixel test fires) they skipped
+            for i in need:
+                ks = [k for k in lazy_skip.get(i, ()) if not (k == 'code' and not pix[i])]
+                if ks: lazy_todo[i] = ks
+            lazy_read(reads, list(lazy_todo))
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(K, len(_E.crnn))),
                                  tess_groups=({'num', 'epic', 'code', 'line'} - s1t) if lang in LATIN_TPL else {'line'}, lang=lang)
@@ -1248,6 +1290,9 @@ def main():
             cpu = sum(p['timing'].get('total', 0) for p in pages)
             info['worker_s_per_voter_page'] = round(sum(p['timing']['total'] for p in vp) / max(1, len(vp)), 2)
             info['worker_s_total'] = round(cpu, 1)
+            # job1 speed (summary only): cascade stage-2 boxes and lazy Tesseract reads (ECI_TESS_LAZY) per PDF
+            info['stage2_boxes'] = sum(p['timing'].get('stage2_boxes', 0) for p in pages)
+            info['tess_lazy_reads'] = sum(p['timing'].get('tess_lazy_reads', 0) for p in pages)
             info['stage_s'] = {k: round(sum(p['timing'].get(k, 0) for p in pages), 1) for k in ('extract', 'layout', 'segment', 'heading', 'crnn', 'tess', 'decide')}
             ff = collections.Counter(f for r in recs for f in r['flags'])
             info['flagged_records'] = sum(bool(r['flags']) for r in recs)
