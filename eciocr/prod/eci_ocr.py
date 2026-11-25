@@ -409,6 +409,10 @@ DUMP = os.environ.get('ECI_DUMP', '0') == '1'
 # job4: English rolls without 2027 hints -> ensemble2.decide_eng_nohint + 2-CRNN stage 1 (needs --stage1 2) + per-PDF EPIC rule
 ENG_NOHINT = os.environ.get('ECI_ENG_NOHINT', '0') == '1'
 ENG_LEX = os.environ.get('ECI_ENG_LEX', '0') == '1'   # job4 r2: name lexicon guard (eng_lex_guard)
+# job4 r3: a box with more than 4 text bands (stamp ink below the age line: West Bengal 'UNDER ADJUDICATION' / 'DELETED' stamps,
+# also long wrapped names) is never settled by the 2-CRNN stage 1 (HS check: 8 of 9 silent stage-1 errors of a stamp-trained pair
+# were in such boxes)
+ENG_STAMPBOX = os.environ.get('ECI_ENG_STAMPBOX', '0') == '1'
 ENG_UNAN = int(os.environ.get('ECI_ENG_UNAN', '0') or 0)   # job4 r3: accept CRNN-unanimous fields without Tesseract support (eng_unan)
 _ENG_LEX = None
 
@@ -481,7 +485,8 @@ def process_page(task):
         # boxes where the 2 CRNNs do not agree on every field
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
         names1 = _E.names[:2] + _E.tnames
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]]
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]
+                or (ENG_STAMPBOX and sum(k.startswith('line') for k in segs_list[i]) > 4)]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
                                  tess_groups={'line', 'num', 'epic'}, lang=lang)
