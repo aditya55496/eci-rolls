@@ -4,7 +4,8 @@ Postgres, read-only, through psql); writes the items as JSON for seeding, like p
   plan_hi_ocr.py OUT.json [--dry-run] [--states S12,S07] [--acs 1,2] [--parts 1,10]
                  [--hint-set v4a] [--nohint-set j2Ps] [--state-set S07=j2Psf,S25=j2Ps] [--hints-project eci-rolls-ssr-text]
                  [--assume-hints] [--include-fetching] [--include-partial] [--resets OUT.sql]
-  plan_hi_ocr.py OUT.json --parquet [--states ...] [--resets OUT.sql]   parquet-any items for ACs whose ocr-any items are all done
+  plan_hi_ocr.py OUT.json --parquet [--states ...] [--resets OUT.sql]   parquet-any items for ACs whose ocr-any items are all done;
+                 --resets also writes SQL for parquet items older than an OCR item of their AC (seed_queue keeps done keys)
 
 OCR items (project eci-rolls-hi-ocr): one per part of one AC of one state, both SIR rolls when both exist. Parts = the PDFs
 stored in the bucket (one hub record "<roll id>/<ac>/<part>" per PDF in eci-rolls-hi-cdn / eci-rolls-hi-form, with its key);
@@ -211,9 +212,9 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
     return items, summ
 
 
-def resets_sql(project, items):
-    """SQL for items already in the queue of `project` whose planned rolls are more than the queued payload's: new payload,
-    status pending, attempts 0. Returns (sql text, {status: count})."""
+def resets_sql(project, items, also=()):
+    """SQL for items already in the queue of `project` whose planned rolls are more than the queued payload's (or whose key is
+    in `also`: out-of-date parquet items): new payload, status pending, attempts 0. Returns (sql text, {status: count})."""
     rows = psql_json(f"SELECT key, status, payload FROM queue WHERE project = {lit(project)}")
     q = {r["key"]: r for r in rows}
     out, n = [], collections.Counter()
@@ -223,7 +224,7 @@ def resets_sql(project, items):
             continue
         old = set((r["payload"] or {}).get("keys") or (r["payload"] or {}).get("rolls") or [])
         new = set(it["payload"].get("keys") or it["payload"].get("rolls") or [])
-        if new > old:
+        if new > old or it["key"] in also:
             n[r["status"]] += 1
             out.append(f"UPDATE queue SET payload = {lit(json.dumps(it['payload'], ensure_ascii=False))}::jsonb, status = 'pending', "
                        f"attempts = 0, claimed_by = NULL, last_error = '' WHERE project = {lit(project)} AND key = {lit(it['key'])} "
@@ -232,24 +233,33 @@ def resets_sql(project, items):
 
 
 def plan_parquet(states):
-    """parquet-any items: one per AC whose ocr-any items are all done (queue of eci-rolls-hi-ocr)."""
-    rows = psql_json(f"SELECT key, status, payload->'keys' AS keys FROM queue WHERE project = {lit(H.OCR_HI_PROJECT)}")
+    """parquet-any items: one per AC whose ocr-any items are all done (queue of eci-rolls-hi-ocr). Also the parquet items that
+    are out of date: an OCR item of the AC finished after the AC's parquet item (OCR again with a new set, a key reset, or a
+    repair-any rewrite is NOT seen here: reset those by hand). Returns (items, summary, stale keys)."""
+    rows = psql_json(f"SELECT key, status, payload->'keys' AS keys, extract(epoch FROM done_at) AS done_at FROM queue "
+                     f"WHERE project = {lit(H.OCR_HI_PROJECT)}")
+    pq_done = {r["key"]: r["done_at"] for r in psql_json(
+        f"SELECT key, extract(epoch FROM done_at) AS done_at FROM queue WHERE project = {lit(H.PARQUET_HI_PROJECT)} AND status = 'done'")}
     by = collections.defaultdict(list)
     for r in rows:
         st, ac, part = r["key"].split("/")
         if states and st not in states:
             continue
-        by[(st, int(ac))].append((int(part), r["status"], sorted((r["keys"] or {}).keys())))
-    items, summ = [], collections.Counter()
+        by[(st, int(ac))].append((int(part), r["status"], sorted((r["keys"] or {}).keys()), r["done_at"]))
+    items, summ, stale = [], collections.Counter(), []
     for (st, ac), parts in sorted(by.items()):
-        if all(s == "done" for _, s, _ in parts):
-            rolls = sorted({x for _, _, ks in parts for x in ks}, key=lambda r: (0 if H.is_draft(r) else 1, r))
-            items.append({"key": f"{st}/{ac}", "partition_id": RANK[st] * 1000 + ac,
-                          "payload": {"state": st, "ac": ac, "parts": sorted(p for p, _, _ in parts), "rolls": rolls}})
+        if all(s == "done" for _, s, _, _ in parts):
+            rolls = sorted({x for _, _, ks, _ in parts for x in ks}, key=lambda r: (0 if H.is_draft(r) else 1, r))
+            key = f"{st}/{ac}"
+            items.append({"key": key, "partition_id": RANK[st] * 1000 + ac,
+                          "payload": {"state": st, "ac": ac, "parts": sorted(p for p, _, _, _ in parts), "rolls": rolls}})
             summ[st + " ready"] += 1
+            if key in pq_done and max(d or 0 for _, _, _, d in parts) > (pq_done[key] or 0):
+                stale.append(key)
+                summ[st + " parquet out of date"] += 1
         else:
             summ[st + " not ready"] += 1
-    return items, dict(summ)
+    return items, dict(summ), stale
 
 
 def main():
@@ -257,7 +267,7 @@ def main():
     dry = "--dry-run" in sys.argv
     states = set(arg("--states").split(",")) if arg("--states") else None
     if "--parquet" in sys.argv:
-        items, summ = plan_parquet(states)
+        items, summ, stale = plan_parquet(states)
         print(json.dumps(summ, indent=1))
         project = H.PARQUET_HI_PROJECT
     else:
@@ -275,7 +285,7 @@ def main():
         print(f"total items {len(items)}, PDFs {sum(len(i['payload']['keys']) for i in items)}")
         project = H.OCR_HI_PROJECT
     if arg("--resets"):
-        sql, n = resets_sql(project, items)
+        sql, n = resets_sql(project, items, stale if "--parquet" in sys.argv else ())
         print(f"resets for items already queued in {project}: {n or 'none'}")
         if sql and not dry:
             open(arg("--resets"), "w").write(sql)

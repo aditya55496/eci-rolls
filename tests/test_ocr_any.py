@@ -241,3 +241,33 @@ def test_main_refuses_without_code_commit(monkeypatch):
         O.main()
     hub = _FakeHub.instances[0]
     assert e.value.code == 2 and hub.completed == [] and hub.closed[0] == "failed" and len(hub.items) == 1
+
+
+def test_planner_holds_partial_lang_rank(monkeypatch):
+    """plan_hi_ocr with the hub database replaced: held states, partial parts, AC lang, fixed partition ids, resets."""
+    import plan_hi_ocr as P
+    rows = {
+        "U02-2026-DR": [{"project": "eci-rolls-hi-cdn", "record_id": "U02-2026-DR/1", "ac": 1, "part": None, "key": None,
+                         "part_numbers": [1, 2, 3], "extra_parts": [], "missing": [], "lang": "HIN"}]
+        + [{"project": "eci-rolls-hi-cdn", "record_id": f"U02-2026-DR/1/{x}", "ac": 1, "part": x, "key": f"k/DR/{x}"} for x in (1, 2, 3)],
+        "U02-2026-FIR": [{"project": "eci-rolls-hi-cdn", "record_id": "U02-2026-FIR/1", "ac": 1, "part": None, "key": None,
+                          "part_numbers": [1, 2, 3], "extra_parts": [], "missing": [], "lang": "HIN"}]
+        + [{"project": "eci-rolls-hi-cdn", "record_id": f"U02-2026-FIR/1/{x}", "ac": 1, "part": x, "key": f"k/FIR/{x}"} for x in (1, 2)],
+        "S07-2026-DR": [{"project": "eci-rolls-hi-cdn", "record_id": "S07-2026-DR/5", "ac": 5, "part": None, "key": None,
+                         "part_numbers": [1], "extra_parts": [], "missing": [], "lang": "ENG"},
+                        {"project": "eci-rolls-hi-cdn", "record_id": "S07-2026-DR/5/1", "ac": 5, "part": 1, "key": "k/S07/1"}],
+    }
+    monkeypatch.setattr(P, "roll_rows", lambda roll: rows.get(roll, []))
+    monkeypatch.setattr(P, "fetch_status", lambda roll: {})
+    items, summ = P.plan_ocr({"U02", "S07"}, None, None, "v4a", "j2Ps", "x", True)
+    assert [i["key"] for i in items] == ["U02/1/1", "U02/1/2"]                # part 3 has no final PDF yet: held
+    assert summ["U02"]["items_partial_held"] == 1 and items[0]["partition_id"] == 3 * 1_000_000 + 1000 + 1
+    assert summ["S07"]["held_state"] and not any(i["key"].startswith("S07") for i in items)
+    items, summ = P.plan_ocr({"U02", "S07"}, None, None, "v4a", "j2Ps", "x", True, state_set={"S07": "j2Psf"}, include_partial=True)
+    assert [i["key"] for i in items] == ["U02/1/1", "U02/1/2", "U02/1/3"]    # S07 AC 5 is ENG: not planned
+    assert summ["S07"]["items_other_lang"] == 1 and summ["S07"]["model_set"] == "j2Psf"
+    monkeypatch.setattr(P, "psql_json", lambda sql: [{"key": "U02/1/3", "status": "done", "payload": {"keys": {"U02-2026-DR": "k/DR/3"}}}])
+    rows["U02-2026-FIR"].append({"project": "eci-rolls-hi-cdn", "record_id": "U02-2026-FIR/1/3", "ac": 1, "part": 3, "key": "k/FIR/3"})
+    items, _ = P.plan_ocr({"U02"}, None, None, "v4a", "j2Ps", "x", True)
+    sql, n = P.resets_sql("eci-rolls-hi-ocr", items)
+    assert n == {"done": 1} and "U02-2026-FIR" in sql and "key = 'U02/1/3'" in sql
