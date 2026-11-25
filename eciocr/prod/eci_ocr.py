@@ -411,8 +411,8 @@ def load_hints(path):
 
 
 GUJ_AGREE = os.environ.get('ECI_GUJ_AGREE', '1') != '0'
-GUJ_STRICT = ('name', 'relation_name', 'house_no')          # all CRNNs AND a Tesseract read must agree
-GUJ_CRNN_ONLY = ('relation_label', 'age', 'gender')        # all CRNNs agree (and the value is valid)
+GUJ_STRICT = ('name', 'relation_name', 'house_no', 'relation_label')   # all CRNNs AND a Tesseract read must agree (label: round 3, gold r5: 11 silent label errors, parts printing 'પિતાનુ' without anusvara; with Tesseract 2 left)
+GUJ_CRNN_ONLY = ('age', 'gender')        # all CRNNs agree (and the value is valid)
 # house numbers with digits: the print mixes Latin and Gujarati digits (~10 % Gujarati); Tesseract guj and the r3 CRNNs read
 # Gujarati digits as Latin (gold r3: 8 of 142 unflagged house fields wrong, all of this kind) -> keep them flagged unless 0
 GUJ_HOUSE_DIGIT_FLAG = os.environ.get('ECI_GUJ_HOUSE_DIGIT_FLAG', '1') != '0'
@@ -427,6 +427,7 @@ GUJ_MERGE_SAFE = {('ય', 'ચ'), ('ઔ', 'ઓ'), ('ધ્', 'દ')}
 # reph, ફ as ક ... (errors all CRNNs share). Gold r5: name + relation errors 137 -> 82, 0 broken. The field stays flagged unless a
 # Tesseract read equals the corrected value.
 GUJ_LEX = os.environ.get('ECI_GUJ_LEX', '1') != '0'
+ALL_READINGS = os.environ.get('ECI_ALL_READINGS', '0') == '1'
 
 
 def guj_merge(v, t):
@@ -484,7 +485,7 @@ def decide_box(per_engine, names, pix, hints, stamp=None, lang='HIN'):
     if lang == 'GUJ' and GUJ_AGREE:
         out, flags = guj_agree(out, flags, cands, names)
     readings = {}
-    for f in flags:
+    for f in (flags if not ALL_READINGS else [x for x in out if x in SRC]):   # ECI_ALL_READINGS=1: every field (rule studies)
         readings[f] = {n: c[f] for n, c in zip(names, cands)}
         if hint and f in ensemble2.HINT_FIELDS + ['age'] and f in hint: readings[f]['hint_2027'] = hint[f]
         conf = {n: per_engine[n][1].get(SRC[f]) for n in names if n.startswith('crnn') and SRC[f] in per_engine[n][1]}
