@@ -182,6 +182,14 @@ class Engines:
             self.vcrnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s, s.get_inputs()[0].name,
                                json.load(open(os.path.join(d, 'charset.json')))))
         self.valkeep = [x for x in os.environ.get('ECI_NOHINT_VALKEEP', '').split(',') if x]
+        # job1 speed (ECI_NOHINT_PROXY=DIR,..., with ECI_NOHINT_EARLY): extra CRNNs that only CHECK the stage-1 agreement (small
+        # students of the CRNNs that stage 1 leaves out); they never vote on a box decided by all engines
+        self.pcrnn = []
+        for d in filter(None, os.environ.get('ECI_NOHINT_PROXY', '').split(',')):
+            so = ort.SessionOptions(); so.intra_op_num_threads = ort_threads; so.inter_op_num_threads = 1; so.enable_cpu_mem_arena = False
+            s_ = ort.InferenceSession(os.path.join(d, 'crnn.onnx'), so, providers=['CPUExecutionProvider'])
+            self.pcrnn.append(('crnn_' + os.path.basename(os.path.normpath(d)), s_, s_.get_inputs()[0].name,
+                               json.load(open(os.path.join(d, 'charset.json')))))
         try:
             self.tapi = TessAPI(tessdata) if not os.environ.get('ECI_TESS_CLI') else None
         except OSError:
@@ -234,6 +242,16 @@ class Engines:
             idx = order[j:j + CRNN_BATCH]
             for i, r in zip(idx, self._crnn_batch(sess, inp, CH, [ims[i] for i in idx], xs, tr)): out[i] = r
         return out
+
+    def read_proxy(self, segs_list, reads, timing):
+        """ECI_NOHINT_PROXY: every proxy CRNN reads every crop of the boxes; reads[b][name] = (fields, confs)."""
+        t = time.time()
+        for eng in self.pcrnn:
+            for j in range(0, len(segs_list), 32):
+                keys = [(b, k) for b in range(j, min(j + 32, len(segs_list))) for k in sorted(segs_list[b])]
+                for (b, k), (txt, c) in zip(keys, self.crnn_read(eng, [segs_list[b][k] for b, k in keys])):
+                    f, cf = reads[b].setdefault(eng[0], ({}, {})); f[k] = txt; cf[k] = round(c, 4)
+        timing['crnn'] = round(timing.get('crnn', 0) + time.time() - t, 3)
 
     @staticmethod
     def tess_prep(im, scale=TESS_SCALE):  # engines.py prep(im, 3): Lanczos x3, pad 8*3 white
@@ -953,7 +971,8 @@ def process_page(task):
         # there; the other CRNNs read only the remaining boxes, which are decided with all engines as before.
         K = NOHINT_EARLY
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx=set(range(K)), lang=lang)
-        names1 = _E.names[:K] + _E.tnames
+        if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
+        names1 = _E.names[:K] + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
@@ -987,7 +1006,8 @@ def process_page(task):
 
         sk1 = [_skips(r, _E.names[:K]) for r in reads]
         nread = _tess_lines(range(len(reads)), [{k for k in segs_list[i] if k.startswith('line') and k not in sk1[i]} for i in range(len(reads))])
-        names1 = _E.names[:K] + _E.tnames
+        if _E.pcrnn: _E.read_proxy(segs_list, reads, tm)
+        names1 = _E.names[:K] + [e[0] for e in _E.pcrnn] + _E.tnames
         s1c = [_s1_conf(r, _E.names[:K]) for r in reads]
         need = [i for i, r in enumerate(reads) if s1c[i] < EARLY_CONF or decide_box(r, names1, pix[i], {}, stamps[i], lang)[1]]
         if need:
