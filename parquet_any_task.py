@@ -42,8 +42,14 @@ def table(rows, roll, ac):
 
 def do_item(hub, item, fetch=None, upload=None):
     p = item["payload"]
-    st, ac, parts = str(p["state"]), int(p["ac"]), [int(x) for x in p["parts"]]
-    base = H.ocr_base(st, ac, p.get("roll_group"))     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
+    H.payload_version(p)
+    # form-route items (formocr, payload v 2) name their parts 'form_parts', not 'parts': a worker of older code (no roll_group,
+    # no version check) fails on them with a KeyError instead of reading the SIR files ocr/<state>/<ac>/ and overwriting the
+    # SIR Parquet of the AC
+    group = p.get("roll_group")
+    st, ac = str(p["state"]), int(p["ac"])
+    parts = [int(x) for x in (p["form_parts"] if group is not None else p["parts"])]
+    base = H.ocr_base(st, ac, group)     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
     fetch = fetch or (lambda ks, dest: download(hub, H.OCR_HI_PROJECT, ks, dest))
     upload = upload or hub.upload_many
     by, missing = {r: [] for r in p.get("rolls") or []}, []
@@ -61,8 +67,8 @@ def do_item(hub, item, fetch=None, upload=None):
                         by.setdefault(r["roll"], []).append(r)
             os.remove(got[k])
     rec = {"state": st, "ac": ac, "parts": len(parts), "parts_without_ocr_file": missing, "rolls": {}}
-    if p.get("roll_group") is not None:
-        rec["roll_group"] = p["roll_group"]
+    if group is not None:
+        rec["roll_group"] = group
     for roll in sorted(by, key=lambda r: (0 if H.is_draft(r) else 1, r)):
         rows = by[roll]
         if not rows:

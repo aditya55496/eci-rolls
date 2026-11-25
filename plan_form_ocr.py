@@ -288,8 +288,8 @@ def plan_parquet(states=None):
         gtype, year = group_of(H.roll_order({x for _, _, ks in parts for x in ks})[0])[1:]
         if all(s == "done" for _, s, _ in parts):
             items.append({"key": f"{st}/{grp}/{ac}", "partition_id": 1_000_000 + (FORM_RANK[st] * 4 + slot(gtype, year)) * 1000 + ac,
-                          "payload": {"state": st, "ac": ac, "parts": sorted(p for p, _, _ in parts), "roll_group": grp,
-                                      "rolls": H.roll_order({x for _, _, ks in parts for x in ks})}})
+                          "payload": {"state": st, "ac": ac, "form_parts": sorted(p for p, _, _ in parts), "roll_group": grp,
+                                      "rolls": H.roll_order({x for _, _, ks in parts for x in ks}), "v": 2}})
             summ[f"{st}/{grp} ready"] += 1
         else:
             summ[f"{st}/{grp} not ready"] += 1

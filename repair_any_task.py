@@ -48,8 +48,12 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
     st, ac, fix = str(p["state"]), int(p["ac"]), p.get("fix")
     if fix not in FIXES:
         raise RuntimeError(f"unknown fix {fix!r}")
-    parts = [int(x) for x in p["p"]]
-    base = H.ocr_base(st, ac, p.get("roll_group"))     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
+    H.payload_version(p)
+    group = p.get("roll_group")
+    # form-route items (formocr, payload v 2): parts in 'form_p' (older code fails on them with a KeyError instead of repairing
+    # the SIR files of the same state / AC / part numbers)
+    parts = [int(x) for x in (p["form_p"] if group is not None else p["p"])]
+    base = H.ocr_base(st, ac, group)     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
     fetch = fetch or (lambda ks, dest: {k: v for proj in {x.split("/", 1)[0] for x in ks}
                                         for k, v in download(hub, proj, [x for x in ks if x.startswith(proj + "/")], dest).items()})
     upload_ocr = upload_ocr or ocr_hub.upload_many

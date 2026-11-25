@@ -198,8 +198,8 @@ def test_plan_parquet_form_and_sir_skip(monkeypatch):
     monkeypatch.setattr(P, "psql_json", lambda sql: q)
     items, summ = F.plan_parquet()
     assert [i["key"] for i in items] == ["S08/S08-2025-SSR/55"]
-    assert items[0]["payload"] == {"state": "S08", "ac": 55, "parts": [1, 2], "roll_group": "S08-2025-SSR",
-                                   "rolls": ["S08-2025-DR", "S08-2025-FIR"]}
+    assert items[0]["payload"] == {"state": "S08", "ac": 55, "form_parts": [1, 2], "roll_group": "S08-2025-SSR",
+                                   "rolls": ["S08-2025-DR", "S08-2025-FIR"], "v": 2}
     assert summ == {"S08/S08-2024-GEN-FIR not ready": 1, "S08/S08-2025-SSR ready": 1}
     # the SIR planner's --parquet must skip the 4-segment form keys (before: ValueError on split)
     q2 = q + [{"key": "U02/1/1", "status": "done", "keys": {"U02-2026-DR": "x"}, "done_at": 1}]
@@ -225,8 +225,11 @@ def test_parquet_any_form_item(monkeypatch, tmp_path):
                 f.write("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs))
             out[k] = p
         return out
-    item = {"key": "S08/S08-2025-SSR/55", "payload": {"state": "S08", "ac": 55, "parts": [52], "roll_group": "S08-2025-SSR",
-                                                       "rolls": ["S08-2025-DR", "S08-2025-FIR"]}}
+    item = {"key": "S08/S08-2025-SSR/55", "payload": {"state": "S08", "ac": 55, "form_parts": [52], "roll_group": "S08-2025-SSR",
+                                                       "rolls": ["S08-2025-DR", "S08-2025-FIR"], "v": 2}}
+    with pytest.raises(KeyError):       # the old payload key 'parts' is not read for a form item (older code fails on 'form_parts')
+        Q.do_item(None, {"key": "x", "payload": {k: v for k, v in item["payload"].items() if k != "form_parts"} | {"parts": [52]}},
+                  fetch=lambda k, d: {}, upload=up.extend)
     rec = Q.do_item(None, item, fetch=fetch, upload=up.extend)
     assert seen == ["eci-rolls-hi-ocr/ocr/S08/S08-2025-SSR/55/52.jsonl.gz"]
     assert [u[0] for u in up] == ["parquet/S08/S08-2025-DR/ac_55/data.parquet", "parquet/S08/S08-2025-FIR/ac_55/data.parquet"]
@@ -235,3 +238,18 @@ def test_parquet_any_form_item(monkeypatch, tmp_path):
     t = Q.pq.read_table(io.BytesIO(up[0][1]))
     assert t.column("roll").to_pylist() == ["S08-2025-DR"] and t.column("ocr_model_set").to_pylist() == ["j5r4"]
     assert t.schema.names[-5:] == ["ocr_model_set", "ocr_models", "ocr_code", "ocr_rules", "hints_used"]
+
+
+def test_repair_any_form_item_paths():
+    import repair_any_task as R
+    seen, up = [], []
+
+    def fetch(keys, dest):
+        seen.extend(keys)
+        return {k: None for k in keys}
+    item = {"key": "parts/S08/55", "payload": {"state": "S08", "ac": 55, "form_p": [52], "fix": "parts", "roll_group": "S08-2025-SSR", "v": 2}}
+    out = R.do_item(None, item, None, fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
+    assert seen == ["eci-rolls-hi-ocr/ocr/S08/S08-2025-SSR/55/52.jsonl.gz"] and out["files"] == 0
+    with pytest.raises(KeyError):       # a form item without 'form_p' is refused (older code fails on 'form_p' the same way)
+        R.do_item(None, {"key": "x", "payload": {k: v for k, v in dict(item["payload"], p=[52]).items() if k != "form_p"}}, None,
+                  fetch=fetch, upload_ocr=up.extend, upload_own=up.extend)
