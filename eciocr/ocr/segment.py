@@ -239,6 +239,7 @@ def _with_descenders(gray, y0, y1, x0, x1, ext):
 
 BEN_COMP_CUT = float(os.environ.get('ECI_BEN_COMP_CUT', '0.25'))  # > 0: touching lines split at headline - CUT x P (0: narrowest row)
 BEN_COMP_ZONE = float(os.environ.get('ECI_BEN_COMP_ZONE', '0.22'))  # line zone centre = headline + ZONE x P (marks go to the nearest)
+BEN_COMP_UP = os.environ.get('ECI_BEN_COMP_UP', '1') == '1'       # split a line's component that reaches up into the line above
 BEN_COMP_DARK = int(os.environ.get('ECI_BEN_COMP_DARK', '0'))   # ink threshold of the component labels (antialias edges touch)
 
 
@@ -275,6 +276,8 @@ def _assign_lines(gray, body, bands, y_body, x0, P):
             k = owner[j] = ks[0]
             if k + 1 < len(heads) and y + h - 1 > heads[k + 1] - 0.1 * P:   # it touches the next line's marks (small print)
                 split.append((j, cut_row(j, k), k))
+            elif BEN_COMP_UP and k > 0 and y < heads[k] - 0.3 * P and w <= 0.8 * P:   # a narrow glyph reaching up (a u-kar hook
+                split.append((j, cut_row(j, k - 1), k - 1))                     # of line k-1 touching a digit of line k)
             continue
         c = y + h / 2.0                          # a mark (reph, chandrabindu, i-kar top, u-kar hook): nearest line zone
         d = [abs(c - (hd + BEN_COMP_ZONE * P)) for hd in heads]
