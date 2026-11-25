@@ -505,6 +505,12 @@ CRNN_BATCH = max(1, int(os.environ.get('ECI_CRNN_BATCH') or 64))
 # whatever Tesseract reads (EPIC_CONFIRM; the CRNN EPIC comes first among equal counts), and the code text is used only when the
 # pixel test fires. A skipped crop reads '' (the key stays, so parse.from_lines takes the same serial path).
 TESS_LAZY = os.environ.get('ECI_TESS_LAZY', '0') == '1'
+# job1 speed (2026-11-25): ECI_STAMP_SET=DIR,DIR,... (Hindi hint cascade; default unset = off): boxes with a DELETED stamp (found only
+# in rolls before 2026, segment.STAMP_CHECK) are read and decided by this model set instead (its own cascade: stage 1 = its first
+# CRNN + Tesseract Latin fields, stage 2 = all its CRNNs + Tesseract lines), e.g. the v4a CRNNs, whose stage-2 students learned the
+# stamp lines. Loaded only when the stamp test is on; SIR 2026 rolls never use it.
+STAMP_SET = [d for d in os.environ.get('ECI_STAMP_SET', '').split(',') if d]
+_ES = None
 RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
 # 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
 # the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
@@ -538,6 +544,10 @@ def _init(crnn_dirs, tessdata, crnn_sort, hints_path, tmp, ort_threads=1, stage1
     cv2.setNumThreads(1)
     _E = Engines(crnn_dirs, tessdata, ort_threads, crnn_sort, tess2)
     _E.cache_in, _E.collect = _CACHE_IN, _COLLECT
+    global _ES
+    if STAMP_SET and _segmod.STAMP_CHECK:
+        _ES = Engines(STAMP_SET, tessdata, ort_threads, crnn_sort, tess2)
+        _ES.cache_in, _ES.collect = _CACHE_IN, _COLLECT
     _OPT = dict(tmp=tmp, hints=_HINTS if _HINTS is not None else (load_hints(hints_path) if hints_path else {}), stage1=stage1)
     ensemble2.CONFW = confvote if confvote >= 0 else None
 
@@ -733,6 +743,7 @@ def process_page(task):
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
     stampbox = set()
+    stamp_nm = {}   # ECI_STAMP_SET: box -> engine names it is decided with
     if lang in LATIN_TPL and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
@@ -828,6 +839,21 @@ def process_page(task):
                 reads[i].update(r2)
         tm['stage2_boxes'] = len(need)
         stage1_only = set(range(len(reads))) - set(need)
+        sidx = [i for i in range(len(reads)) if stamps[i]] if _ES is not None and lang not in LATIN_TPL and _OPT['hints'] else []
+        if sidx:   # ECI_STAMP_SET: DELETED-stamp boxes = the stamp set's own cascade (K = 1)
+            sub = [segs_list[i] for i in sidx]
+            r1 = _ES.read_boxes(sub, _OPT['tmp'], tm, crnn_idx={0}, tess_groups={'num', 'epic', 'code'}, lang=lang)
+            n1 = _ES.names[:1] + _ES.tnames
+            nd = [j for j, r in enumerate(r1) if (lambda d: bool(d[1]) or not d[3])(decide_box(r, n1, pix[sidx[j]], _OPT['hints'], True, lang))]
+            if nd:
+                more = _ES.read_boxes([sub[j] for j in nd], _OPT['tmp'], tm, crnn_idx=set(range(1, len(_ES.crnn))), tess_groups={'line'}, lang=lang)
+                for j, r2 in zip(nd, more):
+                    for tn in _ES.tnames:
+                        r1[j][tn][0].update(r2.pop(tn)[0])
+                    r1[j].update(r2)
+            for j, i in enumerate(sidx):
+                reads[i] = r1[j]; stamp_nm[i] = _ES.names if j in nd else n1
+            tm['stamp_set_boxes'] = len(sidx)
     elif NOHINT_CASCADE and not _OPT['hints'] and len(_E.crnn) > NOHINT_CASCADE:
         # job2 (no 2027 roll, ECI_NOHINT_CASCADE=N, default 0 = off): stage 1 = first N CRNNs + Tesseract Latin fields; a box whose
         # N stage-1 CRNNs read the same valid text fields (house_no with a digit, without . , ; :) takes them unflagged; the
@@ -877,7 +903,7 @@ def process_page(task):
             nm = (_E.names[:2] + _E.tnames) if i in stage1_only else _E.names
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang, stage1=i in stage1_only)
         else:
-            nm = (_E.names[:K] + _E.tnames) if i in stage1_only else _E.names
+            nm = stamp_nm.get(i) or ((_E.names[:K] + _E.tnames) if i in stage1_only else _E.names)
             out, flags, readings, hinted, cands = decide_box(r, nm, pix[i], _OPT['hints'], stamps[i], lang)
         if K == -2 and ensemble2.NOHINT_SUPPORT and i not in stage1_only:
             readings['_nohint_crnn_unanimous'] = sorted(ensemble2.NOHINT_SUPPORT)
@@ -1293,6 +1319,7 @@ def main():
             # job1 speed (summary only): cascade stage-2 boxes and lazy Tesseract reads (ECI_TESS_LAZY) per PDF
             info['stage2_boxes'] = sum(p['timing'].get('stage2_boxes', 0) for p in pages)
             info['tess_lazy_reads'] = sum(p['timing'].get('tess_lazy_reads', 0) for p in pages)
+            info['stamp_set_boxes'] = sum(p['timing'].get('stamp_set_boxes', 0) for p in pages)
             info['stage_s'] = {k: round(sum(p['timing'].get(k, 0) for p in pages), 1) for k in ('extract', 'layout', 'segment', 'heading', 'crnn', 'tess', 'decide')}
             ff = collections.Counter(f for r in recs for f in r['flags'])
             info['flagged_records'] = sum(bool(r['flags']) for r in recs)
