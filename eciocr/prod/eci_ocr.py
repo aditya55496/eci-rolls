@@ -518,6 +518,9 @@ _ES = None
 # reading; a stage-2 box is decided by the other engines alone (as if the set had no stage-1 model there), so a small fast
 # screening model (quarter width) does not vote on the hard boxes.
 S1_SCREEN = os.environ.get('ECI_S1_SCREEN', '0') == '1'
+# The section headings are read by CRNN number HEAD_CRNN (0 = the first, as before; with ECI_S1_SCREEN=1 the default is the
+# second, the first stage-2 model: the quarter screening model reads the heading lines badly, section None on 98 % of records).
+HEAD_CRNN = int(os.environ.get('ECI_HEAD_CRNN') or (1 if S1_SCREEN else 0))
 RESCALE_H = int(os.environ.get('ECI_RESCALE_H', '1679'))   # 0 = off; see process_page
 # 2026-11-25 (ocrv5 review 3), both default off (UP output unchanged), on in the ocr-any model sets; applied by post_rules() after
 # the not_voter_box rule, so they cannot turn a voter box into page noise and do not change the cascade:
@@ -805,7 +808,7 @@ def process_page(task):
         if lang in LATIN_TPL or not _E.crnn:   # English / Tamil headings: Tesseract reads the print well (and runs without CRNNs)
             heads.append((y, parse_heading(_E.tess_many([_E.tess_prep(l, 2) for l in L], TESS_LANG.get(lang, 'hin'), 7), lang)))
         else:
-            heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
+            heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[HEAD_CRNN if len(_E.crnn) > HEAD_CRNN else 0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
     stampbox = set()
