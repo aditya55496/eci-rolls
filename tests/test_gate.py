@@ -50,8 +50,28 @@ def test_file_retry_same_id(monkeypatch):
     assert h.m["file_retry"] == 2 and h.m["ep_file_timeout"] == 1 and h.m["ep_file_504"] == 1
 
 
+def test_file_404_then_ok(monkeypatch):
+    seq = [resp(404), resp(200, "JVBERi0xLjQK")]
+    monkeypatch.setattr(T, "timed_get", lambda *a, **k: seq.pop(0))
+    monkeypatch.setattr(T, "GATE", types.SimpleNamespace(wait=lambda hub: time.time(), bad=lambda *a: None, good=lambda: None))
+    monkeypatch.setattr(T.E, "is_pdf", lambda b: b.startswith(b"%PDF"))
+    monkeypatch.setattr(T, "FILE_404_WAIT_S", 0)
+    h = Hub()
+    b, name, err = T.get_file(h, "fid")
+    assert err == "" and h.m["file_404_retry"] == 1 and h.m["file_404_then_ok"] == 1
+
+
+def test_file_404_gives_up(monkeypatch):
+    calls = []
+    monkeypatch.setattr(T, "timed_get", lambda *a, **k: calls.append(1) or resp(404))
+    monkeypatch.setattr(T, "GATE", types.SimpleNamespace(wait=lambda hub: time.time(), bad=lambda *a: None, good=lambda: None))
+    monkeypatch.setattr(T, "FILE_404_WAIT_S", 0)
+    h = Hub()
+    assert T.get_file(h, "fid") == (None, None, 404) and len(calls) == 1 + T.FILE_404_TRIES
+
+
 def test_file_no_retry_on_4xx(monkeypatch):
-    monkeypatch.setattr(T, "timed_get", lambda *a, **k: resp(404))
+    monkeypatch.setattr(T, "timed_get", lambda *a, **k: resp(403))
     monkeypatch.setattr(T, "GATE", types.SimpleNamespace(wait=lambda hub: time.time(), bad=lambda *a: None, good=lambda: None))
     h = Hub()
-    assert T.get_file(h, "fid") == (None, None, 404) and "file_retry" not in h.m
+    assert T.get_file(h, "fid") == (None, None, 403) and "file_retry" not in h.m

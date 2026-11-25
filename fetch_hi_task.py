@@ -63,6 +63,8 @@ SLOW_MARK = "/tmp/eci-rolls-slow-runner"
 EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))      # numbers in a row without a file that end the probe above the list
 GATE_MAX_S = float(os.environ.get("ECI_GATE_MAX_S", "120"))   # longest pause of the back-off gate (Gate)
 FILE_TRIES = int(os.environ.get("ECI_FILE_TRIES", "3"))       # tries per file id before the part goes back to the next round
+FILE_404_TRIES = int(os.environ.get("ECI_FILE_404_TRIES", "2"))   # extra tries of a file id that answers 404
+FILE_404_WAIT_S = float(os.environ.get("ECI_FILE_404_WAIT_S", "10"))
 FORM_PROBE = 30                                               # part numbers per probe request on the form route
 # completeness check against the totals printed in each PDF (printcheck.py; Tesseract, ~0.3 s CPU per PDF). On by default where
 # Tesseract is installed (the runners); the local form units on dev-vps-3 set ECI_PRINT_CHECK=0 (no bulk OCR on that server):
@@ -421,18 +423,30 @@ def file_ids(hub, roll, state, ac, district, parts, lang):
 
 def get_file(hub, fid):
     """One file id -> (PDF bytes, file name, ""), else (None, None, reason). A 5xx / 429 / no answer is tried again with the same
-    file id after the gate opens (FILE_TRIES in all): the id stays valid, so this costs no new captcha and no new generate call."""
-    for attempt in range(FILE_TRIES):
+    file id after the gate opens (FILE_TRIES in all): the id stays valid, so this costs no new captcha and no new generate call.
+    A 404 is asked again FILE_404_TRIES times (wait FILE_404_WAIT_S x n): a fresh id can answer 404 while the portal still builds
+    the PDF; a next round would cost a new captcha and a new generate call."""
+    n404 = n_err = 0
+    while True:
         r = form_get(hub, "file", E.file_url(fid), headers={"CurrentRole": "citizen", "Accept": "application/json"}, timeout=180)
         if r is not None and r.status_code == 200:
+            if n404:
+                hub.metric("file_404_then_ok")
             break
         err = r.status_code if r is not None else "no answer"
+        if r is not None and r.status_code == 404:
+            if n404 >= FILE_404_TRIES:
+                return None, None, err
+            n404 += 1
+            hub.metric("file_404_retry")
+            time.sleep(FILE_404_WAIT_S * n404)
+            continue
         if r is not None and r.status_code < 500 and r.status_code != 429:
             return None, None, err
-        if attempt + 1 < FILE_TRIES:
-            hub.metric("file_retry")
-    else:
-        return None, None, err
+        n_err += 1
+        if n_err >= FILE_TRIES:
+            return None, None, err
+        hub.metric("file_retry")
     j = r.json()
     if not j.get("payload"):
         return None, None, (j.get("message") or "empty")
