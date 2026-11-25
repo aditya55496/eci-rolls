@@ -25,6 +25,7 @@ ASM_TO_BEN = str.maketrans({'ৰ': 'র', 'ৱ': 'ব'})   # the line models als
 
 def norm(s):
     s = unicodedata.normalize('NFC', s or '').replace('‌', '').replace('‍', '').translate(ASM_TO_BEN)
+    s = re.sub('(?<![ডঢয])়', '.', s)   # r2: a nukta exists only under ড ঢ য; elsewhere it is a printed full stop ('হক.' read 'হক়')
     s = s.replace('ত্স', 'ৎস')   # r2: Bengali has no printed t+s conjunct; the Assam text layer (training labels) stores khanda ta as ত্
     return re.sub(r'\s+', ' ', s).strip(' ;_')
 
