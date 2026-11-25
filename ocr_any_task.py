@@ -7,10 +7,11 @@ Queue item (project eci-rolls-hi-ocr, items from plan_hi_ocr.py): key "<state>/<
 Keys and the hints key start with the project that stored them; each file is read through that project's links.
 Model set: model_sets.json (CRNN dirs, eci_ocr env switches, hints mode, stage1). The hub settings of this project can swap the
 set of every pending item at once (hi_common.choose_set): "ocr_model_set_map" {"j2Ps": "newset"} or "ocr_model_set" "newset".
-A set this checkout does not have -> the worker gives the item back untried (status 'pending', the attempt is not counted) and
-exits 3. The runner does not fetch the family again for this (it does so only for a task missing from scrape.json): an older job
-waits 30-300 s, asks again, and idles like this until it ends; jobs that start later check out the newer code.
-Provenance: the worker refuses to start when the family commit is unknown, and gives an item back and exits 3 when the
+A set this checkout does not have, or whose model files are missing / have another sha256 -> the worker gives the item back
+untried (status 'pending', the attempt is not counted) and exits 75 (hi_common.EXIT_NEEDS_NEWER_CODE). A runner with the
+family-refetch change fetches the family's main again at once and goes on with the new code; an older runner waits 30-300 s,
+asks again, and idles like this until its job ends (jobs that start later check out the newer code).
+Provenance: the worker refuses to start when the family commit is unknown, and gives an item back and exits 75 when the
 checkout moved to another commit during the item (hi_common.code_commit).
 Engine: eciocr/prod/eci_ocr.py, one run per PDF, draft first; the draft's readings are the final roll's cache (as ocr_task.py).
 With hints: --hint-2027 (the whole AC's 2027 SSR records; confirmation, EPIC repair inside eci_ocr) and --stage1 of the set.
@@ -18,7 +19,9 @@ Without hints: all engines on every box, the set's no-hint rules.
 Then the part repairs (hi_common.repair_part: final_deleted, serial_gaps) on the part's records.
 Output in the bucket: ocr/<state>/<ac>/<part>.jsonl.gz (one record per box, all engine fields, flags, readings of flagged fields,
 repair markers, and the provenance: roll, ocr_model_set, ocr_models, ocr_code, ocr_rules, hints_used) and
-ocr/<state>/<ac>/<part>.summary.json. One hub record per part (id = item key): counts, flag rate, serial checks, repairs, CPU,
+ocr/<state>/<ac>/<part>.summary.json (uploaded first: with two workers on one item after a stall, the jsonl that stays is
+the one written last, and its records carry their own provenance). The summary and the hub record also name the tool
+versions (pymupdf, onnxruntime, Tesseract, hin traineddata) and the sha256 of the hints file. One hub record per part (id = item key): counts, flag rate, serial checks, repairs, CPU,
 provenance. No LLM, no network other than the hub and the bucket links.
 """
 import gzip
@@ -41,6 +44,14 @@ PROJECT = os.environ.get("SCRAPE_POOL_PROJECT", H.OCR_HI_PROJECT)
 _BUDGET = float(os.environ.get("SCRAPE_MAX_HOURS", "1")) * 3600
 DEADLINE = time.time() + _BUDGET - min(600, _BUDGET / 4)     # an item takes ~1-4 min; keep 10 min spare
 CPUS = len(os.sched_getaffinity(0))
+_TOOLS = None
+
+
+def tools():
+    global _TOOLS
+    if _TOOLS is None:
+        _TOOLS = H.tool_versions()
+    return _TOOLS
 WORKERS = int(os.environ.get("ECI_OCR_WORKERS") or max(1, CPUS // 2))   # 2 worker processes per 4-CPU runner job, 2 OCR processes each
 
 
@@ -134,11 +145,12 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     upload = upload or hub.upload_many
     with tempfile.TemporaryDirectory() as tmp:
         got = fetch([keys[r] for r in rolls] + ([p["hints"]] if want_hints else []), tmp)
-        hpath, nh = None, 0
+        hpath, nh, hsha = None, 0, None
         if want_hints:
             hz = got.get(p["hints"])
             if not hz:
                 raise RuntimeError(f"no 2027 hints yet: {p['hints']}")
+            hsha = H.sha256_file(hz)      # which version of the AC's hints this OCR used (ssrtext may run the AC again)
             # all 2027 records of the AC (2027 parts are numbered differently); eci_ocr loads them once before it forks
             hpath = os.path.join(tmp, "hints.jsonl")
             with gzip.open(hz, "rt", encoding="utf-8") as f, open(hpath, "w", encoding="utf-8") as o:
@@ -172,6 +184,8 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     extra = set(p.get("extra_rolls") or [])
     for r in recs:
         r.update(prov)
+        if hsha:
+            r["hints_sha256_16"] = hsha[:16]      # Parquet: in 'extra'
         if r["roll"] in extra:
             r["extra_part"] = True
     voters = [r for r in recs if not r.get("not_voter_box")]
@@ -184,16 +198,21 @@ def do_item(hub, item, settings=None, fetch=None, upload=None):
     vp = sum(s["voter_pages"] for s in summs)
     summ = {"item": item["key"], "state": state, "ac": ac, "part": part, **prov, "model_set_source": set_src,
             "model_sha256_16": ms.get("sha256_16"), "hints_key": p.get("hints") if want_hints else None, "hints_records": nh,
+            "hints_sha256": hsha, "ocr_tools": tools(),
+            "epic_fix2_refused": sum(1 for r in voters if "fix2_candidate" in (((r.get("readings") or {}).get("epic")) or {})),
             "rolls": rolls, "missing_rolls": missing, "records": len(voters), "not_voter_boxes": len(recs) - len(voters),
             "flagged_records": nfl, "flag_rate": round(nfl / max(1, len(voters)), 4), "by_roll": by_roll, "repairs": repairs,
             "voter_pages": vp, "wall_s": round(secs, 1), "cpu_s": round(cpu, 1), "cpu_s_per_voter_page": round(cpu / max(1, vp), 2),
             "workers": WORKERS, "runs": [{k: s.get(k) for k in ("roll", "wall_s", "cache_in", "cache_out", "voter_pages", "peak_worker_rss_mb")} for s in summs],
             "pdfs": [dict(d, roll=s["roll"]) for s in summs for d in s["pdfs"]]}
     body = gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0)
-    upload([(f"ocr/{state}/{ac}/{part}.jsonl.gz", body, "application/gzip"),
-            (f"ocr/{state}/{ac}/{part}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
+    # summary first, records last (ocrv5 review: a second worker on the same item after a stall must not leave a summary that
+    # names another set than the records)
+    upload([(f"ocr/{state}/{ac}/{part}.summary.json", json.dumps(summ, ensure_ascii=False).encode(), "application/json")])
+    upload([(f"ocr/{state}/{ac}/{part}.jsonl.gz", body, "application/gzip")])
     rec = {k: summ[k] for k in ("state", "ac", "part", "ocr_model_set", "ocr_models", "ocr_code", "ocr_rules", "hints_used",
-                                "model_set_source", "hints_records", "rolls", "missing_rolls", "records", "not_voter_boxes",
+                                "model_set_source", "hints_records", "hints_sha256", "ocr_tools", "epic_fix2_refused", "rolls",
+                                "missing_rolls", "records", "not_voter_boxes",
                                 "flag_rate", "by_roll", "repairs", "voter_pages", "wall_s", "cpu_s", "cpu_s_per_voter_page")}
     rec["pdfs"] = [{k: d.get(k) for k in ("roll", "pdf", "kind", "records", "flag_rate", "hint_matched", "epic_from_2027", "serial_check",
                                           "worker_s_total")} for d in summ["pdfs"]]
@@ -216,7 +235,7 @@ def main():
             unknown = H.hub_override_unknown(hub.settings)
             if unknown:      # the hub names a newer model set: leave the items to workers with newer code
                 hub.metric("model_set_unknown")
-                code = 3
+                code = H.EXIT_NEEDS_NEWER_CODE
                 break
             items = hub.claim(1, steal=True, retry_failed=True)
             if not items:
@@ -232,15 +251,17 @@ def main():
                 hub.metric("set_" + re.sub(r"[^a-z0-9_-]", "_", rec["ocr_model_set"].lower()))   # metric names: a-z 0-9 - _
                 hub.complete([it["key"]], "done", fetched=rec["records"])
             except H.UnknownModelSet as e:
-                # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete)
-                hub.complete([it["key"]], "pending", error=f"model set {e} not in this checkout ({H.CODE})")
-                hub.metric("model_set_unknown")
-                code = 3
+                # 'pending' = given back untried: the hub does not count the attempt (scrape-hub app.py complete);
+                # ModelSetIncomplete (model files missing / wrong sha256) is handled the same way
+                inc = isinstance(e, H.ModelSetIncomplete)
+                hub.complete([it["key"]], "pending", error=f"model set {e} {'incomplete' if inc else 'not'} in this checkout ({H.CODE})")
+                hub.metric("model_set_incomplete" if inc else "model_set_unknown")
+                code = H.EXIT_NEEDS_NEWER_CODE
                 break
             except H.CodeChanged as e:
                 hub.complete([it["key"]], "pending", error=str(e))
                 hub.metric("code_changed")
-                code = 3
+                code = H.EXIT_NEEDS_NEWER_CODE
                 break
             except Exception as e:  # one bad part must not stop the worker
                 hub.error()

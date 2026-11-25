@@ -152,13 +152,16 @@ def test_do_item_output_and_provenance(monkeypatch):
     rec = O.do_item(None, _fake_item(), settings={}, fetch=_fake_fetch, upload=up.extend)
     assert calls[0]["rolls"] == ["S12-2026-DR", "S12-2026-FIR"] and calls[0]["hints"] and calls[0]["year"] == 2026
     assert calls[0]["env"] == H.MODEL_SETS["v4a"]["env"]
-    assert [u[0] for u in up] == ["ocr/S12/1/10.jsonl.gz", "ocr/S12/1/10.summary.json"]
-    recs = [json.loads(l) for l in gzip.decompress(up[0][1]).decode().splitlines()]
+    assert [u[0] for u in up] == ["ocr/S12/1/10.summary.json", "ocr/S12/1/10.jsonl.gz"]      # summary first, records last
+    recs = [json.loads(l) for l in gzip.decompress(up[1][1]).decode().splitlines()]
+    summ = json.loads(up[0][1])
+    assert len(summ["hints_sha256"]) == 64 and recs[0]["hints_sha256_16"] == summ["hints_sha256"][:16]
+    assert "tesseract" in summ["ocr_tools"] or summ["ocr_tools"] == {} or "pymupdf" in summ["ocr_tools"]
     for r in recs:
         assert r["ocr_model_set"] == "v4a" and r["ocr_models"] == H.MODEL_SETS["v4a"]["models"]
         assert r["ocr_code"] == "0123456789ab" and r["hints_used"] is True
         assert r["ocr_rules"]["stage1"] == 1 and r["ocr_rules"]["roll_year"] == 2026
-    for k in H.PROVENANCE_KEYS + ("model_set_source", "cpu_s", "by_roll"):
+    for k in H.PROVENANCE_KEYS + ("model_set_source", "cpu_s", "by_roll", "hints_sha256", "ocr_tools", "epic_fix2_refused"):
         assert k in rec, k
     assert rec["records"] == 2 and rec["model_set_source"] == "payload"
 
@@ -228,8 +231,33 @@ def test_main_unknown_set_gives_item_back_untried(monkeypatch):
     with pytest.raises(SystemExit) as e:
         O.main()
     hub = _FakeHub.instances[0]
-    assert e.value.code == 3
+    assert e.value.code == H.EXIT_NEEDS_NEWER_CODE == 75
     assert hub.completed == [(["S12/1/10"], "pending", "model set nosuchset not in this checkout (0123456789ab)")]
+
+
+def test_main_incomplete_model_dirs_give_item_back(monkeypatch, tmp_path):
+    """ocrv5 review 2026-11-25: a set pushed without its model files (or a hub swap to it) must not use up the attempts of the
+    pending items: the item goes back as 'pending' and the worker exits 75, as for an unknown set."""
+    import ocr_any_task as O
+    _FakeHub.instances.clear()
+    sets = dict(H.MODEL_SETS, nofiles=dict(H.MODEL_SETS["j2Ps"], models=["no_such_model"], sha256_16={"no_such_model": "0" * 16}))
+    monkeypatch.setattr(H, "MODEL_SETS", sets)
+    monkeypatch.setattr(H, "CODE", "0123456789ab")
+
+    class Hub(_FakeHub):
+        def __init__(self, *a, **k):
+            super().__init__(*a, **k)
+            self.items = [_fake_item("nofiles", hints=False)]
+    monkeypatch.setattr(O, "HubClient", Hub)
+    with pytest.raises(SystemExit) as e:
+        O.main()
+    hub = _FakeHub.instances[0]
+    assert e.value.code == 75 and hub.completed[0][1] == "pending" and "incomplete" in hub.completed[0][2]
+    assert "model_set_incomplete" in hub.metrics
+    # a wrong sha256 is incomplete too
+    sets["badsha"] = dict(H.MODEL_SETS["j2Ps"], sha256_16=dict(H.MODEL_SETS["j2Ps"]["sha256_16"], c11g9s="0" * 16))
+    with pytest.raises(H.ModelSetIncomplete):
+        H.model_dirs("badsha")
 
 
 def test_main_refuses_without_code_commit(monkeypatch):
@@ -271,3 +299,85 @@ def test_planner_holds_partial_lang_rank(monkeypatch):
     items, _ = P.plan_ocr({"U02"}, None, None, "v4a", "j2Ps", "x", True)
     sql, n = P.resets_sql("eci-rolls-hi-ocr", items)
     assert n == {"done": 1} and "U02-2026-FIR" in sql and "key = 'U02/1/3'" in sql
+
+
+def test_epicfix_fix2_guard(monkeypatch):
+    """ocrv5 review 2026-11-25: fix2 changed printed EPICs to another voter's (S20/14/70 serial 937 UIO1338565 -> HSD1338565;
+    S20/72/10 serial 622 RJ/09/070/198129 -> RJ/09/071/198129); with the guard it needs a close name or relative's name."""
+    import epicfix
+    monkeypatch.setattr(epicfix, "FIX2_GUARD", True)
+    monkeypatch.setattr(epicfix, "FIX2_MIN", 70.0)
+    hints = [dict(epic="HSD1338565", name="मुकेशकुमार", relation_name="बजरंगलाल", relation_label="पिता का नाम", gender="पुरुष", age="34"),
+             dict(epic="RJ/09/071/198129", name="कृष्णकुमार", relation_name="गोर्धनसिंह", relation_label="पिता का नाम", gender="पुरुष", age="41"),
+             dict(epic="BR/25/142/216172", name="मन्नु ऋृषि", relation_name="गंगा प्रसाद ऋृषि", relation_label="पिता का नाम", gender="पुरुष", age="52")]
+    idx = epicfix.index(hints)
+    wrong1 = dict(epic="UIO1338565", name="पिंटू राम", relation_name="जय गोपाल", relation_label="पिता का नाम", gender="पुरुष", age="34", flags=[])
+    wrong2 = dict(epic="RJ/09/070/198129", name="राजकुमार", relation_name="बुद्धीलाल", relation_label="पिता का नाम", gender="पुरुष", age="40",
+                  flags=["house_no"])
+    right = dict(epic="8R/25/142/216172", name="मन्नु ऋषि", relation_name="गंगा प्रसाद ऋषि", relation_label="पिता का नाम", gender="पुरुष",
+                 age="51", flags=["name"])
+    assert epicfix.fix([wrong1, wrong2, right], idx, 1) == 0          # no exact name: rule 1 does not fire
+    assert epicfix.fix2([wrong1, wrong2, right], idx, 1) == 1
+    assert wrong1["epic"] == "UIO1338565" and wrong1["flags"] == ["epic"] and wrong1["readings"]["epic"]["fix2_candidate"] == "HSD1338565"
+    assert wrong2["epic"] == "RJ/09/070/198129" and wrong2["flags"] == ["house_no", "epic"]
+    assert right["epic"] == "BR/25/142/216172" and right["epic_from_2027"] and right["flags"] == ["name"]
+    monkeypatch.setattr(epicfix, "FIX2_GUARD", False)                 # guard off (UP production): the old behaviour
+    w = dict(wrong1, epic="UIO1338565", flags=[]); w.pop("readings")
+    assert epicfix.fix2([w], idx, 1) == 1 and w["epic"] == "HSD1338565"
+
+
+def test_age_hint_majority(monkeypatch):
+    """ocrv5 review 2026-11-25 (S20/14/70 final roll serial 135): 4 CRNNs read 21, Tesseract 24 = the 2027 age -> 24 without a
+    flag. With ECI_AGE_HINT_MAJ the outside majority wins and the field is flagged; a Tesseract-only window value is flagged."""
+    sys.path.insert(0, os.path.join(H.HERE, "eciocr", "ocr"))
+    import ensemble2 as E
+    monkeypatch.setattr(E, "AGE_GAP", 1)
+    names = ["crnn_a", "crnn_b", "crnn_c", "crnn_d", "tess"]
+    base = dict(code="", serial_no="135", part_no="", epic="ABC1234567", name="x", relation_label="पिता का नाम", relation_name="y",
+                house_no="1", gender="पुरुष")
+    hint = dict(base, age="24")
+
+    def run(ages, nm=names):
+        return E.decide([dict(base, age=a) for a in ages], hint, False, nm, [{}] * len(ages))
+
+    monkeypatch.setattr(E, "AGE_HINT_MAJ", False)
+    out, fl = run(["21", "21", "21", "21", "24"])
+    assert out["age"] == "24" and "age" not in fl                        # the old rule: the reviewed error
+    monkeypatch.setattr(E, "AGE_HINT_MAJ", True)
+    out, fl = run(["21", "21", "21", "21", "24"])
+    assert out["age"] == "21" and "age" in fl
+    out, fl = run(["21", "24"], ["crnn_a", "tess"])                      # stage 1: only Tesseract fits the window
+    assert out["age"] == "24" and "age" in fl
+    out, fl = run(["23", "2"], ["crnn_a", "tess"])                       # stage 1: the CRNN fits the window: no flag
+    assert out["age"] == "23" and "age" not in fl
+    out, fl = run(["24", "24", "23", "21", "24"])
+    assert out["age"] == "24" and "age" not in fl
+
+
+def test_setup_family_selection(monkeypatch):
+    import setup_family as S
+    projs = [{"name": "a", "max_workers": 10, "threads": 1}, {"name": "b", "max_workers": 640, "threads": 4}]
+    assert [p["name"] for p in S.chosen(projs, "a")[0]] == ["a"] and S.chosen(projs, "a")[1] is False
+    assert S.chosen(projs, None)[1] is True and S.chosen(projs, "all")[1] is True
+    with pytest.raises(SystemExit):
+        S.chosen(projs, "")
+    with pytest.raises(SystemExit):
+        S.chosen(projs, "a,zz")
+    S.check(projs[:1])
+    with pytest.raises(SystemExit, match="max_workers 640"):
+        S.check(projs)
+    import family
+    S.check(family.PROJECTS)                                             # every family.py value is one the hub accepts
+
+
+def test_planner_holds_incomplete_hints(monkeypatch):
+    import plan_hi_ocr as P
+    recs = [{"record_id": "S12-2027-DR/1", "pdfs": 10, "parsed": 10, "missing": 0, "match": 10},
+            {"record_id": "S12-2027-DR/2", "pdfs": 10, "parsed": 10, "missing": 2, "match": 8},
+            {"record_id": "S12-2027-DR/3", "pdfs": 10, "parsed": 9, "missing": 0, "match": 9},
+            {"record_id": "S12-2027-DR/4", "pdfs": 10, "parsed": 10, "missing": 0, "match": 9}]
+    monkeypatch.setattr(P, "psql_json", lambda sql: recs)
+    ready, bad = P.ssr_done("eci-rolls-ssr-text", "S12-2027-DR")
+    assert ready == {1, 4} and set(bad) == {2, 3, 4} and "not held" in bad[4]
+    ready, bad = P.ssr_done("eci-rolls-ssr-text", "S12-2027-DR", strict=True)
+    assert ready == {1}

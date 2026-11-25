@@ -56,6 +56,19 @@ class UnknownModelSet(Exception):
     """A model set this checkout does not define (newer code has it): the worker hands the work back and exits."""
 
 
+class ModelSetIncomplete(UnknownModelSet):
+    """A set whose model dirs are missing in this checkout or have another sha256 than model_sets.json names (a set entry pushed
+    before its model files, or a hub swap to such a set): handled like UnknownModelSet (item given back as 'pending', the
+    attempt is not counted), so a bad push cannot use up the attempts of the pending items (ocrv5 review 2026-11-25)."""
+
+
+# Exit code of a worker that gave its item back because this checkout is too old or incomplete for it (unknown set, set with
+# missing model files, checkout moved during the item). 75 = EX_TEMPFAIL. A runner that knows it fetches the family's main
+# again at once and runs the next assignment with the new code (s1d-labs/runner branch family-refetch); an older runner treats
+# it like any other non-zero exit (waits 30-300 s and asks again).
+EXIT_NEEDS_NEWER_CODE = 75
+
+
 def is_draft(roll_id):
     """S12-2026-DR, S04-2025-SIR-DR -> True; S12-2026-FIR, S28-2026-SIR-FIR-1 -> False."""
     return bool(re.search(r"-DR(-\d+)?$", roll_id))
@@ -116,13 +129,45 @@ def model_dirs(name, sets=None):
         for m, d in zip(ms["models"], dirs):
             want = (ms.get("sha256_16") or {}).get(m)
             if not os.path.exists(os.path.join(d, "crnn.onnx")) or not os.path.exists(os.path.join(d, "charset.json")):
-                raise RuntimeError(f"model set {name}: models/{m} incomplete in this checkout")
+                raise ModelSetIncomplete(f"{name} (models/{m} incomplete in this checkout)")
             if want:
                 got = hashlib.sha256(open(os.path.join(d, "crnn.onnx"), "rb").read()).hexdigest()[:16]
                 if got != want:
-                    raise RuntimeError(f"model set {name}: models/{m}/crnn.onnx sha256 {got} != {want}")
+                    raise ModelSetIncomplete(f"{name} (models/{m}/crnn.onnx sha256 {got} != {want})")
         _VERIFIED.add(name)
     return dirs
+
+
+def _version(cmd):
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        return ((r.stdout or r.stderr).strip().splitlines() or [""])[0][:80]
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def tool_versions():
+    """Versions of the parts outside the family commit that change the OCR input or the readings (ocrv5 review 2026-11-25:
+    requirements.txt does not pin pymupdf; Tesseract and its hin traineddata come from apt). Read once per worker."""
+    import importlib.metadata as md
+    v = {}
+    for pkg in ("pymupdf", "onnxruntime", "opencv-python-headless", "numpy"):
+        try:
+            v[pkg] = md.version(pkg)
+        except md.PackageNotFoundError:
+            pass
+    v["tesseract"] = _version(["tesseract", "--version"]).replace("tesseract ", "")
+    for deb in ("libtesseract5", "tesseract-ocr-hin"):     # eci_ocr calls libtesseract through ctypes; hin = the traineddata
+        v[deb] = _version(["dpkg-query", "-W", "-f", "${Version}", deb])
+    return {k: x for k, x in v.items() if x}
+
+
+def sha256_file(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for b in iter(lambda: f.read(1 << 20), b""):
+            h.update(b)
+    return h.hexdigest()
 
 
 def rules_of(ms, year, has_hints):

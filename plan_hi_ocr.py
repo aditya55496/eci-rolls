@@ -3,7 +3,7 @@ Postgres, read-only, through psql); writes the items as JSON for seeding, like p
 
   plan_hi_ocr.py OUT.json [--dry-run] [--states S12,S07] [--acs 1,2] [--parts 1,10]
                  [--hint-set v4a] [--nohint-set j2Ps] [--state-set S07=j2Psf,S25=j2Ps] [--hints-project eci-rolls-ssr-text]
-                 [--assume-hints] [--include-fetching] [--include-partial] [--resets OUT.sql]
+                 [--assume-hints] [--include-fetching] [--include-partial] [--strict-hints] [--resets OUT.sql]
   plan_hi_ocr.py OUT.json --parquet [--states ...] [--resets OUT.sql]   parquet-any items for ACs whose ocr-any items are all done;
                  --resets also writes SQL for parquet items older than an OCR item of their AC (seed_queue keeps done keys)
 
@@ -15,8 +15,11 @@ the record are counted in the summary (2026-11-25: the probe_only pass rewrote "
 file show up there, e.g. S12 DR 122 parts).
 Model set by state: the states with a 2027 SSR roll (S04 S12 S20 S26 S28) get --hint-set with the hints key of task ssrtext
 (<hints project>/hints/<state>-2027-DR/<ac>.jsonl.gz); the others get --nohint-set and hints null. An AC of a hint state is
-planned only when its ssrtext record exists (the 2027 text is done; --assume-hints skips that check, for tests), so running
-the planner again later adds the rest (seed_queue keeps existing keys).
+planned only when its ssrtext record exists and its hints are complete (no 2027 PDF missing from the bucket, every PDF
+parsed; --strict-hints also holds ACs whose record counts differ from the printed totals; see ssr_done). --assume-hints skips
+that check, for tests. Running the planner again later adds the rest (seed_queue keeps existing keys).
+Listed parts without a PDF get no item; the output summary lists them per roll and AC (listed_parts_without_pdf) for the
+part-gap follow-up.
 An AC whose fetch item of one of the state's SIR rolls is not done (Bihar's form route, 2026-11-25: 108 + 75 failed) is held
 too (an item seeded now would keep only the PDFs stored so far); --include-fetching plans it anyway.
 Held states (HOLD): a state there is planned only when --state-set names its set (2026-11-25: S07 Haryana, j2Ps flags 22-38 %
@@ -108,15 +111,39 @@ def fetch_status(roll):
     return {int(r["key"].split("/")[1]): r["status"] for r in rows if r["key"].count("/") == 1 and r["key"].split("/")[1].isdigit()}
 
 
-def ssr_done(project, roll):
-    """ACs whose ssrtext record exists (record id '<roll id>/<ac>')."""
-    rows = psql_json(f"SELECT record_id FROM records WHERE project = {lit(project)} "
-                     + prefix_cond(roll))
-    return {int(r["record_id"].split("/")[1]) for r in rows if r["record_id"].count("/") == 1 and r["record_id"].split("/")[1].isdigit()}
+def ssr_done(project, roll, strict=False):
+    """-> (ACs whose 2027 hints are complete, {ac: reason} for ACs whose ssrtext record exists but whose hints are not complete).
+    ssrtext writes its record (record id '<roll id>/<ac>') also when PDFs of the 2027 roll are missing from the bucket
+    (n_missing_pdfs, failure 'missing-pdf') or did not parse (pdfs_parsed < pdfs). OCR made with such partial hints would keep
+    more flags and fewer EPIC confirmations / repairs, and seed_queue keeps the keys (no second OCR): those ACs are held.
+    A count mismatch against the printed totals (match_pdfs < pdfs) holds the AC only with strict (--strict-hints); the
+    planner lists those ACs either way (ocrv5 review 2026-11-25)."""
+    rows = psql_json(f"SELECT record_id, (data->>'pdfs')::int AS pdfs, (data->>'pdfs_parsed')::int AS parsed, "
+                     f"(data->>'n_missing_pdfs')::int AS missing, (data->>'match_pdfs')::int AS match FROM records "
+                     f"WHERE project = {lit(project)} " + prefix_cond(roll))
+    ready, bad = set(), {}
+    for r in rows:
+        if r["record_id"].count("/") != 1 or not r["record_id"].split("/")[1].isdigit():
+            continue
+        ac, why = int(r["record_id"].split("/")[1]), []
+        if r["missing"] is None or r["missing"] > 0:
+            why.append(f"missing_pdfs {r['missing']}")
+        if r["pdfs"] is None or r["parsed"] is None or r["parsed"] < r["pdfs"]:
+            why.append(f"parsed {r['parsed']} of {r['pdfs']}")
+        if r["pdfs"] is not None and r["match"] is not None and r["match"] < r["pdfs"]:
+            why.append(f"count_mismatch {r['pdfs'] - r['match']} of {r['pdfs']} PDFs" + ("" if strict else " (not held)"))
+        held = [w for w in why if not w.endswith("(not held)")]
+        if held:
+            bad[ac] = "; ".join(why)
+        else:
+            ready.add(ac)
+            if why:
+                bad[ac] = "; ".join(why)
+    return ready, bad
 
 
 def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, assume_hints, include_fetching=False,
-             state_set=None, include_partial=False):
+             state_set=None, include_partial=False, strict_hints=False):
     state_set = state_set or {}
     for s in [hint_set, nohint_set] + list(state_set.values()):
         if s not in H.MODEL_SETS:
@@ -130,9 +157,9 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
         mset = state_set.get(st) or (hint_set if hinted else nohint_set)
         if not H.compatible(H.MODEL_SETS[mset], hinted):
             raise SystemExit(f"model set {mset} ({H.MODEL_SETS[mset].get('hints')} hints) does not fit {st} (hints: {hinted})")
-        ready = None
+        ready, hint_issues = None, {}
         if hinted and not assume_hints:
-            ready = ssr_done(hints_project, HINT_ROLL[st])
+            ready, hint_issues = ssr_done(hints_project, HINT_ROLL[st], strict_hints)
         by_ac = collections.defaultdict(lambda: collections.defaultdict(dict))     # ac -> part -> {roll: key}
         extra = collections.defaultdict(lambda: collections.defaultdict(set))      # ac -> part -> {roll}
         expect = collections.defaultdict(lambda: collections.defaultdict(set))     # ac -> part -> {roll whose AC record lists it}
@@ -140,6 +167,7 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
         s = {"name": NAMES.get(st), "model_set": mset, "rolls": {}}
         fetching = set()      # ACs with a fetch item of one of the state's SIR rolls that is not done (still downloading)
         roll_fetching = {}    # roll -> ACs whose fetch item of that roll is not done
+        gaps = {}             # roll -> {ac: listed parts without a stored PDF} (no item; follow-up: part-gap work)
         for roll in SIR[st]:
             roll_fetching[roll] = {ac for ac, stt in fetch_status(roll).items() if stt != "done"}
             fetching |= roll_fetching[roll]
@@ -158,7 +186,10 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
                 if acs_only and ac not in acs_only:
                     continue
                 want = (set(a.get("part_numbers") or []) | set(a.get("extra_parts") or [])) - set(a.get("missing") or [])
-                listed_not_stored += len(want - have.get(ac, set()))
+                gap = sorted(int(x) for x in want - have.get(ac, set()))
+                listed_not_stored += len(gap)
+                if gap:
+                    gaps.setdefault(roll, {})[ac] = gap
                 stored_not_listed += len(have.get(ac, set()) - want)
                 for x in a.get("extra_parts") or []:
                     extra[ac][int(x)].add(roll)
@@ -169,7 +200,7 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
             s["rolls"][roll] = {"acs": len(have), "pdfs": sum(len(v) for v in have.values()), "ac_records": len(acr),
                                 "listed_not_stored": listed_not_stored, "stored_not_listed": stored_not_listed,
                                 "langs": sorted({r["lang"] for r in acr.values() if r.get("lang")})}
-        held = held_fetch = held_partial = held_lang = 0
+        held = held_fetch = held_partial = held_lang = held_hint_incomplete = 0
         n_items = n_pdfs = 0
         state_items = []
         for ac in sorted(by_ac):
@@ -178,7 +209,10 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
                 held_fetch += len(by_ac[ac])
                 continue
             if hinted and ready is not None and ac not in ready:
-                held += len(by_ac[ac])
+                if ac in hint_issues:
+                    held_hint_incomplete += len(by_ac[ac])
+                else:
+                    held += len(by_ac[ac])
                 continue
             langs = lang.get(ac) or {"HIN"}
             if langs != {"HIN"}:
@@ -205,7 +239,9 @@ def plan_ocr(states, acs_only, parts_only, hint_set, nohint_set, hints_project, 
         if not on_hold:
             items += state_items
         s.update(acs=len(by_ac), items=n_items, pdfs=n_pdfs, items_waiting_for_hints=held, items_waiting_for_fetch=held_fetch,
-                 items_partial_held=held_partial, items_other_lang=held_lang, acs_fetch_not_done=len(fetching & set(by_ac)),
+                 items_partial_held=held_partial, items_other_lang=held_lang, items_hints_incomplete=held_hint_incomplete,
+                 hint_issues={str(a): w for a, w in sorted(hint_issues.items()) if a in by_ac},
+                 listed_parts_without_pdf={r: {str(a): v for a, v in sorted(g.items())} for r, g in gaps.items()}, acs_fetch_not_done=len(fetching & set(by_ac)),
                  acs_with_hints=(len(ready & set(by_ac)) if ready is not None else ("assumed" if hinted else None)),
                  held_state=HOLD[st] if on_hold else None)
         summ[st] = s
@@ -274,7 +310,8 @@ def main():
         state_set = dict(kv.split("=", 1) for kv in arg("--state-set").split(",")) if arg("--state-set") else {}
         items, summ = plan_ocr(states, ints(arg("--acs")), ints(arg("--parts")), arg("--hint-set", "v4a"), arg("--nohint-set", "j2Ps"),
                                arg("--hints-project", H.SSR_TEXT_PROJECT), "--assume-hints" in sys.argv,
-                               "--include-fetching" in sys.argv, state_set, "--include-partial" in sys.argv)
+                               "--include-fetching" in sys.argv, state_set, "--include-partial" in sys.argv,
+                               "--strict-hints" in sys.argv)
         print(f"{'state':5} {'name':24} {'set':6} {'ACs':>5} {'items':>7} {'PDFs':>7} {'w-hint':>6} {'w-fetch':>7} {'partial':>7}  rolls (ACs / PDFs / listed parts without a PDF / PDFs not in the AC record)")
         for st, s in summ.items():
             rl = "; ".join(f"{r} {v['acs']}/{v['pdfs']}/{v['listed_not_stored']}/{v['stored_not_listed']}" for r, v in s["rolls"].items())
@@ -282,6 +319,10 @@ def main():
                   f"{s['items_waiting_for_fetch']:7} {s['items_partial_held']:7}  {rl}" + (f"  other lang: {s['items_other_lang']}" if s['items_other_lang'] else ""))
             if s["held_state"]:
                 print(f"      HELD (not in the output): {s['held_state']}")
+            if s["hint_issues"]:
+                print(f"      2027 hints not complete ({s['items_hints_incomplete']} items held): "
+                      + "; ".join(f"AC {a}: {w}" for a, w in list(s["hint_issues"].items())[:12])
+                      + (" ..." if len(s["hint_issues"]) > 12 else ""))
         print(f"total items {len(items)}, PDFs {sum(len(i['payload']['keys']) for i in items)}")
         project = H.OCR_HI_PROJECT
     if arg("--resets"):

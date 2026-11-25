@@ -11,8 +11,22 @@ Rule: a record whose EPIC is not in the AC's 2027 roll gets the 2027 EPIC with t
 'epic_ocr' and the record gets 'epic_from_2027': true. Nothing else changes.
 """
 import collections
+import os
 import re
 import unicodedata
+
+# lang-tam 2026-11-25 (ECI_EPICFIX2_GUARD=1, default off): fix2 changed a RIGHT Tamil EPIC (YIG0009506 -> ZHN0009506, held-out
+# U07-7: the voter is not in the 2027 roll; another 2027 voter has the same 7 digits, gender, age gap and the label 'father').
+# Tamil SIR has few relation labels, so the label is no evidence. With the guard, fix2 changes the EPIC only when the name or the
+# relative's name is close (rapidfuzz ratio >= ECI_EPICFIX2_MIN, default 60, on the visual forms); else the EPIC stays and the
+# record gets the flag 'epic' (the 2027 candidate in readings.epic.fix2_candidate).
+# ocrv5 review 2026-11-25 (Hindi, the same fault): 'पिता का नाम' is the label of most men, so the old test was gender + age only.
+# S20 AC 14 part 70 serial 937: printed UIO1338565 (all 4 CRNNs and Tesseract), changed to HSD1338565 of another voter (name
+# ratio 11, relative 50); S20 AC 72 part 10 serial 622: printed RJ/09/070/198129 -> RJ/09/071/198129 (name 56, relative 21). All
+# right fix2 repairs in the ocrv5 test runs (Bihar 8R/BR, 8P/BR: 4 boxes) have name and relative ratios 95-97. Set v4a: guard on,
+# minimum 70.
+FIX2_GUARD = os.environ.get('ECI_EPICFIX2_GUARD', '0') == '1'
+FIX2_MIN = float(os.environ.get('ECI_EPICFIX2_MIN', '60'))
 
 
 def _visual(s):
@@ -62,6 +76,16 @@ def fix2(recs, idx, age_gap=1):
         same_house = _visual(h.get('house_no')) == _visual(r.get('house_no'))
         same_label = bool(_label(h)) and _visual(_label(h)) == _visual(r.get('relation_label'))
         if _visual(h.get('gender')) == _visual(r.get('gender')) and gap in (age_gap - 1, age_gap) and (same_house or same_label):
+            if FIX2_GUARD:
+                from rapidfuzz import fuzz
+                close = any(_visual(r.get(k)) and fuzz.ratio(_visual(r.get(k)), _visual(h.get(k))) >= FIX2_MIN for k in ('name', 'relation_name'))
+                if not close:
+                    if 'epic' not in (r.get('flags') or []):
+                        r['flags'] = list(r.get('flags') or []) + ['epic']
+                    rd = r.setdefault('readings', {}).setdefault('epic', {})
+                    if isinstance(rd, dict):
+                        rd['fix2_candidate'] = h['epic']
+                    continue
             r['epic_ocr'], r['epic'], r['epic_from_2027'] = e, h['epic'], True
             if 'epic' in (r.get('flags') or []):
                 r['flags'] = [f for f in r['flags'] if f != 'epic']

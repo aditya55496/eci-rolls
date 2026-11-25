@@ -51,6 +51,7 @@ NOHINT_SLACK = int(sys.argv[sys.argv.index('--slack') + 1]) if '--slack' in sys.
 # caused ~11,000 of ~11,400 house_no flags on the no-hint gold runs). Set on a non-gold validation set (14 UP ACs outside every
 # gold set). ECI_NOHINT_DIGITS=1 = on (default off).
 NOHINT_DIGITS = os.environ.get('ECI_NOHINT_DIGITS', '0') != '0'
+AGE_HINT_MAJ = os.environ.get('ECI_AGE_HINT_MAJ', '0') == '1'   # 2026-11-25 ocrv5, see decide() (default off: UP output unchanged)
 # job2 2026-11-25 (ECI_EPIC_FMT=1, default off): (a) the CRNNs have no backslash and read the old-format separator '\\' as '1':
 # a reading 'UP' [+ one separator] + 14 digits with '1' at digit 3 and digit 7 is rewritten to UP\\dd\\ddd\\ddddddd (field flagged);
 # (b) the majority EPIC is not valid but the two first CRNNs agree on a valid one -> take it (field flagged). With the relaxed
@@ -148,6 +149,20 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             flags.append(f); continue  # no engine matches 2027: flag
         if hint and f == 'age' and hint.get('age', '').isdigit():
             ok = [v for v in vals if v.isdigit() and int(hint['age']) - int(v) in (AGE_GAP - 1, AGE_GAP)]
+            if ok and AGE_HINT_MAJ and names:
+                # 2026-11-25 (ocrv5 review, ECI_AGE_HINT_MAJ=1): an age in the 2027 window was taken even when only Tesseract
+                # read it (S20 AC 14 part 70 final roll, page 7 box 14: printed 21, c11 c9 c4 c3 all '21', Tesseract '24',
+                # 2027 age 24 -> 24 without a flag). Now the window value is taken without a flag only when a CRNN read it AND
+                # no strict majority of the readings is outside the window; else the field is flagged (value: the outside
+                # majority when there is one, else the window value). In the cascade's stage 1 (c11 + Tesseract) a
+                # Tesseract-only match is flagged, so the box gets all engines.
+                maj, m = collections.Counter(v for v in vals if v).most_common(1)[0] if any(vals) else ('', 0)
+                crnn_ok = any(v in ok for v, nm in zip(vals, names) if nm.startswith('crnn'))
+                if m * 2 > len(vals) and maj not in ok:
+                    out[f] = maj; flags.append(f); continue
+                out[f] = collections.Counter(ok).most_common(1)[0][0]
+                if not crnn_ok: flags.append(f)
+                continue
             if ok: out[f] = collections.Counter(ok).most_common(1)[0][0]; continue
             j = next((i for i, nm in enumerate(names or []) if nm.startswith('crnn')), 0)
             out[f] = vals[j]; flags.append(f); continue

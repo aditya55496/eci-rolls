@@ -5,6 +5,10 @@ name: setup
 on:
   workflow_dispatch:
     inputs:
+      projects:
+        description: "Projects to set up (comma list, e.g. eci-rolls-hi-ocr,eci-rolls-hi-repair,eci-rolls-hi-parquet), or 'all' (resets threads, env and max_workers of EVERY project to family.py)"
+        required: true
+        default: ''
       fetch_acs:
         description: 'Seed only these ACs (comma list, e.g. 174,86). Empty = all 403.'
         required: false
@@ -28,3 +32,4 @@ jobs:
         env:
           SCRAPE_HUB_URL: https://scrape.s1d.me
           FETCH_ACS: ${{ inputs.fetch_acs }}
+          SETUP_PROJECTS: ${{ inputs.projects }}
