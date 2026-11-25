@@ -1350,6 +1350,20 @@ def eng_lex_guard(recs, cmax=2, nmin=30, ratio=30.0, pmin=2):
     return n
 
 
+# lang-mal r3 (2026-11-25, both default off):
+# ECI_DRAFT_FIELDS=1: a draft record is used field by field: its UNFLAGGED fields count, its flagged fields give no value (job4 used
+#   only wholly unflagged draft records; held-out Kerala: 80 of 139 matched DELETED-stamped final boxes had a draft record with a
+#   flagged house number only, so their names / ages were not filled). The draft EPIC itself must be unflagged.
+# ECI_DRAFT_STAMP=1: Kerala SIR FINAL rolls print a deleted voter with a 'DELETED' stamp over the box (code S) at the SAME serial
+#   number as in the draft (held-out: 4,920 of 4,920 EPIC-matched final records keep the draft serial); the stamp letters leak
+#   into the EPIC reading ('IGD21715648' for IDZ1715648). For a final record with code S whose serial equals the draft serial
+#   and whose EPIC output or an engine reading contains the draft EPIC (or its last 7 characters), every flagged field (not
+#   serial / code / part) takes the unflagged draft value WITHOUT a flag ('confirmed_by_draft_stamp'): the printed text under
+#   the stamp is the draft entry of the same voter (eye checks in lang-mal/NOTES.md round 3).
+DRAFT_FIELDS = os.environ.get('ECI_DRAFT_FIELDS', '0') == '1'
+DRAFT_STAMP = os.environ.get('ECI_DRAFT_STAMP', '0') == '1'
+
+
 def draft_fill(recs, path):
     """job4 (2026-11-25): SIR FINAL roll + the OCR records of the SIR DRAFT roll of the same part. The final roll prints the
     same voters (minus deletions, plus additions); in West Bengal it stamps 'UNDER ADJUDICATION' over the text of some boxes,
@@ -1358,23 +1372,38 @@ def draft_fill(recs, path):
     except serial / code / part:
       - an engine of the final read the draft value -> value = draft value, field unflagged ('confirmed_by_draft')
       - else value = draft value, field STAYS flagged ('filled_from_draft'): no value is accepted that no engine read.
-    Serial numbers are not taken from the draft (the final renumbers)."""
-    D = {}
+    Serial numbers are not taken from the draft (the final renumbers).  lang-mal r3: ECI_DRAFT_FIELDS / ECI_DRAFT_STAMP above."""
+    D, DS = {}, {}
     for l in open(path, encoding='utf-8'):
         d = json.loads(l)
-        if not d.get('flags') and not d.get('not_voter_box') and ensemble2.valid('epic', d.get('epic') or ''): D[d['epic']] = d
+        if d.get('not_voter_box') or not ensemble2.valid('epic', d.get('epic') or ''): continue
+        if DRAFT_FIELDS:
+            if 'epic' in (d.get('flags') or []): continue
+        elif d.get('flags'): continue
+        D[d['epic']] = d
+        if (d.get('serial_no') or '').isdigit() and 'serial_no' not in (d.get('flags') or []): DS[d['serial_no']] = d
     st = collections.Counter()
     for r in recs:
         if not r['flags']: continue
         cand = [r['epic']] + list((r.get('readings', {}).get('epic') or {}).values())
-        d = next((D[e] for e in cand if isinstance(e, str) and e in D), None)
+        cand = [e for e in cand if isinstance(e, str)]
+        d = next((D[e] for e in cand if e in D), None)
+        stamp = False
+        if DRAFT_STAMP and r.get('code') == 'S' and (r.get('serial_no') or '') in DS:
+            s = DS[r['serial_no']]
+            if (d is None or d is s) and any(s['epic'] in e or (len(e) >= 7 and e[-7:] == s['epic'][-7:]) for e in cand):
+                d, stamp = s, True
         if d is None: continue
         st['matched'] += 1
+        if stamp: st['stamp_matched'] += 1
+        dfl = set(d.get('flags') or [])
         for f in list(r['flags']):
-            if f in ('serial_no', 'code', 'part_no') or f not in d: continue
+            if f in ('serial_no', 'code', 'part_no') or f not in d or f in dfl: continue
             rd = [v for k, v in (r.get('readings', {}).get(f) or {}).items() if isinstance(v, str) and not k.startswith(('hint', 'crnn_conf'))]
             if f == 'epic' or any(visual(v) == visual(d[f]) for v in rd):
                 r[f] = d[f]; r['flags'].remove(f); r.setdefault('confirmed_by_draft', []).append(f); st['confirmed'] += 1
+            elif stamp:
+                r[f] = d[f]; r['flags'].remove(f); r.setdefault('confirmed_by_draft_stamp', []).append(f); st['stamp_confirmed'] += 1
             else:
                 r[f] = d[f]; r.setdefault('filled_from_draft', []).append(f); st['filled'] += 1
     return dict(st)
