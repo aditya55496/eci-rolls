@@ -2,7 +2,8 @@
 
 ocr-any already runs the repairs on every part (hi_common.repair_part: final_deleted, serial_gaps; the EPIC repair from the 2027
 roll runs inside eci_ocr when hints exist). This task is for outputs written before a repair existed or changed, as
-repair_task.py was for UP, in the layout ocr/<state>/<ac>/<part>.jsonl.gz.
+repair_task.py was for UP, in the layout ocr/<state>/<ac>/<part>.jsonl.gz (form-route items: payload "roll_group", layout
+ocr/<state>/<roll group>/<ac>/<part>.jsonl.gz, formocr 2026-11-25).
 Queue item (project eci-rolls-hi-repair): key "<fix>/<state>/<ac>", payload {"state", "ac", "p": [parts], "fix": "parts" |
 "epic", "hints": key or null}. fix "parts" = final_deleted + serial_gaps; fix "epic" = epicfix.fix + fix2 against the 2027
 hints (only for items with a hints key), fix2 with the guard switches recorded in the records' ocr_rules. A changed file is written back to eci-rolls-hi-ocr (one file per call); the file it
@@ -47,7 +48,12 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
     st, ac, fix = str(p["state"]), int(p["ac"]), p.get("fix")
     if fix not in FIXES:
         raise RuntimeError(f"unknown fix {fix!r}")
-    parts = [int(x) for x in p["p"]]
+    H.payload_version(p)
+    group = p.get("roll_group")
+    # form-route items (formocr, payload v 2): parts in 'form_p' (older code fails on them with a KeyError instead of repairing
+    # the SIR files of the same state / AC / part numbers)
+    parts = [int(x) for x in (p["form_p"] if group is not None else p["p"])]
+    base = H.ocr_base(st, ac, group)     # form-route outputs (formocr): ocr/<state>/<roll group>/<ac>
     fetch = fetch or (lambda ks, dest: {k: v for proj in {x.split("/", 1)[0] for x in ks}
                                         for k, v in download(hub, proj, [x for x in ks if x.startswith(proj + "/")], dest).items()})
     upload_ocr = upload_ocr or ocr_hub.upload_many
@@ -62,7 +68,7 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
             if not hp:
                 raise RuntimeError(f"no 2027 hints: {p['hints']}")
             idx = epicfix.index(json.loads(l) for l in gzip.open(hp, "rt", encoding="utf-8") if l.strip())
-        keys = [f"{H.OCR_HI_PROJECT}/ocr/{st}/{ac}/{x}.jsonl.gz" for x in parts]
+        keys = [f"{H.OCR_HI_PROJECT}/{base}/{x}.jsonl.gz" for x in parts]
         got = fetch(keys, tmp)
         for x, k in zip(parts, keys):
             if not got.get(k):
@@ -100,8 +106,8 @@ def do_item(hub, item, ocr_hub, fetch=None, upload_ocr=None, upload_own=None):
                 out["changed"][a] = out["changed"].get(a, 0) + b
             if n:
                 out["files_changed"] += 1
-                upload_own([(f"ocr_prev/{fix}/{st}/{ac}/{x}.jsonl.gz", raw, "application/gzip")])
-                upload_ocr([(f"ocr/{st}/{ac}/{x}.jsonl.gz", gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0),
+                upload_own([(f"ocr_prev/{fix}/{base[4:]}/{x}.jsonl.gz", raw, "application/gzip")])
+                upload_ocr([(f"{base}/{x}.jsonl.gz", gzip.compress("".join(json.dumps(r, ensure_ascii=False) + "\n" for r in recs).encode(), mtime=0),
                              "application/gzip")])
             os.remove(got[k])
     return out

@@ -110,7 +110,31 @@ def _tess_noise_only(crnn, tess, level):
     return bool(drop or ins) and _only_ops(a, b, drop, ins)
 
 
+# job5 2026-11-25 (ECI_PAREN_GUARD=1, default off): the CRNN charsets have no '(' ')'. Himachal prints house numbers such as
+# 13(1), 56(2)2, 57(2)क; all CRNNs read ')' as '1' with one voice (13/11, 56/212) and the record was not flagged (6 silent
+# errors on the job5 SSR gold). When any engine (Tesseract) reads a bracket in house_no and the chosen value has none, the
+# field is flagged.
+PAREN_GUARD = os.environ.get('ECI_PAREN_GUARD', '0') == '1'
 _EPIC_BS = re.compile(r'^UP[/\\]?([0-9]{2})1([0-9]{3})1([0-9]{7})$')
+
+
+# job5 2026-11-25 (ECI_EPIC_STATE=1, default off): old-format EPICs ('BR/02/007/123010') start with the state's 2-letter code.
+# The CRNNs never saw BR / HR / HP and read them as 8R, HP, HA, HF. Each engine's reading of an old-format EPIC whose 2-letter
+# part differs from the state's code in at most 1 character gets the state's code (set per PDF by eci_ocr from the file name,
+# EPIC_STATE). Codes checked on job5 gold prints: S04 BR, S07 HR, S08 HP, S24 UP; S12 MP (own code) and S26 Chhattisgarh MP
+# (MP/021/163/642044, ocrv5 local test). Other states: no change (code unknown).
+EPIC_STATE_ON = os.environ.get('ECI_EPIC_STATE', '0') == '1'
+STATE_EPIC_CODE = {'S04': 'BR', 'S07': 'HR', 'S08': 'HP', 'S24': 'UP', 'S12': 'MP', 'S26': 'MP'}
+EPIC_STATE = None
+_EPIC_OLD = re.compile(r'^(..)([/\\])([0-9]{1,3})\2([0-9]{2,3})\2([0-9]{6,7})$')   # Haryana: HR/01/07/0279513 (2-digit part)
+_EPIC_CONF = {frozenset(p) for p in ('8B', '0D', '1I', '5S', '2Z', 'PR')}   # digit/letter shapes the CRNNs mix up
+
+
+def _epic_state(v):
+    m = _EPIC_OLD.match(v or '')
+    if not m or not EPIC_STATE or m.group(1) == EPIC_STATE: return v
+    if sum(a != b and frozenset(a + b) not in _EPIC_CONF for a, b in zip(m.group(1), EPIC_STATE)) > 1: return v
+    return EPIC_STATE + v[2:]
 
 
 def _epic_bs(v):
@@ -156,6 +180,48 @@ def lex_count_ge(word, n):
     import numpy as np
     i = int(np.searchsorted(a, np.uint64(h)))
     return i < len(a) and int(a[i]) == h
+
+
+# job5 r3 2026-11-25 (ECI_NOHINT_MARKVAR=FILE.npz, default unset = off; no 2027 roll): the CRNNs drop printed marks with one
+# voice (nukta: अरोड़ा read अरोडा by all 7 CRNNs of config j5r3G, Tesseract wrong elsewhere -> NUNF un-flagged it; anusvara:
+# दहनीं read दहनी). The name un-flag paths (TESSCLEAN, NUNF) are not taken when a word of the value has a mark variant (nukta,
+# anusvara or candrabindu added / removed / swapped) that the lexicon saw MORE often than the word. FILE: arrays h (sorted
+# blake2b-64 of the visual word) and c (count) of the 2027 UP text words (job2 lexicon, non-gold ACs) that have such a variant
+# in the lexicon (job5 r3/build_markvar.py). Gold sim (j5r3G): 4 more flagged records of 1,283, 1 silent error caught.
+_MV = {}
+_MV_NUK = 'डढजफकखग'
+_MV_VS = set('\u093e\u093f\u0940\u0941\u0942\u0947\u0948\u094b\u094c')
+
+
+def mark_variants(w):
+    out = set()
+    for i, ch in enumerate(w):
+        if ch in ('\u093c', '\u0902', '\u0901'): out.add(w[:i] + w[i + 1:])
+        if ch == '\u0902': out.add(w[:i] + '\u0901' + w[i + 1:])
+        if ch == '\u0901': out.add(w[:i] + '\u0902' + w[i + 1:])
+        nxt = w[i + 1] if i + 1 < len(w) else ''
+        if ch in _MV_NUK and nxt != '\u093c': out.add(w[:i + 1] + '\u093c' + w[i + 1:])
+        if (ch in _MV_VS or '\u0915' <= ch <= '\u0939') and nxt not in ('\u0902', '\u0901', '\u093c', '\u094d') and nxt not in _MV_VS:
+            out.add(w[:i + 1] + '\u0902' + w[i + 1:])
+    out.discard(w)
+    return {visual(v) for v in out}
+
+
+def _mv_count(w):
+    import numpy as np
+    if 'h' not in _MV:
+        z = np.load(os.environ['ECI_NOHINT_MARKVAR']); _MV['h'], _MV['c'] = z['h'], z['c']
+    h = _whash(w); i = int(np.searchsorted(_MV['h'], np.uint64(h)))
+    return int(_MV['c'][i]) if i < len(_MV['h']) and int(_MV['h'][i]) == h else 0
+
+
+def markvar_suspect(val):
+    """True when ECI_NOHINT_MARKVAR is set and a word of val has a mark variant seen more often than the word."""
+    if not os.environ.get('ECI_NOHINT_MARKVAR'): return False
+    for w in visual(val or '').split():
+        c = _mv_count(w)
+        if any(_mv_count(v) > max(c, 1) for v in mark_variants(w)): return True
+    return False
 
 
 def marks_strip(x):
@@ -214,6 +280,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             continue
         if f in ('serial_no', 'part_no', 'epic'):
             fmt_flag = False
+            if f == 'epic' and EPIC_STATE_ON and EPIC_STATE:
+                vals = [_epic_state(v) for v in vals]; vis = [visual(v) for v in vals]
             if f == 'epic' and EPIC_FMT:
                 v2 = [_epic_bs(v) for v in vals]
                 if v2 != vals:
@@ -291,6 +359,8 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
             for p in pref:
                 j = next((i for i, nm in enumerate(names) if nm.startswith(p)), None)
                 if j is not None and vals[j]: out[f] = vals[j]; break
+        if PAREN_GUARD and f == 'house_no' and any(b in v for v in vals for b in '()') and not any(b in out[f] for b in '()'):
+            flags.append(f); continue
         need = max(2, len(vals) - NOHINT_SLACK) if hint is None else len(vals)  # no confirmation: (almost) all engines must agree
         if hint is None and f in SLACK1_F and n == len(vals) - 1 and len(vals) >= 5 and names and valid(f, out[f]):
             odd = [nm for nm, x in zip(names, vis) if x != top]
@@ -311,7 +381,7 @@ def decide(cands, hint, pix, names=None, confs=None, stamp=None):
                 and sum(nm.startswith('crnn') for nm in names) >= 4:
             v = _crnn_all_agree(f, vals, vis, names)
             others = [vals[i] for i, nm in enumerate(names) if not nm.startswith('crnn')]
-            if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others):
+            if v is not None and all(_tess_noise_only(v, t, NOHINT_TESSCLEAN) for t in others) and not markvar_suspect(v):
                 out[f] = v; continue
         if f in CORE and (n < need or not valid(f, out[f])): flags.append(f)
     if LEX is not None:

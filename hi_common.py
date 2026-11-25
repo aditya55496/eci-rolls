@@ -75,14 +75,30 @@ class MissingRoll(RuntimeError):
 
 # Payload format of ocr-any items (key 'v'; absent = 1). Raise it, and add the new value to PAYLOAD_VERSIONS, whenever a change
 # adds a payload key or changes the meaning of one without a new model set.
-PAYLOAD_V = 1
-PAYLOAD_VERSIONS = {1}
+# v 2 (formocr, 2026-11-25): + 'roll_group' (form-route items: GE / SSR roll families; the output path gets that segment,
+# ocr_base). SIR items keep writing v 1 (no new key): workers of older code take them as before and give a v 2 item back.
+PAYLOAD_V = 2
+PAYLOAD_VERSIONS = {1, 2}
+ROLL_GROUP_RE = re.compile(r"[SU][0-9]{2}-20[0-9]{2}-[A-Z0-9-]+")
+
+
+def ocr_base(state, ac, roll_group=None):
+    """Bucket path (in eci-rolls-hi-ocr) of a part's output without the '/<part>.jsonl.gz': ocr/<state>/<ac> for the SIR items,
+    ocr/<state>/<roll group>/<ac> for the form-route items (formocr: GE 2024 and SSR 2024/25 rolls of the same state and AC
+    have the same part numbers as the SIR rolls; the group segment keeps the files apart)."""
+    if roll_group is None:
+        return f"ocr/{state}/{ac}"
+    if not ROLL_GROUP_RE.fullmatch(str(roll_group)) or not str(roll_group).startswith(str(state) + "-"):
+        raise RuntimeError(f"bad roll_group {roll_group!r} for state {state}")
+    return f"ocr/{state}/{roll_group}/{ac}"
 
 
 def payload_version(payload):
     v = payload.get("v", 1)
     if v not in PAYLOAD_VERSIONS:
         raise UnknownPayloadVersion(f"payload v {v!r} (this checkout knows {sorted(PAYLOAD_VERSIONS)})")
+    if v < 2 and payload.get("roll_group") is not None:
+        raise RuntimeError("payload v 1 with a roll_group (v 2 key): planner error")
     return v
 
 
@@ -174,8 +190,31 @@ def model_dirs(name, sets=None):
                     got = hashlib.sha256(open(os.path.join(d, fn), "rb").read()).hexdigest()[:16]
                     if got != w:
                         raise ModelSetIncomplete(f"{name} (models/{m}/{fn} sha256 {got} != {w})")
+        for a in ms.get("aux") or []:     # files the set's env names as <models>/NAME (VALSET CRNN dirs, lexicons; formocr)
+            path = os.path.join(HERE, "models", a)
+            files = [("crnn.onnx", ms["sha256_16"].get(a)), ("charset.json", (ms.get("charset_sha256_16") or {}).get(a))] \
+                if os.path.isdir(path) else [("", ms["sha256_16"].get(a))]
+            for fn, w in files:
+                f = os.path.join(path, fn) if fn else path
+                if not os.path.isfile(f):
+                    raise ModelSetIncomplete(f"{name} (models/{a} incomplete in this checkout)")
+                if not w:
+                    raise ModelSetIncomplete(f"{name} (models/{a}/{fn} has no sha256 in model_sets.json)")
+                got = sha256_file(f)[:16]
+                if got != w:
+                    raise ModelSetIncomplete(f"{name} (models/{a}/{fn} sha256 {got} != {w})")
         _VERIFIED.add(name)
     return dirs
+
+
+MODELS_TOKEN = "<models>"
+
+
+def set_env(ms):
+    """The set's eci_ocr switches for a run: '<models>' in a value (paths of VALSET CRNNs and lexicons, formocr j5r4) becomes
+    this checkout's models/ dir. The records' ocr_rules keep the '<models>' form (the same on every runner)."""
+    d = os.path.join(HERE, "models")
+    return {k: str(v).replace(MODELS_TOKEN, d) for k, v in (ms.get("env") or {}).items()}
 
 
 def _version(cmd):

@@ -275,8 +275,7 @@ class Engines:
         gk = {g: [] for g in groups}
         for b, k in keys:
             g = 'line' if k.startswith('line') else 'num' if k in ('serial', 'part') else k
-            if self.digit is not None and k in ('line2', 'line3'): g = 'digit'   # read by the digit CRNN, not Tesseract
-            gk.setdefault(g, []).append((b, k))
+            gk[g].append((b, k))
         for b in range(n): res[b]['tess'] = ({}, {})
         for g, (lang, psm, wl) in groups.items():
             if not gk[g] or (tess_groups is not None and g not in tess_groups): continue
@@ -292,7 +291,7 @@ class Engines:
                 txts = self.tess_many([self.tess_prep(segs_list[b][k]) for b, k in gk[g]], lang, psm, wl, tmp)
             for (b, k), txt in zip(gk[g], txts): res[b]['tess'][0][k] = txt
         if self.digit is not None and (tess_groups is None or 'line' in tess_groups):
-            dk = gk.get('digit', [])
+            dk = [(b, k) for b, k in gk['line'] if k in ('line2', 'line3')]
             for (b, k), (txt, c) in zip(dk, self.crnn_read(self.digit, [segs_list[b][k] for b, k in dk])):
                 res[b]['tess'][0][k] = txt
         timing['tess'] = round(timing.get('tess', 0) + time.time() - t, 3)
@@ -508,6 +507,11 @@ def _crnn_same(cs, f):
 
 
 _VALF = ('name', 'relation_label', 'relation_name', 'house_no', 'age', 'gender')
+# job5 r3 (ECI_NOHINT_VALF=fields, default = all of _VALF): fields whose flagged value the VALSET extras may re-choose. The job2
+# VALSET CRNNs have no '(' ')' in their charsets; on Himachal bracket house numbers (13(1)) they would out-vote the bracket
+# reading of the j5r2 CRNNs (the field stays flagged; the record would be wrong).
+_VALF = tuple(x for x in os.environ.get('ECI_NOHINT_VALF', ','.join(_VALF)).split(',') if x)
+_VALGUARD = os.environ.get('ECI_NOHINT_VALGUARD', '0') == '1'
 
 
 def _valset(recs, segs_list):
@@ -534,6 +538,11 @@ def _valset(recs, segs_list):
             if not vs: continue
             c = collections.Counter(visual(v) for v in vs); top, k = c.most_common(1)[0]
             if f == 'house_no' and ensemble2.NOHINT_AMP and '&' in (r[f] or ''): continue   # the '&' choice of decide() stays
+            if _VALGUARD and r[f]:
+                # job5 r4 (ECI_NOHINT_VALGUARD=1, default off): the extras may not replace a value that a strict majority of
+                # the main CRNN voters read (gold: 3 of 4 voters + Tesseract read घांधु, the 3 job2 extras घांथु).
+                mv = [rd.get(c[0]) for c in _E.crnn]
+                if sum(isinstance(v, str) and visual(v) == visual(r[f]) for v in mv) * 2 > len(mv): continue
             if k * 2 > len(vs): r[f] = next(v for v in vs if visual(v) == top)
         if ensemble2.NOHINT_NUNF:  # job2 r4: clear a name flag when every CRNN (voters + extras) agrees on a common value (ensemble2)
             for f in [f for f in r['flags'] if f in ('name', 'relation_name')]:
@@ -541,19 +550,22 @@ def _valset(recs, segs_list):
                 cr = [v for n, v in rd.items() if n.startswith('crnn') and isinstance(v, str)]
                 if not cr or not cr[0] or len({visual(v) for v in cr}) != 1: continue
                 if ensemble2.marks_strip(rd.get('tess', '')) == ensemble2.marks_strip(cr[0]): continue
-                if all(ensemble2.lex_count_ge(w, ensemble2.NOHINT_NUNF) for w in visual(cr[0]).split()):
+                if all(ensemble2.lex_count_ge(w, ensemble2.NOHINT_NUNF) for w in visual(cr[0]).split()) and not ensemble2.markvar_suspect(cr[0]):
                     r[f] = cr[0]; r['flags'].remove(f); r['readings'].pop(f, None)
 
 
 # job2 2026-11-25 (ECI_TOFU=1, default off): missing-glyph boxes after names (Haryana SIR: the roll font has no glyph for a
 # character stored after many names, the print shows an empty rectangle; 26 of 90 S07 ACs, 8.5 % of the boxes) are found on the
-# page image as stored (before the rescale), painted white there before the boxes are cut, and named in the record: 'missing_glyph' = {field: count}
-# (eciocr/ocr/tofu.py). Only boxes inside a voter box's text column; without such boxes the output is unchanged.
+# page image as stored (before the rescale), painted white there before the boxes are cut, and named in the record:
+# 'missing_glyph' = {field: count} (eciocr/ocr/tofu.py). Only boxes inside a voter box's text column; without such boxes the
+# output is unchanged.
 TOFU = os.environ.get('ECI_TOFU', '0') == '1'
 
 
 def process_page(task):
     pdf, pno, kind = task
+    if ensemble2.EPIC_STATE_ON:   # job5: the state's code of old-format EPICs (ensemble2._epic_state)
+        ensemble2.EPIC_STATE = ensemble2.STATE_EPIC_CODE.get(pdf_meta(pdf).get('state'))
     t0 = time.time(); tm = {}
     gray = page_gray(pdf, pno)
     tm['extract'] = round(time.time() - t0, 3)

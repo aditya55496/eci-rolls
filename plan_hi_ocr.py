@@ -280,6 +280,8 @@ def plan_parquet(states):
         f"SELECT key, extract(epoch FROM done_at) AS done_at FROM queue WHERE project = {lit(H.PARQUET_HI_PROJECT)} AND status = 'done'")}
     by = collections.defaultdict(list)
     for r in rows:
+        if r["key"].count("/") != 2:      # form-route items '<state>/<roll group>/<ac>/<part>' (plan_form_ocr.py --parquet)
+            continue
         st, ac, part = r["key"].split("/")
         if states and st not in states:
             continue
