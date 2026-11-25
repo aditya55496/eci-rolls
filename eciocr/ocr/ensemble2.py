@@ -98,6 +98,13 @@ def agree_eng(f, vals, names, hv='', full=False):
         # held-out Opus check: 'Flat no. 1/El-2' read by all three engines, 2027 and Opus 'EI-2')
         x, y = v[0], visual(str(hv or ''))
         if any(op == 'replace' and x[i] in 'Il1|' and y[j] in 'Il1|' for op, i, j in Levenshtein.editops(x, y)): return False
+        if ENG_AGREE >= 5:
+            # ECI_ENG_AGREE=5 (job3 round 3, 2026-11-25; held-out set 2 checked by eye): all engines agreed on 'Md. Fin' (print and
+            # 2027 'Md. Fjn') and on "Jose D'Souza" (print and 2027 "Jose D''Souza"): narrow glyphs i / j / ! and a doubled
+            # character that a CTC reader collapses are no evidence either.
+            for op, i, j in Levenshtein.editops(x, y):
+                if op == 'replace' and x[i] in 'Il1|ij!' and y[j] in 'Il1|ij!': return False
+                if op == 'insert' and ((j > 0 and y[j - 1] == y[j]) or (j + 1 < len(y) and y[j + 1] == y[j])): return False
     return True
 
 
@@ -105,6 +112,10 @@ def agree_eng(f, vals, names, hv='', full=False):
 # Tesseract reading differs from it only in I / l / 1 / | (substituted, added or dropped): Tesseract eng reads a capital I as l
 # ('lrungbam', 'MaqbooI', 'Alli' for Ali) - the CRNNs agreeing is the evidence.
 ENG_TIL = os.environ.get('ECI_ENG_TIL', '0') != '0'
+# ECI_ENG_TIL=2 (job3 round 3, 2026-11-25): as 1, but NOT when the Tesseract reading has an extra I/l/1/| next to the same letter
+# (Tesseract 'Pillari', both CRNNs 'Pilari'): a CTC model can drop one letter of a double 'll' (held-out S05-24 part 19, by eye:
+# 'Pillari' printed), so the CRNN agreement is no evidence there.
+ENG_TIL_DOUBLE = os.environ.get('ECI_ENG_TIL', '0') == '2'
 
 
 def til_ok(vals, names):
@@ -116,6 +127,7 @@ def til_ok(vals, names):
         for op, i, j in Levenshtein.editops(cr[0], t):
             ch = (cr[0][i] if op != 'insert' else '') + (t[j] if op != 'delete' else '')
             if not ch or any(c not in 'Il1|' for c in ch): return False
+            if ENG_TIL_DOUBLE and op == 'insert' and ((j > 0 and t[j - 1] == t[j]) or (j + 1 < len(t) and t[j + 1] == t[j])): return False
     return True
 
 
