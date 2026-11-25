@@ -659,6 +659,15 @@ def _valset(recs, segs_list):
 TOFU = os.environ.get('ECI_TOFU', '0') == '1'
 
 
+def _eng_stampbox(seg, r, names):
+    """job4 r3 (ECI_ENG_STAMPBOX=1): a text band AFTER the age line (line roles voted by the stage-1 CRNNs) = stamp ink below
+    the voter text ('UNDER ADJUDICATION' / 'DELETED'). Wrapped names add bands before the age line and do not count."""
+    nl = sum(k.startswith('line') for k in seg)
+    if nl <= 4: return False
+    roles = parse_eng.box_roles([r[n][0] for n in names if n in r], nl)
+    return 'age' in roles and roles.index('age') < nl - 1
+
+
 def process_page(task):
     pdf, pno, kind, lang = task
     if ensemble2.EPIC_STATE_ON:   # job5: the state's code of old-format EPICs (ensemble2._epic_state)
@@ -709,13 +718,16 @@ def process_page(task):
             heads.append((y, parse_heading([t for t, _ in _E.crnn_read(_E.crnn[0], L)])))
     tm['heading'] = round(time.time() - t, 3)
     K = _OPT.get('stage1', 0)
+    stampbox = set()
     if lang in LATIN_TPL and ENG_NOHINT and not _OPT['hints'] and K >= 2:
         # job4 cascade: stage 1 = the first 2 CRNNs (+ Tesseract code only); stage 2 = other CRNNs + all Tesseract groups for
         # boxes where the 2 CRNNs do not agree on every field
         reads = _E.read_boxes(segs_list, _OPT['tmp'], tm, crnn_idx={0, 1}, tess_groups={'code'}, lang=lang)
         names1 = _E.names[:2] + _E.tnames
-        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1]
-                or (ENG_STAMPBOX and sum(k.startswith('line') for k in segs_list[i]) > 4)]
+        if ENG_STAMPBOX:
+            for i, r in enumerate(reads):
+                if _eng_stampbox(segs_list[i], r, _E.names[:2]): stampbox.add(i)
+        need = [i for i, r in enumerate(reads) if decide_box(r, names1, pix[i], {}, stamps[i], lang, stage1=True)[1] or i in stampbox]
         if need:
             more = _E.read_boxes([segs_list[i] for i in need], _OPT['tmp'], tm, crnn_idx=set(range(2, len(_E.crnn))),
                                  tess_groups={'line', 'num', 'epic'}, lang=lang)
@@ -843,7 +855,7 @@ def process_page(task):
         if tofu_at.get(i): rec['missing_glyph'] = tofu_at[i]
         if scale != 1.0: rec['page_scale'] = round(scale, 4)
         if K and _OPT['hints'] and i in seq_ok: rec['serial_s1_seq'] = True
-        if ENG_STAMPBOX and lang == 'ENG' and sum(k.startswith('line') for k in segs_list[i]) > 4: rec['stampbox'] = True
+        if i in stampbox: rec['stampbox'] = True
         if DUMP:   # job4: every engine's parsed fields + CRNN line confidences for every box (offline rule studies)
             rec['cands'] = {n: c for n, c in zip(nm, cands)}
             rec['confs'] = decide_box.confs
