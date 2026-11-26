@@ -1,0 +1,63 @@
+name: uk-2027-pull
+
+# Full 70-AC Uttarakhand (S28) 2027 SSR text-layer pull, unattended on free public-repo runners.
+# TDD gate: the `check` job must pass (part-list -> PDF -> parse chain works from this runner IP)
+# before the 70-AC `pull` job runs. PII posture: raw Parquet lives ONLY on the runner and is
+# discarded with it; the sole artifact is PII-safe flags.json (aggregate counts, no names/EPICs).
+
+on:
+  workflow_dispatch:
+    inputs:
+      acs:
+        description: "AC range to pull (e.g. 1-70 or 1,21,19)"
+        default: "1-70"
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Self-test gate (1 AC, counts only, no names)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography pymupdf pyarrow pandas
+      - name: Chain self-test (part-list -> download -> parse -> record count)
+        run: python -u uk/uk_driver.py check
+
+  pull:
+    name: Full 2027 pull + statewide detection
+    needs: check
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography pymupdf pyarrow pandas
+      - name: Pull 2027 SSR records -> private Parquet (runner-only; PDFs streamed + discarded)
+        run: python -u uk/uk_driver.py textlayer --out ./out --acs "${{ github.event.inputs.acs }}"
+      - name: Statewide detection -> PII-safe flags.json (aggregate counts only)
+        run: python -u uk/detect.py --data ./out --out ./out/flags.json
+      - name: Proof (record totals + headline signal; no names printed)
+        run: |
+          python -u - <<'PY'
+          import glob, json, pyarrow.parquet as pq
+          files = sorted(glob.glob("out/release/2027-ssr/ac=*/data.parquet"))
+          tot = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+          print(f"RESULT acs_with_data={len(files)} total_records={tot}")
+          fl = json.load(open("out/flags.json"))
+          print(f"RESULT flags_acs={fl['acs_analyzed']} cross_ac_dup_epic={fl['dup_epic_cross_ac']}")
+          PY
+      - name: Upload PII-safe flags (aggregates only; raw Parquet never leaves the runner)
+        uses: actions/upload-artifact@v4
+        with:
+          name: uk-2027-flags
+          path: out/flags.json
+          if-no-files-found: error
