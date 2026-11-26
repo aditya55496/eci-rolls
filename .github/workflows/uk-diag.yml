@@ -1,0 +1,47 @@
+name: uk-diag
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography pymupdf
+      - name: PDF-CDN boundary probe (metadata only, no record parsing / no names)
+        run: |
+          python -u - <<'PY'
+          import sys, time, requests
+          sys.path.insert(0, ".")
+          import eci_api as E
+          roll = {"year": 2027, "ref": "SSR-DraftRoll", "gen": "EROLLGEN", "rev": 1}
+          STATE, ac = "S28", 1
+          s = requests.Session(); s.headers.update(E.HEADERS)
+
+          url, body = E.roll_part_list_request(roll, STATE, ac)
+          r = s.post(url, json=body, timeout=60)
+          pl = r.json().get("payload")
+          print(f"PARTLIST host={url.split('/')[2]} status={r.status_code} parts={len(pl) if pl else 0}")
+
+          parts = sorted(pl, key=lambda p: int(p['partNumber']))[:2]
+          for p in parts:
+              pu = E.roll_pdf_url(roll, STATE, ac, int(p['partNumber']))
+              print(f"PDF part={p['partNumber']} host={pu.split('/')[2]} url={pu}")
+              t = time.time()
+              try:
+                  rr = s.get(pu, timeout=30)
+                  dt = time.time() - t
+                  print(f"  -> status={rr.status_code} ct={rr.headers.get('Content-Type')} "
+                        f"server={rr.headers.get('Server')} cf_ray={rr.headers.get('CF-RAY')} "
+                        f"len={len(rr.content)} head={rr.content[:12]!r} t={dt:.1f}s")
+              except Exception as ex:
+                  print(f"  -> EXC {type(ex).__name__}: {str(ex)[:160]} t={time.time()-t:.1f}s")
+          PY
