@@ -1,0 +1,41 @@
+name: uk-2027-pull
+on:
+  workflow_dispatch:
+    inputs:
+      acs:
+        description: "AC range"
+        default: "1-70"
+        required: false
+permissions:
+  contents: read
+jobs:
+  pull:
+    name: 70-AC 2027 pull + statewide detect (unattended)
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography pymupdf pyarrow pandas
+      - name: Pull 2027 SSR -> private Parquet (runner-only; PDFs discarded; resume-safe)
+        run: python -u uk/uk_driver.py textlayer --out ./out --acs "${{ github.event.inputs.acs }}"
+      - name: Statewide detection -> PII-safe flags.json (aggregate counts only)
+        run: python -u uk/detect.py --data ./out --out ./out/flags.json
+      - name: Proof (record totals + headline; no names)
+        run: |
+          python -u - <<'PY'
+          import glob, json, pyarrow.parquet as pq
+          files = sorted(glob.glob("out/release/2027-ssr/ac=*/data.parquet"))
+          tot = sum(pq.ParquetFile(f).metadata.num_rows for f in files)
+          print(f"RESULT acs_with_data={len(files)} total_records={tot}")
+          fl = json.load(open("out/flags.json"))
+          print(f"RESULT flags_acs={fl['acs_analyzed']} cross_ac_dup_epic={fl['dup_epic_cross_ac']}")
+          PY
+      - name: Upload PII-safe flags (aggregates only; raw stays on runner)
+        uses: actions/upload-artifact@v4
+        with:
+          name: uk-2027-flags
+          path: out/flags.json
+          if-no-files-found: error
