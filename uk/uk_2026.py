@@ -51,16 +51,28 @@ from collections import Counter
 # --- make the repo's own modules importable (this file lives in uk/, repo root is one up) ---
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, REPO)
+sys.path.insert(0, os.path.join(REPO, "eciocr", "textlayer"))  # parse_textlayer (2027 hint pull)
 import eci_api as E  # noqa: E402  (roll_part_list_request, roll_pdf_url, is_pdf, HEADERS)
 import requests      # noqa: E402
+import hashlib       # noqa: E402  (EPIC/house HMAC for the PII-safe public release)
+import hmac          # noqa: E402
 
 STATE = "S28"
-ROLLS = {  # the two scanned EROLLGEN rolls we own; shapes match eci_api.EROLL / uk_driver.UK_ROLLS
+ROLLS = {  # scanned EROLLGEN rolls we own + the 2027 text-layer roll used ONLY to pull OCR hints
     "2026-sir-draft": {"year": 2026, "ref": "SIR-DraftRoll", "gen": "EROLLGEN", "rev": 1},
     "2026-sir-final": {"year": 2026, "ref": "SIR-FinalRoll", "gen": "EROLLGEN", "rev": 1},
+    "2027-ssr-draft": {"year": 2027, "ref": "SSR-DraftRoll", "gen": "EROLLGEN", "rev": 1},  # hints only
 }
 OCR = os.path.join(REPO, "eciocr", "prod", "eci_ocr.py")
-MODELS = [os.path.join(REPO, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]
+MODEL_SETS = os.path.join(REPO, "model_sets.json")
+MODELS = [os.path.join(REPO, "models", m) for m in ("c11q", "c9q", "c4q", "c3q")]  # legacy default
+
+# PII-safe public release (--public-out): STRICT allowlist. Only these columns are ever written;
+# everything else (name, relation_name, house_no, epic, serial_no, page, section, section_name,
+# readings, bbox, extra, code_ink, ...) is dropped by construction. EPIC/house are keyed one-way HMACs.
+PUBLIC_FIELDS = ("epic_hmac", "house_hmac", "house_is_placeholder", "state", "roll", "revision_year",
+                 "ac", "part", "age", "gender", "relation_type", "status_code", "flags",
+                 "deleted_in_final", "from_draft", "ocr_model_set")
 
 # fetch tuning (mirrors uk_driver.get_pdf + fetch_task.py)
 ATTEMPTS, TIMEOUT = 4, 180
@@ -78,6 +90,35 @@ PROBE_DEADLINE_S = int(os.environ.get("ECI_PROBE_DEADLINE", "1080"))  # 18 min; 
 OCR_TIMEOUT_S = int(os.environ.get("ECI_OCR_TIMEOUT", "900"))        # 1-part OCR ceiling
 
 PLACEHOLDER_HOUSE = {"", "0", "00", "000", "-", ".", "nan", "none", "null", "na"}  # uk/detect.py
+
+
+def load_model_set(name):
+    """Resolve a model_sets.json entry -> (crnn_dirs, env, stage1). Loading BOTH `models` (as
+    models/<name> dirs for --crnn, in voting order) AND `env` (the exact ECI_* switch block) so the
+    provenance is reproducible. Returns (None, {}, 1) for name in (None, '') -> legacy MODELS path."""
+    if not name:
+        return None, {}, 1
+    sets = json.load(open(MODEL_SETS, encoding="utf-8"))
+    if name not in sets:
+        raise SystemExit(f"model set '{name}' not in {MODEL_SETS} (have: {[k for k in sets if not k.startswith('_')]})")
+    s = sets[name]
+    dirs = [os.path.join(REPO, "models", m) for m in s["models"]]
+    env = {k: str(v) for k, v in (s.get("env") or {}).items()}
+    return dirs, env, int(s.get("stage1", 1))
+
+
+def _hmac(salt_bytes, value):
+    """Keyed one-way digest: HMAC-SHA256(salt, normalised value) -> hex. Raw value never stored."""
+    v = str(value or "").strip().upper()
+    if not v:
+        return None
+    return hmac.new(salt_bytes, v.encode("utf-8"), hashlib.sha256).hexdigest()
+
+
+def _norm_epic(e):
+    e = str(e or "").strip().upper()
+    return e if e and e.lower() not in ("none", "null", "nan") else ""
+
 
 _S = None
 
@@ -163,7 +204,7 @@ def _check_slow(speeds):
 
 
 def run_ocr(pdf_bytes, work, tag, roll_year=2026, cache_in=None, cache_out=None, hints=None,
-            keep_jsonl=False):
+            keep_jsonl=False, models=None, env=None, stage1=1):
     """Run eci_ocr.py on one PDF inside caller-owned `work`; return its aggregate summary
     (records / voter_pages / wall_s / flag_rate). The raw PDF is always unlinked here. With
     keep_jsonl the per-voter JSONL is KEPT (path returned as 'jsonl') for an end-of-AC detect/diff
@@ -172,9 +213,9 @@ def run_ocr(pdf_bytes, work, tag, roll_year=2026, cache_in=None, cache_out=None,
     with open(pdf, "wb") as f:
         f.write(pdf_bytes)
     out = os.path.join(work, f"{tag}.jsonl")
-    cmd = [sys.executable, OCR, pdf, "--out", out, "--stage1", "1",
+    cmd = [sys.executable, OCR, pdf, "--out", out, "--stage1", str(stage1),
            "--ort-threads", "1", "--quiet", "--roll-year", str(roll_year)]
-    for m in MODELS:
+    for m in (models or MODELS):
         cmd += ["--crnn", m]
     if hints:
         cmd += ["--hint-2027", hints]
@@ -182,8 +223,9 @@ def run_ocr(pdf_bytes, work, tag, roll_year=2026, cache_in=None, cache_out=None,
         cmd += ["--cache-in", cache_in]
     if cache_out:
         cmd += ["--cache-out", cache_out]
+    run_env = {**os.environ, **(env or {})}   # model-set ECI_* switches, set explicitly for provenance
     r = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                       text=True, timeout=OCR_TIMEOUT_S)
+                       text=True, timeout=OCR_TIMEOUT_S, env=run_env)
     if r.returncode:
         tail = "\n".join(line for line in r.stdout.splitlines()[-8:])
         raise RuntimeError(f"eci_ocr {tag} exit {r.returncode}:\n{tail}")
@@ -300,8 +342,10 @@ def _epics(jsonls):
                     r = json.loads(line)
                 except ValueError:
                     continue
-                e = str(r.get("epic") or "").strip().upper()
-                if e and e.lower() not in ("none", "null", "nan"):
+                if r.get("not_voter_box"):      # eci_ocr writes these garbage boxes to JSONL but
+                    continue                    # excludes them from summary.records (fixes 73,356>73,247)
+                e = _norm_epic(r.get("epic"))
+                if e:
                     s.add(e)
     return s
 
@@ -321,9 +365,11 @@ def _detect_counts(jsonls, thresh=25):
                     r = json.loads(line)
                 except ValueError:
                     continue
+                if r.get("not_voter_box"):      # excluded from counts, as eci_ocr excludes them
+                    continue
                 n += 1
-                e = str(r.get("epic") or "").strip().upper()
-                if e and e.lower() not in ("none", "null", "nan"):
+                e = _norm_epic(r.get("epic"))
+                if e:
                     epic_counts[e] += 1
                 a = _to_int(r.get("age"))
                 if a is not None:
@@ -354,6 +400,120 @@ def _detect_counts(jsonls, thresh=25):
     }
 
 
+def pull_2027_hints(ac, work):
+    """Pull ONE AC's 2027 SSR text-layer records -> work/hints.jsonl (keyed by EPIC) for --hint-2027.
+    The 2027 PDFs carry a text layer (no OCR): each is fetched, parsed, and unlinked immediately. The
+    hints file is the CALLER's to unlink. Returns the path, or None if nothing parsed."""
+    import parse_textlayer as T
+    parts = sorted(part_list("2027-ssr-draft", ac), key=lambda p: int(p["partNumber"]))
+    path = os.path.join(work, "hints.jsonl")
+    n = 0
+    with open(path, "w", encoding="utf-8") as out:
+        for p in parts:
+            part = int(p["partNumber"])
+            b = get_pdf("2027-ssr-draft", ac, part)
+            if not b:
+                continue
+            fd, pp = tempfile.mkstemp(suffix=".pdf", dir=work)
+            try:
+                os.write(fd, b)
+                os.close(fd)
+                recs, _ = T.parse_pdf(pp)
+            except Exception as ex:                     # a bad part must not sink the whole AC
+                print(f"    [hints] parse fail AC{ac} part{part}: {ex}", flush=True)
+                recs = []
+            finally:
+                try:
+                    os.unlink(pp)                       # discard the 2027 PDF immediately (0 footprint)
+                except OSError:
+                    pass
+            for r in recs:
+                if r.get("epic"):
+                    out.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    n += 1
+    print(f"    [hints] AC {ac}: {n} 2027 SSR hint records pulled (ephemeral)", flush=True)
+    return path if n else None
+
+
+def _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics):
+    """Allowlisted PII-safe rows from kept JSONLs (not_voter_box excluded). EPIC/house -> keyed HMAC;
+    deleted_in_final / from_draft from the Draft<->Final EPIC sets. No raw PII ever emitted."""
+    from_draft_roll = roll.endswith("draft")
+    rows = []
+    for path in jsonls:
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                if r.get("not_voter_box"):
+                    continue
+                ep = _norm_epic(r.get("epic"))
+                house = str(r.get("house_no") or "").strip()
+                placeholder = house.lower() in PLACEHOLDER_HOUSE
+                g = str(r.get("gender") or "").strip()
+                gu = g.upper()
+                gender = ("M" if ("पुरुष" in g or gu in ("M", "MALE"))
+                          else "F" if ("महिला" in g or gu in ("F", "FEMALE")) else None)
+                if from_draft_roll:
+                    deleted = bool(ep and final_epics is not None and ep not in final_epics)
+                    from_draft = True
+                else:
+                    deleted = False
+                    from_draft = bool(ep and draft_epics is not None and ep in draft_epics)
+                rows.append({
+                    "epic_hmac": _hmac(salt, ep) if ep else None,
+                    "house_hmac": _hmac(salt, house) if (house and not placeholder) else None,
+                    "house_is_placeholder": placeholder,
+                    "state": STATE, "roll": roll, "revision_year": 2026, "ac": int(ac),
+                    "part": _to_int(r.get("part_no")),
+                    "age": _to_int(r.get("age")),
+                    "gender": gender,
+                    "relation_type": (str(r.get("relation_label") or "").strip() or None),
+                    "status_code": (str(r.get("code") or "").strip() or None),
+                    "flags": list(r.get("flags") or []),
+                    "deleted_in_final": deleted,
+                    "from_draft": from_draft,
+                    "ocr_model_set": model_set,
+                })
+    return rows
+
+
+def write_public_release(ac, out_root, model_set, draft_jsonls, final_jsonls, part_suffix=""):
+    """Write public_out/release/<roll>/ac=<ac>/data[.pLO-HI].parquet (zstd-9) for Draft & Final,
+    allowlisted + HMAC'd, plus a sidecar epic_hmac_tok[.pLO-HI].txt (unique sorted) for cheap cross-AC
+    collision counting. part_suffix keeps a shard's files from colliding (reduce concatenates later).
+    An allowlist guard refuses to write if any column outside PUBLIC_FIELDS appears."""
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    salt_env = os.environ.get("EPIC_HMAC_SALT")
+    if not salt_env:
+        raise SystemExit("--public-out needs EPIC_HMAC_SALT in the environment (repo secret)")
+    salt = salt_env.encode("utf-8")
+    draft_epics = _epics(draft_jsonls)     # full-roll sets -> correct deleted_in_final / from_draft
+    final_epics = _epics(final_jsonls)
+    for roll, jsonls in (("2026-sir-draft", draft_jsonls), ("2026-sir-final", final_jsonls)):
+        rows = _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics)
+        if not rows:
+            continue
+        extra = {k for row in rows for k in row} - set(PUBLIC_FIELDS)
+        if extra:                           # defensive: never ship a column that isn't on the allowlist
+            raise SystemExit(f"public release leak guard tripped: unexpected columns {sorted(extra)}")
+        d = os.path.join(out_root, "release", roll, f"ac={ac}")
+        os.makedirs(d, exist_ok=True)
+        pq.write_table(pa.Table.from_pylist(rows), os.path.join(d, f"data{part_suffix}.parquet"),
+                       compression="zstd", compression_level=9)
+        toks = sorted({row["epic_hmac"] for row in rows if row["epic_hmac"]})
+        with open(os.path.join(d, f"epic_hmac_tok{part_suffix}.txt"), "w") as f:
+            f.write("\n".join(toks) + ("\n" if toks else ""))
+        print(f"    [public] {roll} ac={ac}{part_suffix}: {len(rows)} rows, {len(toks)} epic toks "
+              f"-> data{part_suffix}.parquet (zstd-9) + tok", flush=True)
+
+
 def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
                   paired_draft_jsonls, paired_final_jsonls, args, extra=False):
     """Fetch + OCR one part's Draft (and Final, same part number).
@@ -366,7 +526,8 @@ def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
     if st != "ok":
         return st
     cache = os.path.join(work, f"cache.{part}.pkl")
-    dd = run_ocr(d, work, f"draft.{part}", 2026, cache_out=cache, hints=args.hints, keep_jsonl=True)
+    dd = run_ocr(d, work, f"draft.{part}", 2026, cache_out=cache, hints=args.hints, keep_jsonl=True,
+                 models=args._models, env=args._env, stage1=args._stage1)
     # CPU fast-bail on first part of AC so slow-CPU runners (e.g. >7.5 s/page) hand back in ~2 min
     if totals["parts"] == 0 and _per(dd) and _per(dd) > SLOW_CPU_SPP:
         raise SlowRunner(f"slow CPU {_per(dd)} s/page > {SLOW_CPU_SPP} s/page on part {part}")
@@ -377,7 +538,8 @@ def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
     fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
     _check_slow(speeds)
     if fst == "ok":
-        ff = run_ocr(fb, work, f"final.{part}", 2026, cache_in=cache, hints=args.hints, keep_jsonl=True)
+        ff = run_ocr(fb, work, f"final.{part}", 2026, cache_in=cache, hints=args.hints, keep_jsonl=True,
+                     models=args._models, env=args._env, stage1=args._stage1)
         final_jsonls.append(ff["jsonl"])
         totals["final_records"] += ff["records"] or 0
         totals["final_voter_pages"] += ff["voter_pages"] or 0
@@ -410,6 +572,8 @@ def _ingest_ac(ac, args):
               "draft_records": 0, "draft_voter_pages": 0,
               "final_records": 0, "final_voter_pages": 0}
     try:
+        if getattr(args, "pull_2027_hints", False):
+            args.hints = pull_2027_hints(ac, work)   # ephemeral; work/ is rmtree'd in finally
         lo, hi = _parse_range(getattr(args, "part_range", None))
         listed = sorted(part_list("2026-sir-draft", ac), key=lambda p: int(p["partNumber"]))
         all_part_nums = [int(p["partNumber"]) for p in listed]
@@ -454,7 +618,8 @@ def _ingest_ac(ac, args):
                 fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
                 _check_slow(speeds)
                 if fst == "ok":
-                    ff = run_ocr(fb, work, f"final.{part}", 2026, hints=args.hints, keep_jsonl=True)
+                    ff = run_ocr(fb, work, f"final.{part}", 2026, hints=args.hints, keep_jsonl=True,
+                                 models=args._models, env=args._env, stage1=args._stage1)
                     final_jsonls.append(ff["jsonl"])
                     paired_final_jsonls.append(ff["jsonl"])
                     totals["final_records"] += ff["records"] or 0
@@ -479,7 +644,12 @@ def _ingest_ac(ac, args):
                                              / max(1, len(draft_epics)), 2),
                    detect_draft=_detect_counts(draft_jsonls),
                    detect_final=_detect_counts(final_jsonls),
-                   confidence="Plausible - OCR EPICs (no hints); validate Draft->Final diff before quoting")
+                   ocr_model_set=getattr(args, "model_set", None) or "legacy",
+                   confidence="Plausible - OCR EPICs; validate Draft->Final diff before quoting")
+        if getattr(args, "public_out", None):
+            psuffix = f".p{lo}-{hi}" if (lo or hi) else ""
+            write_public_release(ac, args.public_out, getattr(args, "model_set", None) or "legacy",
+                                 draft_jsonls, final_jsonls, part_suffix=psuffix)
         return agg
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -490,6 +660,10 @@ def cmd_ingest(args):
     acs = parse_acs(args.acs)
     agg_dir = os.path.join(args.out, "aggregates", "2026")
     os.makedirs(agg_dir, exist_ok=True)
+    args._models, args._env, args._stage1 = load_model_set(getattr(args, "model_set", None))
+    if getattr(args, "model_set", None):
+        print(f"[ingest] model-set {args.model_set}: {len(args._models)} CRNNs, "
+              f"{len(args._env)} env switches, stage1={args._stage1}", flush=True)
     lo, hi = _parse_range(getattr(args, "part_range", None))
     suffix = f".p{lo}-{hi}" if (lo or hi) else ""   # shard files don't collide; reduce merges them
     for ac in acs:
@@ -601,6 +775,7 @@ def merge_shards(shards):
     m["detect_draft"] = _merge_detect([s["detect_draft"] for s in shards if s.get("detect_draft")])
     m["detect_final"] = _merge_detect([s["detect_final"] for s in shards if s.get("detect_final")])
     m["shards"] = sorted(str(s.get("shard", "full")) for s in shards)
+    m["ocr_model_set"] = shards[0].get("ocr_model_set")
     m["confidence"] = shards[0].get("confidence")
     return m
 
@@ -666,6 +841,12 @@ def main():
                     help="reduce: directory of downloaded per-shard jsons")
     ap.add_argument("--expect", default=None,
                     help="reduce: plan cells JSON (which shards each AC expects)")
+    ap.add_argument("--model-set", dest="model_set", default=None,
+                    help="ingest: model_sets.json entry (e.g. v4a) -> its CRNNs + env + stage1 (else legacy c11q..c3q)")
+    ap.add_argument("--pull-2027-hints", dest="pull_2027_hints", action="store_true",
+                    help="ingest: pull each AC's 2027 SSR text-layer -> ephemeral --hint-2027 (hinted sets like v4a need it)")
+    ap.add_argument("--public-out", dest="public_out", default=None,
+                    help="ingest: dir for the PII-safe public release (release/<roll>/ac=<ac>/data.parquet, HMAC'd via EPIC_HMAC_SALT)")
     ap.add_argument("--hints", default=os.environ.get("ECI_HINTS"),
                     help="optional 2027 text-layer hints JSONL (confirmation only; prod uses it to skip)")
     args = ap.parse_args()
