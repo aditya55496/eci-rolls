@@ -212,6 +212,14 @@ def _per(d):
     return round((d.get("wall_s") or 0) / vp, 2) if vp else None
 
 
+def _parse_range(spec):
+    """'LO-HI' -> (lo, hi) inclusive part bounds; None/'' -> (0, 0) meaning the whole AC."""
+    if not spec:
+        return 0, 0
+    a, b = spec.split("-")
+    return int(a), int(b)
+
+
 # ---------------- probe (P1 - APPROVED, unchanged) ----------------
 def cmd_probe(args):
     ac, start = 1, time.time()
@@ -402,47 +410,58 @@ def _ingest_ac(ac, args):
               "draft_records": 0, "draft_voter_pages": 0,
               "final_records": 0, "final_voter_pages": 0}
     try:
+        lo, hi = _parse_range(getattr(args, "part_range", None))
         listed = sorted(part_list("2026-sir-draft", ac), key=lambda p: int(p["partNumber"]))
-        part_nums = [int(p["partNumber"]) for p in listed]
+        all_part_nums = [int(p["partNumber"]) for p in listed]
+        listed_max = max(all_part_nums) if all_part_nums else 0
+        if lo or hi:
+            part_nums = [p for p in all_part_nums if lo <= p <= hi]
+            is_top = hi >= listed_max      # only the TOP shard walks extras + final-only
+            totals["shard"] = f"{lo}-{hi}"
+        else:
+            part_nums = all_part_nums
+            is_top = True
+            totals["shard"] = "full"
         try:
             final_listed = {int(p["partNumber"]) for p in part_list("2026-sir-final", ac)}
         except RuntimeError:
             final_listed = set()
-        seen_parts = set(part_nums)
+        seen_parts = set(all_part_nums)    # FULL draft list, so final-only is measured once (top shard)
 
         for part in part_nums:
             if _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
                              paired_draft_jsonls, paired_final_jsonls, args) == "fail":
                 print(f"    AC {ac} part {part}: draft fetch gave up (tarpit); skipped", flush=True)
 
-        # EXTRA_MISS 404-walk above the listed max (2026 deleted/merged parts; fetch_task.py)
-        top0, miss, n = max(part_nums), 0, max(part_nums)
-        while miss < EXTRA_MISS and n < top0 + EXTRA_CAP:
-            n += 1
-            seen_parts.add(n)
-            st = _process_part(ac, n, work, speeds, totals, draft_jsonls, final_jsonls,
-                               paired_draft_jsonls, paired_final_jsonls, args, extra=True)
-            if st == "404":
-                miss += 1
-            elif st == "ok":
-                miss = 0
-            else:
-                print(f"    AC {ac}: extra-walk halted at {n} (tarpit, not 404)", flush=True)
-                break
+        if is_top and all_part_nums:
+            # EXTRA_MISS 404-walk above the listed max (2026 deleted/merged parts; fetch_task.py)
+            top0, miss, n = listed_max, 0, listed_max
+            while miss < EXTRA_MISS and n < top0 + EXTRA_CAP:
+                n += 1
+                seen_parts.add(n)
+                st = _process_part(ac, n, work, speeds, totals, draft_jsonls, final_jsonls,
+                                   paired_draft_jsonls, paired_final_jsonls, args, extra=True)
+                if st == "404":
+                    miss += 1
+                elif st == "ok":
+                    miss = 0
+                else:
+                    print(f"    AC {ac}: extra-walk halted at {n} (tarpit, not 404)", flush=True)
+                    break
 
-        # Final-only parts (new booths listed in 2026-sir-final absent from Draft)
-        for part in sorted(final_listed - seen_parts):
-            fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
-            _check_slow(speeds)
-            if fst == "ok":
-                ff = run_ocr(fb, work, f"final.{part}", 2026, hints=args.hints, keep_jsonl=True)
-                final_jsonls.append(ff["jsonl"])
-                paired_final_jsonls.append(ff["jsonl"])
-                totals["final_records"] += ff["records"] or 0
-                totals["final_voter_pages"] += ff["voter_pages"] or 0
-                totals["final_only_parts"] += 1
-            elif fst == "fail":
-                totals["final_failed_parts"] += 1
+            # Final-only parts (new booths listed in 2026-sir-final absent from Draft)
+            for part in sorted(final_listed - seen_parts):
+                fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
+                _check_slow(speeds)
+                if fst == "ok":
+                    ff = run_ocr(fb, work, f"final.{part}", 2026, hints=args.hints, keep_jsonl=True)
+                    final_jsonls.append(ff["jsonl"])
+                    paired_final_jsonls.append(ff["jsonl"])
+                    totals["final_records"] += ff["records"] or 0
+                    totals["final_voter_pages"] += ff["voter_pages"] or 0
+                    totals["final_only_parts"] += 1
+                elif fst == "fail":
+                    totals["final_failed_parts"] += 1
 
         # End-of-AC: paired Draft->Final diff + detect_draft & detect_final (counts only)
         draft_epics, final_epics = _epics(paired_draft_jsonls), _epics(paired_final_jsonls)
@@ -455,7 +474,9 @@ def _ingest_ac(ac, args):
                    diff_deleted_epics=deleted,
                    diff_added_epics=len(final_epics - draft_epics),
                    diff_retained_epics=len(draft_epics & final_epics),
-                   diff_net_deletion_pct=round(-100 * deleted / max(1, len(draft_epics)), 2),
+                   diff_gross_deleted_pct=round(100 * deleted / max(1, len(draft_epics)), 2),
+                   diff_net_change_pct=round(100 * (len(final_epics) - len(draft_epics))
+                                             / max(1, len(draft_epics)), 2),
                    detect_draft=_detect_counts(draft_jsonls),
                    detect_final=_detect_counts(final_jsonls),
                    confidence="Plausible - OCR EPICs (no hints); validate Draft->Final diff before quoting")
@@ -469,10 +490,12 @@ def cmd_ingest(args):
     acs = parse_acs(args.acs)
     agg_dir = os.path.join(args.out, "aggregates", "2026")
     os.makedirs(agg_dir, exist_ok=True)
+    lo, hi = _parse_range(getattr(args, "part_range", None))
+    suffix = f".p{lo}-{hi}" if (lo or hi) else ""   # shard files don't collide; reduce merges them
     for ac in acs:
-        agg_path = os.path.join(agg_dir, f"ac={ac}.json")
+        agg_path = os.path.join(agg_dir, f"ac={ac}{suffix}.json")
         if os.path.exists(agg_path) and os.path.getsize(agg_path) > 0:
-            print(f"  AC {ac}: aggregate present, skip (resume-safe)", flush=True)
+            print(f"  AC {ac}{suffix}: aggregate present, skip (resume-safe)", flush=True)
             continue
         try:
             agg = _ingest_ac(ac, args)
@@ -480,23 +503,173 @@ def cmd_ingest(args):
             print(f"  AC {ac}: slow runner ({e}) -> handed back (fast-bail; matrix reshuffle)",
                   flush=True)
             continue
+        if agg.get("incomplete"):
+            # Resume contract: a tarpit-truncated shard writes NO file -> no artifact -> re-run next pass
+            print(f"  AC {ac}{suffix}: INCOMPLETE (tarpit) -> NOT written; will re-run on resume",
+                  flush=True)
+            continue
         with open(agg_path, "w") as f:
             json.dump(agg, f, ensure_ascii=False)  # counts only - safe to keep / upload
-        print(f"  AC {ac}: {agg['parts']} parts ({agg['extra_parts']} extra) | "
+        print(f"  AC {ac}{suffix}: {agg['parts']} parts ({agg['extra_parts']} extra) | "
               f"draft {agg['draft_distinct_epics']} epics, final {agg['final_distinct_epics']} | "
-              f"DELETED {agg['diff_deleted_epics']} ({agg['diff_net_deletion_pct']}%)", flush=True)
+              f"DELETED {agg['diff_deleted_epics']} (gross {agg['diff_gross_deleted_pct']}%, "
+              f"net {agg['diff_net_change_pct']}%)", flush=True)
     print("[ingest] PII-safe aggregates written. All raw PDFs/records/JSONLs discarded.", flush=True)
+
+
+# ---------------- plan + reduce (shard sizing & cross-shard merge) ----------------
+def shard_windows(part_nums, shard_parts):
+    """Split sorted listed part numbers into <=shard_parts windows -> [(lo, hi), ...] inclusive.
+    Each listed part lands in exactly one window. Empty list -> whole AC (no sharding needed)."""
+    pn = sorted({int(p) for p in part_nums})
+    if len(pn) <= shard_parts:
+        return []
+    out = []
+    for i in range(0, len(pn), shard_parts):
+        chunk = pn[i:i + shard_parts]
+        out.append((chunk[0], chunk[-1]))
+    return out
+
+
+def cmd_plan(args):
+    """Sweep draft part counts per AC (gateway API only, no PDFs), shard ACs above --shard-parts,
+    subtract already-done ACs (--done-acs), emit the (ac, part-range) matrix to GITHUB_OUTPUT/stdout.
+    Cell = {ac, lo, hi, tag}; lo==hi==0 -> whole AC."""
+    done = set(parse_acs(args.done_acs, 1, 70)) if args.done_acs else set()
+    cells = []
+    for ac in parse_acs(args.acs):
+        if ac in done:
+            print(f"[plan] AC {ac}: clean artifact exists -> skip (resume)", flush=True)
+            continue
+        try:
+            nums = [int(p["partNumber"]) for p in part_list("2026-sir-draft", ac)]
+        except RuntimeError as e:
+            print(f"[plan] AC {ac}: part-list failed ({e}) -> whole-AC cell", flush=True)
+            cells.append({"ac": ac, "lo": 0, "hi": 0, "tag": str(ac)})
+            continue
+        wins = shard_windows(nums, args.shard_parts)
+        if not wins:
+            cells.append({"ac": ac, "lo": 0, "hi": 0, "tag": str(ac)})
+            print(f"[plan] AC {ac}: {len(nums)} parts -> 1 cell (single-shard)", flush=True)
+        else:
+            for wlo, whi in wins:
+                cells.append({"ac": ac, "lo": wlo, "hi": whi, "tag": f"{ac}.p{wlo}-{whi}"})
+            print(f"[plan] AC {ac}: {len(nums)} parts -> {len(wins)} shards "
+                  f"{[f'{wlo}-{whi}' for wlo, whi in wins]}", flush=True)
+    payload = json.dumps(cells)
+    acs_out = json.dumps(sorted({c["ac"] for c in cells}))
+    gh = os.environ.get("GITHUB_OUTPUT")
+    if gh:
+        with open(gh, "a") as f:
+            f.write("cells=" + payload + "\n")
+            f.write("acs=" + acs_out + "\n")       # distinct ACs -> reduce matrix
+            f.write("count=" + str(len(cells)) + "\n")
+    print("[plan] cells=" + payload, flush=True)
+    print("[plan] acs=" + acs_out, flush=True)
+
+
+_SUM_KEYS = ("parts", "extra_parts", "final_only_parts", "draft_failed_parts", "final_failed_parts",
+             "draft_records", "draft_voter_pages", "final_records", "final_voter_pages",
+             "draft_distinct_epics", "final_distinct_epics",
+             "diff_deleted_epics", "diff_added_epics", "diff_retained_epics")
+_DETECT_SUM = ("records", "dup_epic_within_ac", "age_impossible", "age_centenarian",
+               "gender_m", "gender_f", "congestion_houses_gt_thresh")
+
+
+def _merge_detect(ds):
+    if not ds:
+        return None
+    m = {k: sum(int(d.get(k) or 0) for d in ds) for k in _DETECT_SUM}
+    m["congestion_max"] = max((int(d.get("congestion_max") or 0) for d in ds), default=0)
+    mm = m["gender_m"]
+    m["females_per_1000_males"] = round(1000 * m["gender_f"] / mm) if mm else None  # recomputed, not summed
+    m["congestion_confidence"] = ds[0].get("congestion_confidence")
+    return m
+
+
+def merge_shards(shards):
+    """Sum N per-shard aggregates of ONE AC into a single PII-safe AC aggregate. Part populations
+    are disjoint across shards, so counts sum; percentages and F/1000M are recomputed from the sums."""
+    ac = shards[0]["ac"]
+    m = {"ac": ac}
+    for k in _SUM_KEYS:
+        m[k] = sum(int(s.get(k) or 0) for s in shards)
+    m["incomplete"] = any(bool(s.get("incomplete")) for s in shards)
+    dd = max(1, m["draft_distinct_epics"])
+    m["diff_gross_deleted_pct"] = round(100 * m["diff_deleted_epics"] / dd, 2)
+    m["diff_net_change_pct"] = round(100 * (m["final_distinct_epics"] - m["draft_distinct_epics"]) / dd, 2)
+    m["detect_draft"] = _merge_detect([s["detect_draft"] for s in shards if s.get("detect_draft")])
+    m["detect_final"] = _merge_detect([s["detect_final"] for s in shards if s.get("detect_final")])
+    m["shards"] = sorted(str(s.get("shard", "full")) for s in shards)
+    m["confidence"] = shards[0].get("confidence")
+    return m
+
+
+def cmd_reduce(args):
+    """Merge this run's downloaded shard jsons (--shard-dir, any depth) into per-AC ac={n}.json.
+    An AC is emitted ONLY if ALL its expected shards (from --expect cells) are present and clean;
+    otherwise it is left unwritten so the next dispatch re-runs it (resume contract)."""
+    sel = set(parse_acs(args.acs)) if getattr(args, "acs", None) else None  # reduce one AC per matrix cell
+    expect = {}
+    for c in json.loads(args.expect or "[]"):
+        ac = int(c["ac"])
+        if sel is not None and ac not in sel:
+            continue
+        expect.setdefault(ac, set()).add(c["tag"])
+    found = {}   # ac -> {tag: agg}
+    for root, _, files in os.walk(args.shard_dir or "."):
+        for fn in files:
+            if not fn.endswith(".json"):
+                continue
+            try:
+                agg = json.load(open(os.path.join(root, fn)))
+            except (ValueError, OSError):
+                continue
+            ac = agg.get("ac")
+            if ac is None:
+                continue
+            sh = str(agg.get("shard", "full"))
+            tag = str(ac) if sh == "full" else f"{ac}.p{sh}"
+            found.setdefault(int(ac), {})[tag] = agg
+    agg_dir = os.path.join(args.out, "aggregates", "2026")
+    os.makedirs(agg_dir, exist_ok=True)
+    for ac, want in sorted(expect.items()):
+        have = found.get(ac, {})
+        if not want.issubset(have.keys()):
+            print(f"[reduce] AC {ac}: missing shard(s) {sorted(want - set(have))} -> NOT merged (resume)",
+                  flush=True)
+            continue
+        merged = merge_shards([have[t] for t in sorted(want)])
+        if merged["incomplete"]:
+            print(f"[reduce] AC {ac}: a shard is incomplete -> NOT merged", flush=True)
+            continue
+        with open(os.path.join(agg_dir, f"ac={ac}.json"), "w") as f:
+            json.dump(merged, f, ensure_ascii=False)
+        print(f"[reduce] AC {ac}: merged {len(want)} shard(s) -> {merged['parts']} parts | "
+              f"DELETED {merged['diff_deleted_epics']} (gross {merged['diff_gross_deleted_pct']}%, "
+              f"net {merged['diff_net_change_pct']}%)", flush=True)
+    print("[reduce] per-AC merges complete.", flush=True)
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    ap.add_argument("mode", choices=["probe", "ingest"])
+    ap.add_argument("mode", choices=["probe", "ingest", "plan", "reduce"])
     ap.add_argument("--out", default="./out")
-    ap.add_argument("--acs", default="1-70", help="e.g. 1-70 or 1,21,19 (ingest)")
+    ap.add_argument("--acs", default="1-70", help="e.g. 1-70 or 1,21,19 (ingest/plan)")
+    ap.add_argument("--part-range", dest="part_range", default=None,
+                    help="ingest: LO-HI inclusive draft-part window for one shard (extras+final-only run in top shard)")
+    ap.add_argument("--shard-parts", dest="shard_parts", type=int, default=200,
+                    help="plan: max listed parts per shard (ACs above this split into windows)")
+    ap.add_argument("--done-acs", dest="done_acs", default=None,
+                    help="plan: ACs whose clean merged artifact already exists (skipped for resume)")
+    ap.add_argument("--shard-dir", dest="shard_dir", default=None,
+                    help="reduce: directory of downloaded per-shard jsons")
+    ap.add_argument("--expect", default=None,
+                    help="reduce: plan cells JSON (which shards each AC expects)")
     ap.add_argument("--hints", default=os.environ.get("ECI_HINTS"),
                     help="optional 2027 text-layer hints JSONL (confirmation only; prod uses it to skip)")
     args = ap.parse_args()
-    {"probe": cmd_probe, "ingest": cmd_ingest}[args.mode](args)
+    {"probe": cmd_probe, "ingest": cmd_ingest, "plan": cmd_plan, "reduce": cmd_reduce}[args.mode](args)
 
 
 if __name__ == "__main__":

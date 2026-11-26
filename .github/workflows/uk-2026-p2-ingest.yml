@@ -3,44 +3,55 @@ on:
   workflow_dispatch:
     inputs:
       acs:
-        description: "ACs to ingest (e.g. 1 or 1,21 or 1-70)"
+        description: "ACs to ingest (e.g. 21 or 1,21 or 1-70)"
         required: true
         default: "1"
+      shard_parts:
+        description: "Max listed draft parts per shard (ACs above this auto-split)"
+        required: false
+        default: "200"
 permissions:
   contents: read
+  actions: read          # plan lists prior clean artifacts; reduce downloads this run's shards
 jobs:
+  # ---- plan: sweep part counts (gateway only), auto-shard, skip already-done ACs ----
   plan:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     outputs:
-      acs: ${{ steps.split.outputs.acs }}
+      cells: ${{ steps.plan.outputs.cells }}
+      acs: ${{ steps.plan.outputs.acs }}
+      count: ${{ steps.plan.outputs.count }}
     steps:
-      - id: split
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Plan deps (crypto + requests for the gateway part-list)
+        run: pip install -q cryptography requests
+      - id: plan
         env:
           ACS: ${{ inputs.acs }}
+          SHARD_PARTS: ${{ inputs.shard_parts }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          python3 - <<'EOF'
-          import json, os
-          out = set()
-          for tok in (os.environ.get("ACS") or "1").split(","):
-              tok = tok.strip()
-              if "-" in tok:
-                  a, b = tok.split("-")
-                  out.update(range(int(a), int(b) + 1))
-              elif tok:
-                  out.add(int(tok))
-          acs = sorted(x for x in out if 1 <= x <= 70)
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write("acs=" + json.dumps(acs) + "\n")
-          print("Planned ACs:", acs)
-          EOF
+          # Resume: ACs whose clean merged artifact uk-2026-agg-ac-<n> already exists (prior runs)
+          DONE=$(gh api --paginate "repos/${{ github.repository }}/actions/artifacts?per_page=100" \
+            --jq '.artifacts[].name' | sed -n 's/^uk-2026-agg-ac-\([0-9][0-9]*\)$/\1/p' \
+            | sort -un | paste -sd, -)
+          echo "done ACs: ${DONE:-none}"
+          python -u uk/uk_2026.py plan --acs "$ACS" --shard-parts "${SHARD_PARTS:-200}" \
+            ${DONE:+--done-acs "$DONE"}
+
+  # ---- ingest: one matrix cell per (AC, part-range) shard ----
   ingest:
     needs: plan
+    if: ${{ needs.plan.outputs.count != '0' }}
     strategy:
       fail-fast: false
       max-parallel: 20
       matrix:
-        ac: ${{ fromJSON(needs.plan.outputs.acs) }}
+        cell: ${{ fromJSON(needs.plan.outputs.cells) }}
     runs-on: ubuntu-latest
     timeout-minutes: 340
     steps:
@@ -55,11 +66,52 @@ jobs:
           ls -l /usr/share/tesseract-ocr/5/tessdata/hin.traineddata /usr/share/tesseract-ocr/5/tessdata/eng.traineddata
       - name: Python deps
         run: pip install -q -r requirements.txt
-      - name: Ingest AC ${{ matrix.ac }} (2026 SIR Draft->Final OCR + PII-safe diff)
-        run: python -u uk/uk_2026.py ingest --acs ${{ matrix.ac }} --out ./out
+      - name: Ingest AC ${{ matrix.cell.ac }} shard ${{ matrix.cell.tag }}
+        env:
+          AC: ${{ matrix.cell.ac }}
+          LO: ${{ matrix.cell.lo }}
+          HI: ${{ matrix.cell.hi }}
+        run: |
+          RANGE=""
+          if [ "$LO" != "0" ] || [ "$HI" != "0" ]; then RANGE="--part-range ${LO}-${HI}"; fi
+          echo "Ingesting AC $AC range='${RANGE:-full}'"
+          python -u uk/uk_2026.py ingest --acs "$AC" --out ./out $RANGE
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
-          name: uk-2026-agg-ac-${{ matrix.ac }}
+          name: uk-2026-shard-${{ matrix.cell.tag }}   # absent when the shard was incomplete (no file written)
           path: out/aggregates/2026/ac=*.json
+          if-no-files-found: ignore
+
+  # ---- reduce: merge each AC's shards -> PII-safe ac={n}.json (clean ACs only) ----
+  reduce:
+    needs: [plan, ingest]
+    if: ${{ always() && needs.plan.outputs.count != '0' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        ac: ${{ fromJSON(needs.plan.outputs.acs) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download this run's shard aggregates
+        uses: actions/download-artifact@v4
+        with:
+          pattern: uk-2026-shard-*
+          path: shards
+      - name: Merge AC ${{ matrix.ac }} shards -> ac=${{ matrix.ac }}.json
+        env:
+          CELLS: ${{ needs.plan.outputs.cells }}
+          AC: ${{ matrix.ac }}
+        run: |
+          python -u uk/uk_2026.py reduce --acs "$AC" --shard-dir shards --out ./out --expect "$CELLS"
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: uk-2026-agg-ac-${{ matrix.ac }}    # clean merged AC -> plan skips it on the next dispatch
+          path: out/aggregates/2026/ac=${{ matrix.ac }}.json
           if-no-files-found: ignore
