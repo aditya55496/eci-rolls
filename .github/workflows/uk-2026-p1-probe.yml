@@ -1,0 +1,36 @@
+name: uk-2026-p1-probe
+# P1 proof for Uttarakhand (S28) 2026 SIR Draft/Final on GitHub Actions (CC1 / Window 1).
+# Manual-only. Runs uk/uk_2026.py probe on 5 subnet-diverse runners: timed Draft-Part-1 fetch
+# + a 1-part CPU-OCR benchmark. Prints aggregate counts only (no PII). No artifacts uploaded.
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read            # no write scope; nothing is pushed or published from the run
+jobs:
+  probe:
+    strategy:
+      fail-fast: false      # a tarpitted shard must not cancel the clean ones
+      matrix:
+        shard: [1, 2, 3, 4, 5]   # 5 subnets (lesson #1: probe >=5 before concluding)
+    runs-on: ubuntu-latest
+    # 25 min: comfortably exceeds the draft fetch budget (4x180s + backoff ~= 13m) + OCR benchmark.
+    # The final leg uses a tighter fetch budget and a wall-clock deadline in the script, so even a
+    # double tarpit stays under this cap (avoids W2's 8-min job-kill-shorter-than-retry-budget bug).
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4          # materializes models/ (CRNN blobs, ~66 MB, no LFS)
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System deps (Tesseract 5 + Hindi/English data)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+          # pre-flight assert: eci_ocr.py hardcodes STD_TESSDATA=/usr/share/tesseract-ocr/5/tessdata
+          ls -l /usr/share/tesseract-ocr/5/tessdata/hin.traineddata \
+                /usr/share/tesseract-ocr/5/tessdata/eng.traineddata
+      - name: Python deps (OCR + fetch; exact pins from the repo)
+        run: pip install -q -r requirements.txt
+      - name: P1 probe shard ${{ matrix.shard }} (fetch + 1-part CPU-OCR benchmark; aggregates only)
+        run: python -u uk/uk_2026.py probe
