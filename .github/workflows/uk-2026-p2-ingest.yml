@@ -1,0 +1,65 @@
+name: uk-2026-p2-ingest
+on:
+  workflow_dispatch:
+    inputs:
+      acs:
+        description: "ACs to ingest (e.g. 1 or 1,21 or 1-70)"
+        required: true
+        default: "1"
+permissions:
+  contents: read
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      acs: ${{ steps.split.outputs.acs }}
+    steps:
+      - id: split
+        env:
+          ACS: ${{ inputs.acs }}
+        run: |
+          python3 - <<'EOF'
+          import json, os
+          out = set()
+          for tok in (os.environ.get("ACS") or "1").split(","):
+              tok = tok.strip()
+              if "-" in tok:
+                  a, b = tok.split("-")
+                  out.update(range(int(a), int(b) + 1))
+              elif tok:
+                  out.add(int(tok))
+          acs = sorted(x for x in out if 1 <= x <= 70)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write("acs=" + json.dumps(acs) + "\n")
+          print("Planned ACs:", acs)
+          EOF
+  ingest:
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        ac: ${{ fromJSON(needs.plan.outputs.acs) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 340
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: System deps (Tesseract 5 + Hindi/English data)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-hin tesseract-ocr-eng
+          ls -l /usr/share/tesseract-ocr/5/tessdata/hin.traineddata /usr/share/tesseract-ocr/5/tessdata/eng.traineddata
+      - name: Python deps
+        run: pip install -q -r requirements.txt
+      - name: Ingest AC ${{ matrix.ac }} (2026 SIR Draft->Final OCR + PII-safe diff)
+        run: python -u uk/uk_2026.py ingest --acs ${{ matrix.ac }} --out ./out
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: uk-2026-agg-ac-${{ matrix.ac }}
+          path: out/aggregates/2026/ac=*.json
+          if-no-files-found: ignore
