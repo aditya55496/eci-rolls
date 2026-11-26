@@ -42,9 +42,7 @@ def main():
     ap.add_argument("--congestion-threshold", type=int, default=25)
     a = ap.parse_args()
 
-    salt = os.environ.get(a.salt_env, "").encode()
-    if not salt:
-        raise SystemExit(f"missing HMAC salt in env {a.salt_env}")
+    salt = os.environ.get(a.salt_env, "").encode()  # optional: no salt -> skip cross-AC tokens
 
     path = os.path.join(a.data, "release", "2027-ssr", f"ac={a.ac}", "data.parquet")
     df = read_ac(path)
@@ -72,10 +70,13 @@ def main():
     }
     with open(a.out_prefix + "_agg.json", "w") as fh:
         json.dump(agg, fh, ensure_ascii=False)
-    with open(a.out_prefix + "_tok.txt", "w") as fh:
-        for e in vc.index:  # distinct epics only
-            fh.write(hmac.new(salt, str(e).encode(), hashlib.sha256).hexdigest() + "\n")
-    print(f"shard AC {a.ac}: {n} records, {len(vc)} distinct epics -> {a.out_prefix}_agg.json + _tok.txt")
+    if salt:
+        with open(a.out_prefix + "_tok.txt", "w") as fh:
+            for e in vc.index:  # distinct epics only
+                fh.write(hmac.new(salt, str(e).encode(), hashlib.sha256).hexdigest() + "\n")
+        print(f"shard AC {a.ac}: {n} records, {len(vc)} distinct epics -> agg + tokens")
+    else:
+        print(f"shard AC {a.ac}: {n} records -> agg only (no {a.salt_env}; cross-AC dup deferred)")
 
 
 if __name__ == "__main__":
