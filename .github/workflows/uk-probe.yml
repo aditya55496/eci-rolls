@@ -10,18 +10,41 @@ jobs:
       matrix:
         shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 6
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -q requests cryptography pymupdf pyarrow
-      - name: Egress probe shard ${{ matrix.shard }} (1 PDF, counts only, no names)
+      - run: pip install -q requests cryptography pymupdf
+      - name: Fast egress probe shard ${{ matrix.shard }} (single GET t=20, counts/meta only)
         run: |
-          echo "SHARD ${{ matrix.shard }} ip=$(curl -s --max-time 10 https://api.ipify.org || echo '?')"
-          if python -u uk/uk_driver.py check; then
-            echo "SHARD ${{ matrix.shard }} RESULT=OK"
-          else
-            echo "SHARD ${{ matrix.shard }} RESULT=TARPIT"
-          fi
+          python -u - <<'PY'
+          import sys, time, requests
+          sys.path.insert(0, ".")
+          import eci_api as E
+          roll = {"year":2027,"ref":"SSR-DraftRoll","gen":"EROLLGEN","rev":1}
+          ST, ac = "S28", 1
+          s = requests.Session(); s.headers.update(E.HEADERS)
+          ip = "?"
+          try: ip = s.get("https://api.ipify.org", timeout=10).text
+          except Exception: pass
+          url, body = E.roll_part_list_request(roll, ST, ac)
+          pl = None; api = "API_FAIL"
+          try:
+              r = s.post(url, json=body, timeout=30); pl = r.json().get("payload")
+              api = f"API={r.status_code}/{len(pl) if pl else 0}p"
+          except Exception as ex:
+              api = f"API_EXC={type(ex).__name__}"
+          verdict = "NO_PARTS"
+          if pl:
+              p = sorted(pl, key=lambda x:int(x['partNumber']))[0]
+              pu = E.roll_pdf_url(roll, ST, ac, int(p['partNumber']))
+              t = time.time()
+              try:
+                  rr = s.get(pu, timeout=20); dt = time.time()-t
+                  verdict = f"OK {len(rr.content)}B {dt:.1f}s" if (rr.status_code==200 and E.is_pdf(rr.content)) else f"BAD {rr.status_code} {dt:.1f}s"
+              except Exception as ex:
+                  verdict = f"TARPIT {type(ex).__name__} {time.time()-t:.1f}s"
+          print(f"SHARD ${{ matrix.shard }} ip={ip} {api} PDF={verdict}")
+          PY
