@@ -153,6 +153,9 @@ def cmd_textlayer(args):
     acs = parse_acs(args.acs)
     base = os.path.join(args.out, "release", "2027-ssr")
     for ac in acs:
+        out_path = os.path.join(base, f"ac={ac}", "data.parquet")
+        if os.path.exists(out_path) and os.path.getsize(out_path) > 0:
+            print(f"  AC {ac}: already present, skip (resume-safe)"); continue
         parts = sorted(part_list(TEXTLAYER_ROLL, ac), key=lambda p: int(p["partNumber"]))
         rows = []
         def one(p):
