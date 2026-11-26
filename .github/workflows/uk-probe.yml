@@ -1,0 +1,27 @@
+name: uk-probe
+on:
+  workflow_dispatch: {}
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -q requests cryptography pymupdf pyarrow
+      - name: Egress probe shard ${{ matrix.shard }} (1 PDF, counts only, no names)
+        run: |
+          echo "SHARD ${{ matrix.shard }} ip=$(curl -s --max-time 10 https://api.ipify.org || echo '?')"
+          if python -u uk/uk_driver.py check; then
+            echo "SHARD ${{ matrix.shard }} RESULT=OK"
+          else
+            echo "SHARD ${{ matrix.shard }} RESULT=TARPIT"
+          fi
