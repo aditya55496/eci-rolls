@@ -69,6 +69,7 @@ ATTEMPTS, TIMEOUT = 4, 180
 # later run draws a faster subnet instead of burning the whole budget in place.
 SLOW_BPS = float(os.environ.get("ECI_SLOW_BPS", "300000"))
 SLOW_AFTER = 8
+SLOW_CPU_SPP = float(os.environ.get("ECI_SLOW_CPU_SPP", "7.5"))  # bail >7.5 s/page on Part 1
 # extra-parts 404-walk (fetch_task.EXTRA_MISS): 2026 rolls have ~4k parts above the current list.
 EXTRA_MISS = int(os.environ.get("ECI_EXTRA_MISS", "5"))
 EXTRA_CAP = int(os.environ.get("ECI_EXTRA_CAP", "3000"))   # hard bound, like fetch_task (top0 + 3000)
@@ -345,18 +346,26 @@ def _detect_counts(jsonls, thresh=25):
     }
 
 
-def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls, args, extra=False):
-    """Fetch + OCR one part's Draft (and Final, same part number), keeping both JSONLs in `work`.
+def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
+                  paired_draft_jsonls, paired_final_jsonls, args, extra=False):
+    """Fetch + OCR one part's Draft (and Final, same part number).
     Returns 'ok' (draft found & OCR'd), '404' (draft absent) or 'fail' (tarpit give-up)."""
     d, st = fetch_pdf("2026-sir-draft", ac, part, speeds)
     _check_slow(speeds)
+    if st == "fail":
+        totals["draft_failed_parts"] += 1
+        return "fail"
     if st != "ok":
         return st
     cache = os.path.join(work, f"cache.{part}.pkl")
     dd = run_ocr(d, work, f"draft.{part}", 2026, cache_out=cache, hints=args.hints, keep_jsonl=True)
+    # CPU fast-bail on first part of AC so slow-CPU runners (e.g. >7.5 s/page) hand back in ~2 min
+    if totals["parts"] == 0 and _per(dd) and _per(dd) > SLOW_CPU_SPP:
+        raise SlowRunner(f"slow CPU {_per(dd)} s/page > {SLOW_CPU_SPP} s/page on part {part}")
     draft_jsonls.append(dd["jsonl"])
     totals["draft_records"] += dd["records"] or 0
     totals["draft_voter_pages"] += dd["voter_pages"] or 0
+
     fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
     _check_slow(speeds)
     if fst == "ok":
@@ -364,8 +373,16 @@ def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls, ar
         final_jsonls.append(ff["jsonl"])
         totals["final_records"] += ff["records"] or 0
         totals["final_voter_pages"] += ff["voter_pages"] or 0
+        paired_draft_jsonls.append(dd["jsonl"])
+        paired_final_jsonls.append(ff["jsonl"])
+    elif fst == "404":
+        # Legitimate booth deletion/merge in Final -> keep Draft in paired diff
+        paired_draft_jsonls.append(dd["jsonl"])
+    else:
+        # Network tarpit on Final -> do NOT count Draft voters as deleted
+        totals["final_failed_parts"] += 1
     try:
-        os.unlink(cache)                  # reading cache no longer needed
+        os.unlink(cache)
     except OSError:
         pass
     totals["parts"] += 1
@@ -374,48 +391,77 @@ def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls, ar
 
 
 def _ingest_ac(ac, args):
-    """One AC end-to-end: listed parts + EXTRA_MISS 404-walk, OCR draft->final (JSONLs kept to
-    end-of-AC), then detect radars + the Draft->Final EPIC diff, then unlink all PII. Returns the
-    PII-safe aggregate. May raise SlowRunner (fast-bail)."""
-    work = tempfile.mkdtemp(prefix=f"uk2026-ac{ac}-")   # AC-scoped; holds PII JSONLs until the end
+    """One AC end-to-end: listed Draft+Final parts + EXTRA_MISS 404-walk, OCR draft->final
+    (JSONLs kept to end-of-AC), then detect radars (draft+final) + paired Draft->Final EPIC diff,
+    then unlink all PII. Returns the PII-safe aggregate. May raise SlowRunner (fast-bail)."""
+    work = tempfile.mkdtemp(prefix=f"uk2026-ac{ac}-")
     speeds, draft_jsonls, final_jsonls = [], [], []
-    totals = {"ac": ac, "parts": 0, "extra_parts": 0, "fetched": E.now(),
+    paired_draft_jsonls, paired_final_jsonls = [], []
+    totals = {"ac": ac, "parts": 0, "extra_parts": 0, "final_only_parts": 0,
+              "draft_failed_parts": 0, "final_failed_parts": 0, "fetched": E.now(),
               "draft_records": 0, "draft_voter_pages": 0,
               "final_records": 0, "final_voter_pages": 0}
     try:
         listed = sorted(part_list("2026-sir-draft", ac), key=lambda p: int(p["partNumber"]))
         part_nums = [int(p["partNumber"]) for p in listed]
+        try:
+            final_listed = {int(p["partNumber"]) for p in part_list("2026-sir-final", ac)}
+        except RuntimeError:
+            final_listed = set()
+        seen_parts = set(part_nums)
+
         for part in part_nums:
-            if _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls, args) == "fail":
-                print(f"    AC {ac} part {part}: fetch gave up (tarpit); skipped", flush=True)
-        # EXTRA_MISS 404-walk above the listed max (2026's deleted/merged parts; fetch_task.py)
+            if _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
+                             paired_draft_jsonls, paired_final_jsonls, args) == "fail":
+                print(f"    AC {ac} part {part}: draft fetch gave up (tarpit); skipped", flush=True)
+
+        # EXTRA_MISS 404-walk above the listed max (2026 deleted/merged parts; fetch_task.py)
         top0, miss, n = max(part_nums), 0, max(part_nums)
         while miss < EXTRA_MISS and n < top0 + EXTRA_CAP:
             n += 1
-            st = _process_part(ac, n, work, speeds, totals, draft_jsonls, final_jsonls, args, extra=True)
+            seen_parts.add(n)
+            st = _process_part(ac, n, work, speeds, totals, draft_jsonls, final_jsonls,
+                               paired_draft_jsonls, paired_final_jsonls, args, extra=True)
             if st == "404":
                 miss += 1
             elif st == "ok":
                 miss = 0
-            else:  # 'fail' (tarpit): stop probing extras rather than count a false 404
+            else:
                 print(f"    AC {ac}: extra-walk halted at {n} (tarpit, not 404)", flush=True)
                 break
-        # end-of-AC: detect + Draft->Final diff on the kept JSONLs (counts only)
-        draft_epics, final_epics = _epics(draft_jsonls), _epics(final_jsonls)
-        deleted = len(draft_epics - final_epics)   # in Draft, gone in Final = mass-deletion signal
+
+        # Final-only parts (new booths listed in 2026-sir-final absent from Draft)
+        for part in sorted(final_listed - seen_parts):
+            fb, fst = fetch_pdf("2026-sir-final", ac, part, speeds)
+            _check_slow(speeds)
+            if fst == "ok":
+                ff = run_ocr(fb, work, f"final.{part}", 2026, hints=args.hints, keep_jsonl=True)
+                final_jsonls.append(ff["jsonl"])
+                paired_final_jsonls.append(ff["jsonl"])
+                totals["final_records"] += ff["records"] or 0
+                totals["final_voter_pages"] += ff["voter_pages"] or 0
+                totals["final_only_parts"] += 1
+            elif fst == "fail":
+                totals["final_failed_parts"] += 1
+
+        # End-of-AC: paired Draft->Final diff + detect_draft & detect_final (counts only)
+        draft_epics, final_epics = _epics(paired_draft_jsonls), _epics(paired_final_jsonls)
+        deleted = len(draft_epics - final_epics)
+        incomplete = (totals["draft_failed_parts"] + totals["final_failed_parts"]) > 0
         agg = dict(totals,
+                   incomplete=incomplete,
                    draft_distinct_epics=len(draft_epics),
                    final_distinct_epics=len(final_epics),
                    diff_deleted_epics=deleted,
                    diff_added_epics=len(final_epics - draft_epics),
                    diff_retained_epics=len(draft_epics & final_epics),
                    diff_net_deletion_pct=round(-100 * deleted / max(1, len(draft_epics)), 2),
-                   detect=_detect_counts(draft_jsonls),
-                   confidence="Plausible - OCR EPICs; validate Draft->Final diff before quoting")
+                   detect_draft=_detect_counts(draft_jsonls),
+                   detect_final=_detect_counts(final_jsonls),
+                   confidence="Plausible - OCR EPICs (no hints); validate Draft->Final diff before quoting")
         return agg
     finally:
-        shutil.rmtree(work, ignore_errors=True)   # unlink ALL PII JSONLs + caches for this AC
-
+        shutil.rmtree(work, ignore_errors=True)
 
 def cmd_ingest(args):
     """P2 per-AC pipeline (dispatch only after AG1 sign-off). skip-if-exists resume mirrors
