@@ -124,8 +124,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Python deps (pyarrow for the public concat)
-        run: pip install -q pyarrow
+      - name: Python deps (eci_api needs cryptography+requests at import; pyarrow for public concat)
+        run: pip install -q -r requirements.txt
       - name: Download this run's shard aggregates
         uses: actions/download-artifact@v4
         with:
