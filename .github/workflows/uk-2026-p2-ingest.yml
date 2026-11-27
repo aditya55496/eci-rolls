@@ -10,6 +10,18 @@ on:
         description: "Max listed draft parts per shard (ACs above this auto-split)"
         required: false
         default: "200"
+      model_set:
+        description: "OCR model set from model_sets.json (v4a = hinted, 5x less CPU; j2Ps = no-hint)"
+        required: false
+        default: "v4a"
+      pull_hints:
+        description: "Pull 2027 SSR text-layer hints per AC (required by v4a) — true/false"
+        required: false
+        default: "true"
+      public:
+        description: "Emit the PII-safe HMAC'd public Parquet release — true/false"
+        required: false
+        default: "true"
 permissions:
   contents: read
   actions: read          # plan lists prior clean artifacts; reduce downloads this run's shards
@@ -71,16 +83,30 @@ jobs:
           AC: ${{ matrix.cell.ac }}
           LO: ${{ matrix.cell.lo }}
           HI: ${{ matrix.cell.hi }}
+          MODEL_SET: ${{ inputs.model_set }}
+          PULL_HINTS: ${{ inputs.pull_hints }}
+          PUBLIC: ${{ inputs.public }}
+          EPIC_HMAC_SALT: ${{ secrets.EPIC_HMAC_SALT }}
         run: |
           RANGE=""
           if [ "$LO" != "0" ] || [ "$HI" != "0" ]; then RANGE="--part-range ${LO}-${HI}"; fi
-          echo "Ingesting AC $AC range='${RANGE:-full}'"
-          python -u uk/uk_2026.py ingest --acs "$AC" --out ./out $RANGE
+          EXTRA=""
+          if [ -n "$MODEL_SET" ]; then EXTRA="$EXTRA --model-set $MODEL_SET"; fi
+          if [ "$PULL_HINTS" = "true" ]; then EXTRA="$EXTRA --pull-2027-hints"; fi
+          if [ "$PUBLIC" = "true" ]; then EXTRA="$EXTRA --public-out public_out"; fi
+          echo "Ingesting AC $AC range='${RANGE:-full}' flags='$EXTRA'"
+          python -u uk/uk_2026.py ingest --acs "$AC" --out ./out $RANGE $EXTRA
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: uk-2026-shard-${{ matrix.cell.tag }}   # absent when the shard was incomplete (no file written)
           path: out/aggregates/2026/ac=*.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.public == 'true' }}
+        with:
+          name: uk-2026-public-${{ matrix.cell.tag }}   # PII-safe: HMAC'd, allowlisted Parquet + tok
+          path: public_out/release/**
           if-no-files-found: ignore
 
   # ---- reduce: merge each AC's shards -> PII-safe ac={n}.json (clean ACs only) ----
@@ -98,20 +124,37 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: Python deps (pyarrow for the public concat)
+        run: pip install -q pyarrow
       - name: Download this run's shard aggregates
         uses: actions/download-artifact@v4
         with:
           pattern: uk-2026-shard-*
           path: shards
-      - name: Merge AC ${{ matrix.ac }} shards -> ac=${{ matrix.ac }}.json
+      - name: Download this run's public shards
+        if: ${{ inputs.public == 'true' }}
+        uses: actions/download-artifact@v4
+        with:
+          pattern: uk-2026-public-*
+          path: public_shards
+      - name: Merge AC ${{ matrix.ac }} shards -> ac=${{ matrix.ac }}.json (+ public concat)
         env:
           CELLS: ${{ needs.plan.outputs.cells }}
           AC: ${{ matrix.ac }}
+          PUBLIC: ${{ inputs.public }}
         run: |
-          python -u uk/uk_2026.py reduce --acs "$AC" --shard-dir shards --out ./out --expect "$CELLS"
+          PUB=""
+          if [ "$PUBLIC" = "true" ]; then PUB="--public-dir public_shards"; fi
+          python -u uk/uk_2026.py reduce --acs "$AC" --shard-dir shards --out ./out --expect "$CELLS" $PUB
       - uses: actions/upload-artifact@v4
         if: ${{ always() }}
         with:
           name: uk-2026-agg-ac-${{ matrix.ac }}    # clean merged AC -> plan skips it on the next dispatch
           path: out/aggregates/2026/ac=${{ matrix.ac }}.json
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() && inputs.public == 'true' }}
+        with:
+          name: uk-2026-public-ac-${{ matrix.ac }}  # merged PII-safe release (full-AC diff flags recomputed)
+          path: out/release/**
           if-no-files-found: ignore
