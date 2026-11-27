@@ -458,7 +458,13 @@ def _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics):
                 g = str(r.get("gender") or "").strip()
                 gu = g.upper()
                 gender = ("M" if ("पुरुष" in g or gu in ("M", "MALE"))
-                          else "F" if ("महिला" in g or gu in ("F", "FEMALE")) else None)
+                          else "F" if ("महिला" in g or gu in ("F", "FEMALE"))
+                          else "T" if ("तृतीय" in g or gu in ("T", "THIRD", "THIRD GENDER"))
+                          else None)
+                part = _to_int(r.get("part_no"))
+                # house HMAC is scoped per-AC & per-part so "12" in different booths/ACs never collides
+                house_hmac = (_hmac(salt, f"house:{int(ac)}:{part}:{house}")
+                              if (house and not placeholder) else None)
                 if from_draft_roll:
                     deleted = bool(ep and final_epics is not None and ep not in final_epics)
                     from_draft = True
@@ -467,10 +473,10 @@ def _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics):
                     from_draft = bool(ep and draft_epics is not None and ep in draft_epics)
                 rows.append({
                     "epic_hmac": _hmac(salt, ep) if ep else None,
-                    "house_hmac": _hmac(salt, house) if (house and not placeholder) else None,
+                    "house_hmac": house_hmac,
                     "house_is_placeholder": placeholder,
                     "state": STATE, "roll": roll, "revision_year": 2026, "ac": int(ac),
-                    "part": _to_int(r.get("part_no")),
+                    "part": part,
                     "age": _to_int(r.get("age")),
                     "gender": gender,
                     "relation_type": (str(r.get("relation_label") or "").strip() or None),
@@ -483,35 +489,87 @@ def _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics):
     return rows
 
 
-def write_public_release(ac, out_root, model_set, draft_jsonls, final_jsonls, part_suffix=""):
-    """Write public_out/release/<roll>/ac=<ac>/data[.pLO-HI].parquet (zstd-9) for Draft & Final,
-    allowlisted + HMAC'd, plus a sidecar epic_hmac_tok[.pLO-HI].txt (unique sorted) for cheap cross-AC
-    collision counting. part_suffix keeps a shard's files from colliding (reduce concatenates later).
-    An allowlist guard refuses to write if any column outside PUBLIC_FIELDS appears."""
+def _public_schema():
+    """Explicit PyArrow schema (exact types) so a shard whose column is all-null never infers a `null`
+    type that breaks pa.concat_tables / DuckDB across shards. Field order == PUBLIC_FIELDS."""
+    import pyarrow as pa
+    return pa.schema([
+        ("epic_hmac", pa.string()), ("house_hmac", pa.string()), ("house_is_placeholder", pa.bool_()),
+        ("state", pa.string()), ("roll", pa.string()), ("revision_year", pa.int32()),
+        ("ac", pa.int32()), ("part", pa.int32()), ("age", pa.int32()), ("gender", pa.string()),
+        ("relation_type", pa.string()), ("status_code", pa.string()), ("flags", pa.list_(pa.string())),
+        ("deleted_in_final", pa.bool_()), ("from_draft", pa.bool_()), ("ocr_model_set", pa.string()),
+    ])
+
+
+def _write_public_table(rows, out_root, roll, ac, suffix=""):
+    """Write rows -> release/<roll>/ac=<ac>/data{suffix}.parquet (zstd-9, explicit schema) + the
+    sidecar epic_hmac_tok{suffix}.txt (unique sorted). Allowlist leak-guard before writing."""
     import pyarrow as pa
     import pyarrow.parquet as pq
+    extra = {k for row in rows for k in row} - set(PUBLIC_FIELDS)
+    if extra:                               # never ship a column that isn't on the allowlist
+        raise SystemExit(f"public release leak guard tripped: unexpected columns {sorted(extra)}")
+    d = os.path.join(out_root, "release", roll, f"ac={ac}")
+    os.makedirs(d, exist_ok=True)
+    pq.write_table(pa.Table.from_pylist(rows, schema=_public_schema()),
+                   os.path.join(d, f"data{suffix}.parquet"), compression="zstd", compression_level=9)
+    toks = sorted({r["epic_hmac"] for r in rows if r.get("epic_hmac")})
+    with open(os.path.join(d, f"epic_hmac_tok{suffix}.txt"), "w") as f:
+        f.write("\n".join(toks) + ("\n" if toks else ""))
+    return len(rows), len(toks)
+
+
+def write_public_release(ac, out_root, model_set, draft_jsonls, final_jsonls, part_suffix=""):
+    """Per-shard PII-safe release for Draft & Final: allowlisted + HMAC'd rows -> data{part_suffix}.parquet.
+    deleted_in_final / from_draft here are shard-local; cmd_reduce recomputes them across the full AC."""
     salt_env = os.environ.get("EPIC_HMAC_SALT")
     if not salt_env:
         raise SystemExit("--public-out needs EPIC_HMAC_SALT in the environment (repo secret)")
     salt = salt_env.encode("utf-8")
-    draft_epics = _epics(draft_jsonls)     # full-roll sets -> correct deleted_in_final / from_draft
+    draft_epics = _epics(draft_jsonls)     # full-roll (this shard) sets for the shard-local flags
     final_epics = _epics(final_jsonls)
     for roll, jsonls in (("2026-sir-draft", draft_jsonls), ("2026-sir-final", final_jsonls)):
         rows = _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics)
         if not rows:
             continue
-        extra = {k for row in rows for k in row} - set(PUBLIC_FIELDS)
-        if extra:                           # defensive: never ship a column that isn't on the allowlist
-            raise SystemExit(f"public release leak guard tripped: unexpected columns {sorted(extra)}")
-        d = os.path.join(out_root, "release", roll, f"ac={ac}")
-        os.makedirs(d, exist_ok=True)
-        pq.write_table(pa.Table.from_pylist(rows), os.path.join(d, f"data{part_suffix}.parquet"),
-                       compression="zstd", compression_level=9)
-        toks = sorted({row["epic_hmac"] for row in rows if row["epic_hmac"]})
-        with open(os.path.join(d, f"epic_hmac_tok{part_suffix}.txt"), "w") as f:
-            f.write("\n".join(toks) + ("\n" if toks else ""))
-        print(f"    [public] {roll} ac={ac}{part_suffix}: {len(rows)} rows, {len(toks)} epic toks "
+        nr, nt = _write_public_table(rows, out_root, roll, ac, suffix=part_suffix)
+        print(f"    [public] {roll} ac={ac}{part_suffix}: {nr} rows, {nt} epic toks "
               f"-> data{part_suffix}.parquet (zstd-9) + tok", flush=True)
+
+
+def reduce_public(ac, public_dir, out_root):
+    """Concatenate one AC's sharded data.p*.parquet -> data.parquet per roll, and RECOMPUTE the diff
+    flags across the FULL-AC token sets so a voter moving between parts (different shards) isn't
+    mislabeled: Draft deleted_in_final = epic_hmac not in full-final toks; Final from_draft = epic_hmac
+    in full-draft toks. Unions epic_hmac_tok.p*.txt -> epic_hmac_tok.txt. Idempotent for 1 shard."""
+    import pyarrow.parquet as pq
+    byroll = {"2026-sir-draft": [], "2026-sir-final": []}
+    for root, _, files in os.walk(public_dir):
+        if os.path.basename(root) != f"ac={ac}":
+            continue
+        roll = os.path.basename(os.path.dirname(root))
+        if roll not in byroll:
+            continue
+        for fn in sorted(files):
+            if fn.startswith("data") and fn.endswith(".parquet"):
+                # ParquetFile (not read_table): the ac=<n> dir is Hive syntax and read_table would
+                # infer a partition column `ac` colliding with the data's `ac` column.
+                byroll[roll].extend(pq.ParquetFile(os.path.join(root, fn)).read().to_pylist())
+    draft_rows, final_rows = byroll["2026-sir-draft"], byroll["2026-sir-final"]
+    if not draft_rows and not final_rows:
+        return
+    full_draft = {r["epic_hmac"] for r in draft_rows if r.get("epic_hmac")}
+    full_final = {r["epic_hmac"] for r in final_rows if r.get("epic_hmac")}
+    for r in draft_rows:                    # recompute against the WHOLE final roll of the AC
+        r["deleted_in_final"] = bool(r.get("epic_hmac") and r["epic_hmac"] not in full_final)
+    for r in final_rows:                    # recompute against the WHOLE draft roll of the AC
+        r["from_draft"] = bool(r.get("epic_hmac") and r["epic_hmac"] in full_draft)
+    for roll, rows in (("2026-sir-draft", draft_rows), ("2026-sir-final", final_rows)):
+        if not rows:
+            continue
+        nr, nt = _write_public_table(rows, out_root, roll, ac, suffix="")
+        print(f"    [public-reduce] {roll} ac={ac}: {nr} rows, {nt} epic toks -> data.parquet", flush=True)
 
 
 def _process_part(ac, part, work, speeds, totals, draft_jsonls, final_jsonls,
@@ -823,6 +881,8 @@ def cmd_reduce(args):
         print(f"[reduce] AC {ac}: merged {len(want)} shard(s) -> {merged['parts']} parts | "
               f"DELETED {merged['diff_deleted_epics']} (gross {merged['diff_gross_deleted_pct']}%, "
               f"net {merged['diff_net_change_pct']}%)", flush=True)
+        if getattr(args, "public_dir", None):   # concat+recompute the PII-safe public release for this AC
+            reduce_public(ac, args.public_dir, args.out)
     print("[reduce] per-AC merges complete.", flush=True)
 
 
@@ -847,6 +907,8 @@ def main():
                     help="ingest: pull each AC's 2027 SSR text-layer -> ephemeral --hint-2027 (hinted sets like v4a need it)")
     ap.add_argument("--public-out", dest="public_out", default=None,
                     help="ingest: dir for the PII-safe public release (release/<roll>/ac=<ac>/data.parquet, HMAC'd via EPIC_HMAC_SALT)")
+    ap.add_argument("--public-dir", dest="public_dir", default=None,
+                    help="reduce: dir of downloaded per-shard public releases -> concat + recompute full-AC diff flags")
     ap.add_argument("--hints", default=os.environ.get("ECI_HINTS"),
                     help="optional 2027 text-layer hints JSONL (confirmation only; prod uses it to skip)")
     args = ap.parse_args()
