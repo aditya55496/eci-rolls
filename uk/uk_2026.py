@@ -400,6 +400,13 @@ def _detect_counts(jsonls, thresh=25):
     }
 
 
+def _hint_str(r):
+    """eci_ocr's hint consumer calls .isdigit()/string ops on hint fields (e.g. age at eci_ocr L1539).
+    parse_textlayer emits age/serial as ints, so stringify numeric scalars (bool left alone)."""
+    return {k: (str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v)
+            for k, v in r.items()}
+
+
 def pull_2027_hints(ac, work):
     """Pull ONE AC's 2027 SSR text-layer records -> work/hints.jsonl (keyed by EPIC) for --hint-2027.
     The 2027 PDFs carry a text layer (no OCR): each is fetched, parsed, and unlinked immediately. The
@@ -429,7 +436,7 @@ def pull_2027_hints(ac, work):
                     pass
             for r in recs:
                 if r.get("epic"):
-                    out.write(json.dumps(r, ensure_ascii=False) + "\n")
+                    out.write(json.dumps(_hint_str(r), ensure_ascii=False) + "\n")
                     n += 1
     print(f"    [hints] AC {ac}: {n} 2027 SSR hint records pulled (ephemeral)", flush=True)
     return path if n else None
