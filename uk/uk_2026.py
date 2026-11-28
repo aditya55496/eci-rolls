@@ -328,6 +328,14 @@ def _to_int(x):
         return None
 
 
+def _pub_age(x):
+    """OCR age bounded to a human range for the int32 public column. A garbled read (e.g. 85070688668,
+    ~85 billion, which overflows int32 and raised ArrowInvalid in write_public_release on AC-56) -> None.
+    Genuine out-of-range ages are still counted separately by the age_impossible detect radar."""
+    a = _to_int(x)
+    return a if (a is not None and 0 <= a <= 150) else None
+
+
 def _epics(jsonls):
     """Set of normalised, non-empty EPICs across the given per-part JSONLs. Values are NEVER
     returned to the caller as data - only this set, used for |set| counts."""
@@ -484,7 +492,7 @@ def _public_rows(jsonls, roll, ac, model_set, salt, draft_epics, final_epics):
                     "house_is_placeholder": placeholder,
                     "state": STATE, "roll": roll, "revision_year": 2026, "ac": int(ac),
                     "part": part,
-                    "age": _to_int(r.get("age")),
+                    "age": _pub_age(r.get("age")),
                     "gender": gender,
                     "relation_type": (str(r.get("relation_label") or "").strip() or None),
                     "status_code": (str(r.get("code") or "").strip() or None),
